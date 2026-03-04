@@ -1,0 +1,12 @@
+!! Print 2
+Solution: 
+  Number of routes 1
+  Total cost 695
+Route 0:
+  Cost 695
+  Time 419
+  Path : 7 6 6 7 6 7 1 8 8 1 1 5 8 3 3 5 5 0 0 0 3 4 9 9 9 2 2 4 2 4 
+  Loc  : 2 2 12 12 3 3 3 3 12 12 3 3 2 2 12 12 5 5 11 2 2 2 2 13 6 6 12 12 2 2 
+  Patt : 0 0 1 1 2 2 0 0 1 1 2 0 2 0 1 1 2 0 1 2 2 0 0 1 2 0 1 1 2 2 
+  Load : 1 2 2 2 1 0 1 2 2 2 1 2 1 2 2 2 1 2 2 1 0 1 2 2 1 2 2 2 1 0 
+Solution done 
