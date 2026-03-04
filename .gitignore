@@ -1,0 +1,17 @@
+# 파이썬 캐시 및 임시 파일
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# VS Code 설정
+.vscode/
+
+# 데이터 및 결과물
+SPDP_solution/
+# 만약 원본 데이터 수정을 방지하려면 아래도 추가 고려
+# SPDP_data/
