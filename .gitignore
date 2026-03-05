@@ -13,5 +13,4 @@ env/
 
 # 데이터 및 결과물
 SPDP_solution/
-# 만약 원본 데이터 수정을 방지하려면 아래도 추가 고려
-# SPDP_data/
+SPDP_data/

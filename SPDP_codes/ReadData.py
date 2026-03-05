@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Union
+import argparse
 import re
 
 import numpy as np
@@ -43,7 +44,9 @@ class SPDPData:
     # Matrix block
     # - distance[i, j]: travel cost c_ij
     # - time[i, j]: travel time t_ij
-    # Both are numpy arrays of shape (locations, locations), 0-based indices.
+    # Both are numpy arrays of shape (locations + 1, locations + 1).
+    # The extra last index (virtual index = locations) is reserved for virtual depot nodes,
+    # and distances/times to/from that virtual index are set to 0.
     fixed_vehicle_cost: Number
     time_pickup: Number
     time_empty: Number
@@ -112,6 +115,13 @@ def _parse_matrix(lines: List[str], start_idx: int, locations: int, section_name
         )
 
     return np.array(rows, dtype=float), idx
+
+
+def _augment_metric_with_virtual_zero(metric: np.ndarray) -> np.ndarray:
+    size = int(metric.shape[0])
+    augmented = np.zeros((size + 1, size + 1), dtype=float)
+    augmented[:size, :size] = metric
+    return augmented
 
 
 def read_spdp_data(filename: str) -> SPDPData:
@@ -198,6 +208,9 @@ def read_spdp_data(filename: str) -> SPDPData:
             f"REQUESTS count mismatch: header={request_count}, parsed={len(requests)}"
         )
 
+    distance = _augment_metric_with_virtual_zero(distance)
+    time = _augment_metric_with_virtual_zero(time)
+
     return SPDPData(
         fixed_vehicle_cost=params["FixedVehicleCost"],
         time_pickup=params["TimePickUp"],
@@ -212,10 +225,18 @@ def read_spdp_data(filename: str) -> SPDPData:
 
 
 if __name__ == "__main__":
-    sample_file = "RecDep_day_A1.dat"
-    parsed = read_spdp_data(sample_file)
+    parser = argparse.ArgumentParser(description="Load one SPDP .dat instance file.")
+    parser.add_argument(
+        "instance",
+        nargs="?",
+        default="RecDep_day_A1.dat",
+        help="Instance filename (e.g., RecDep_day_A1.dat) or full path",
+    )
+    args = parser.parse_args()
 
-    print(f"Loaded file: {sample_file}")
+    parsed = read_spdp_data(args.instance)
+
+    print(f"Loaded file: {args.instance}")
     print("Global Parameters:")
     print(f"  FixedVehicleCost: {parsed.fixed_vehicle_cost}")
     print(f"  TimePickUp: {parsed.time_pickup}")
@@ -223,6 +244,7 @@ if __name__ == "__main__":
     print(f"  TimeDelivery: {parsed.time_delivery}")
     print(f"  TimeLimit: {parsed.time_limit}")
     print(f"  LOCATIONS: {parsed.locations}")
+    print(f"  Virtual location index: {parsed.locations}")
 
     if parsed.requests:
         first = parsed.requests[0]
