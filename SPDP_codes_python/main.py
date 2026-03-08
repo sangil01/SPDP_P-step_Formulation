@@ -17,7 +17,7 @@ def main() -> None:
     parser.add_argument(
         "instance",
         nargs="?",
-        default="RecDep_day_A1.dat",
+        default="A0.dat",
         help="Instance filename (e.g., RecDep_day_A1.dat) or full path",
     )
     parser.add_argument(

@@ -2,22 +2,26 @@
   "version": 3,
   "configurePresets": [
     {
-      "name": "mingw-debug",
-      "displayName": "MinGW Debug",
-      "generator": "MinGW Makefiles",
+      "name": "linux-debug",
+      "displayName": "Linux Debug",
+      "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "/usr/bin/gcc",
+        "CMAKE_CXX_COMPILER": "/usr/bin/g++",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
-      "name": "mingw-release",
-      "displayName": "MinGW Release",
-      "generator": "MinGW Makefiles",
+      "name": "linux-release",
+      "displayName": "Linux Release",
+      "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "/usr/bin/gcc",
+        "CMAKE_CXX_COMPILER": "/usr/bin/g++",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     }
@@ -25,11 +29,11 @@
   "buildPresets": [
     {
       "name": "build-debug",
-      "configurePreset": "mingw-debug"
+      "configurePreset": "linux-debug"
     },
     {
       "name": "build-release",
-      "configurePreset": "mingw-release"
+      "configurePreset": "linux-release"
     }
   ]
 }
