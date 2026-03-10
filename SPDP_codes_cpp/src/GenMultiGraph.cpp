@@ -99,6 +99,7 @@ StateToken make_f(int container_type, int treatment_id) {
     return StateToken{'F', container_type, treatment_id};
 }
 
+//container state가 순서에 상관 없으므로, 항상 일관된 순서로 상태를 가지게 함으로써, 비교, 해시, 중복 제거 등이 일관되게 함
 State canonical_state(const StateToken& first, const StateToken& second) {
     State state{first, second};
     if (state[1] < state[0]) {
@@ -211,11 +212,7 @@ std::optional<State> apply_service(const NodeSpec& node, const State& state) {
     State tokens = state;
     const State empty_state = canonical_state(N_TOKEN, N_TOKEN);
 
-    if (node.kind == NodeSpec::Kind::Start) {
-        return canonical_state(tokens);
-    }
-
-    if (node.kind == NodeSpec::Kind::End) {
+    if (node.kind == NodeSpec::Kind::Start || node.kind == NodeSpec::Kind::End) {
         const State candidate = canonical_state(tokens);
         if (candidate == empty_state) {
             return candidate;
@@ -273,31 +270,14 @@ std::vector<std::vector<int>> candidate_sequences(const State& state) {
             return {std::vector<int>{}, std::vector<int>{l1}};
         }
 
-        std::vector<std::vector<int>> raw = {
+        std::vector<std::vector<int>> seq = {
             std::vector<int>{},
             std::vector<int>{l1},
             std::vector<int>{l2},
             std::vector<int>{l1, l2},
             std::vector<int>{l2, l1},
         };
-
-        std::vector<std::vector<int>> unique;
-        unique.reserve(raw.size());
-
-        for (const auto& sequence : raw) {
-            bool seen = false;
-            for (const auto& saved : unique) {
-                if (saved == sequence) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (!seen) {
-                unique.push_back(sequence);
-            }
-        }
-
-        return unique;
+        return seq;
     }
 
     throw std::runtime_error("Capacity is 2, so full skip count must be <= 2");
@@ -375,6 +355,52 @@ bool violates_single_request_state_rules(
     return false;
 }
 
+bool is_weakly_connected(
+    const std::vector<NodeSpec>& node_specs,
+    const std::vector<EdgeRecord>& edges
+) {
+    if (node_specs.empty()) {
+        return true;
+    }
+
+    std::unordered_map<NodeId, std::vector<NodeId>> adjacency;
+    adjacency.reserve(node_specs.size());
+    for (const NodeSpec& node : node_specs) {
+        adjacency[node.node_id] = {};
+    }
+
+    for (const EdgeRecord& edge : edges) {
+        adjacency[edge.u].push_back(edge.v);
+        adjacency[edge.v].push_back(edge.u);
+    }
+
+    std::unordered_set<NodeId> visited;
+    visited.reserve(node_specs.size());
+    std::vector<NodeId> stack;
+    stack.reserve(node_specs.size());
+
+    const NodeId start = node_specs.front().node_id;
+    stack.push_back(start);
+    visited.insert(start);
+
+    while (!stack.empty()) {
+        const NodeId current = stack.back();
+        stack.pop_back();
+
+        const auto found = adjacency.find(current);
+        if (found == adjacency.end()) {
+            continue;
+        }
+        for (NodeId next : found->second) {
+            if (visited.insert(next).second) {
+                stack.push_back(next);
+            }
+        }
+    }
+
+    return visited.size() == node_specs.size();
+}
+
 }  // namespace
 
 bool CanonicalEdgeKey::operator==(const CanonicalEdgeKey& other) const {
@@ -425,6 +451,7 @@ void MultiDiGraph::add_edge(NodeId u, NodeId v, const EdgeData& edge_data) {
     const std::size_t edge_index = edges_.size();
     edges_.push_back(std::move(record));
     outgoing_edge_indices_[u].push_back(edge_index);
+    ingoing_edge_indices_[v].push_back(edge_index);
 }
 
 std::size_t MultiDiGraph::number_of_nodes() const {
@@ -444,6 +471,22 @@ std::vector<EdgeRecord> MultiDiGraph::edges_from(NodeId u) const {
 
     const auto found = outgoing_edge_indices_.find(u);
     if (found == outgoing_edge_indices_.end()) {
+        return result;
+    }
+
+    result.reserve(found->second.size());
+    for (std::size_t index : found->second) {
+        result.push_back(edges_[index]);
+    }
+
+    return result;
+}
+
+std::vector<EdgeRecord> MultiDiGraph::edges_to(NodeId v) const {
+    std::vector<EdgeRecord> result;
+
+    const auto found = ingoing_edge_indices_.find(v);
+    if (found == ingoing_edge_indices_.end()) {
         return result;
     }
 
@@ -496,9 +539,14 @@ MultiDiGraph build_multigraph(
 
     MultiDiGraph graph;
     const std::vector<NodeSpec> node_specs = build_node_specs(data);
+
+    for (const NodeSpec& node : node_specs) {
+        graph.add_node(node);
+    }
+
     const int virtual_location = data.locations;
+    
     const std::vector<State> all_states = generate_state_space(data);
-    const State empty_state = canonical_state(N_TOKEN, N_TOKEN);
 
     std::unordered_map<int, int> request_type_count;
     std::unordered_map<std::pair<int, int>, int, PairHash> request_full_pair_count;
@@ -507,7 +555,7 @@ MultiDiGraph build_multigraph(
         ++request_type_count[req.container_type];
         ++request_full_pair_count[{req.container_type, req.to_id}];
     }
-
+    
     std::unordered_set<int> singleton_types;
     for (const auto& entry : request_type_count) {
         if (entry.second == 1) {
@@ -522,17 +570,11 @@ MultiDiGraph build_multigraph(
         }
     }
 
-    for (const NodeSpec& node : node_specs) {
-        graph.add_node(node);
-    }
-
     std::unordered_map<State, std::vector<std::vector<int>>, StateHash> sequence_cache;
     std::unordered_map<State, bool, StateHash> violates_cache;
-    std::unordered_map<State, std::string, StateHash> state_str_cache;
 
     sequence_cache.reserve(all_states.size());
     violates_cache.reserve(all_states.size());
-    state_str_cache.reserve(all_states.size());
 
     for (const State& state : all_states) {
         sequence_cache.emplace(state, candidate_sequences(state));
@@ -540,7 +582,6 @@ MultiDiGraph build_multigraph(
             state,
             violates_single_request_state_rules(state, singleton_types, singleton_full_pairs)
         );
-        state_str_cache.emplace(state, state_to_str(state));
     }
 
     std::unordered_map<NodeId, std::vector<State>> feasible_after_states;
@@ -567,8 +608,6 @@ MultiDiGraph build_multigraph(
         feasible_after_states[node.node_id] = std::move(state_vector);
     }
 
-    feasible_after_states[0] = {empty_state};
-
     std::vector<EdgeBucketEntry> edge_bucket_entries;
     std::unordered_map<EdgeBucketKey, std::size_t, EdgeBucketKeyHash> edge_bucket_indices;
     std::size_t raw_edge_count = 0;
@@ -576,10 +615,12 @@ MultiDiGraph build_multigraph(
     edge_bucket_entries.reserve(4096);
     edge_bucket_indices.reserve(4096);
 
+    //edge 기준은 start: u 서비스 이후, end: v 서비스 이후 (단, u가 virtual star인 경우는 u 서비스도 포함 (즉, fixed cost도 포함))
     for (const NodeSpec& u : node_specs) {
         if (u.kind == NodeSpec::Kind::End) {
             continue;
         }
+        const auto& feasible_states_u = feasible_after_states.at(u.node_id);
 
         for (const NodeSpec& v : node_specs) {
             if (v.kind == NodeSpec::Kind::Start) {
@@ -589,18 +630,9 @@ MultiDiGraph build_multigraph(
                 continue;
             }
 
-            const auto feasible_found = feasible_after_states.find(u.node_id);
-            if (feasible_found == feasible_after_states.end()) {
-                continue;
-            }
-
-            for (const State& sigma_u : feasible_found->second) {
-                const auto seq_found = sequence_cache.find(sigma_u);
-                if (seq_found == sequence_cache.end()) {
-                    continue;
-                }
-
-                const std::vector<std::vector<int>>& sequences = seq_found->second;
+            for (const State& sigma_u : feasible_states_u) {
+                const std::vector<std::vector<int>>& sequences = sequence_cache.at(sigma_u);
+                
                 for (const std::vector<int>& sequence_pi : sequences) {
                     auto emptying_result = apply_emptying(sigma_u, sequence_pi);
                     const State& sigma_arrival = emptying_result.first;
@@ -617,7 +649,8 @@ MultiDiGraph build_multigraph(
 
                     const double travel_time = path_metric(data.time, u.location, sequence_pi, v.location);
                     double travel_cost = path_metric(data.distance, u.location, sequence_pi, v.location);
-                    if (u.node_id == 0) {
+                    
+                    if (u.node_id == 0 && v.kind != NodeSpec::Kind::End) {
                         travel_cost += data.fixed_vehicle_cost;
                     }
 
@@ -651,7 +684,8 @@ MultiDiGraph build_multigraph(
                         entry.key = key;
                         entry.candidates.push_back(std::move(edge_data));
                         edge_bucket_entries.push_back(std::move(entry));
-                    } else {
+                    } 
+                    else {
                         edge_bucket_entries[found->second].candidates.push_back(std::move(edge_data));
                     }
 
@@ -692,8 +726,6 @@ MultiDiGraph build_multigraph(
         }
 
         for (EdgeData& edge_data : kept) {
-            edge_data.start_state_str = state_str_cache[edge_data.start_state];
-            edge_data.end_state_str = state_str_cache[edge_data.end_state];
             graph.add_edge(entry.key.u, entry.key.v, edge_data);
             ++kept_edge_count;
         }
@@ -721,27 +753,11 @@ MultiDiGraph build_multigraph(
 
     logger("[GenMultiGraph] Graph edge count: " + std::to_string(graph.number_of_edges()));
 
-    return graph;
-}
-
-std::vector<CanonicalEdgeKey> build_canonical_edge_keys(const MultiDiGraph& graph) {
-    std::vector<CanonicalEdgeKey> result;
-    result.reserve(graph.number_of_edges());
-
-    for (const EdgeRecord& edge : graph.edges()) {
-        CanonicalEdgeKey key;
-        key.u = edge.u;
-        key.v = edge.v;
-        key.sequence_pi = edge.data.sequence_pi;
-        key.time = edge.data.time;
-        key.cost = edge.data.cost;
-        key.start_state = edge.data.start_state;
-        key.end_state = edge.data.end_state;
-        result.push_back(std::move(key));
+    if (!is_weakly_connected(node_specs, graph.edges())) {
+        throw std::runtime_error("Generated multi-graph is disconnected.");
     }
 
-    std::sort(result.begin(), result.end());
-    return result;
+    return graph;
 }
 
 }  // namespace spdp

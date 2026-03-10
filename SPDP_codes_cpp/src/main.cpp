@@ -109,6 +109,53 @@ std::string format_two_decimals(double value) {
     return out.str();
 }
 
+void print_data_info(
+    const CliOptions& args,
+    const spdp::SPDPData& data,
+    const spdp::MultiDiGraph& graph
+) {
+    std::cout << "[main] Loaded instance: " << args.instance << '\n';
+    std::cout << "[main] Locations: " << data.locations << '\n';
+    std::cout << "[main] Fixed vehicle cost: " << data.fixed_vehicle_cost << '\n';
+    std::cout << "[main] Time pick-up: " << data.time_pickup << '\n';
+    std::cout << "[main] Time empty: " << data.time_empty << '\n';
+    std::cout << "[main] Time delivery: " << data.time_delivery << '\n';
+    std::cout << "[main] Time limit: " << data.time_limit << '\n';
+    std::cout << "[main] Requests: " << data.requests.size() << '\n';
+    std::cout << "[main] Time matrix size: " << data.time.size() << "x"
+              << (data.time.empty() ? 0 : data.time[0].size()) << '\n';
+    std::cout << "[main] Distance matrix size: " << data.distance.size() << "x"
+              << (data.distance.empty() ? 0 : data.distance[0].size()) << '\n';
+    std::cout << "[main] Node count: " << graph.number_of_nodes() << '\n';
+    std::cout << "[main] Edge count: " << graph.number_of_edges() << '\n';
+}
+
+void print_selected_edge_info(
+    const spdp::MultiDiGraph& graph,
+    const std::vector<std::pair<int, int>>& target_pairs
+) {
+    std::cout << "[main] Full edge list for selected node pairs:\n";
+
+    for (const auto& pair : target_pairs) {
+        const int u = pair.first;
+        const int v = pair.second;
+
+        const std::vector<spdp::EdgeRecord> pair_edges = graph.edges_between(u, v);
+        std::cout << "  Pair (" << u << ", " << v << ") -> " << pair_edges.size()
+                  << " edges\n";
+
+        for (const spdp::EdgeRecord& edge : pair_edges) {
+            std::cout << "    key=" << edge.key
+                      << " | pi=" << format_sequence_pi(edge.data.sequence_pi)
+                      << " | time=" << format_two_decimals(edge.data.time)
+                      << " | cost=" << format_two_decimals(edge.data.cost)
+                      << " | start=" << spdp::state_to_str(edge.data.start_state)
+                      << " | end=" << spdp::state_to_str(edge.data.end_state)
+                      << '\n';
+        }
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -121,54 +168,13 @@ int main(int argc, char** argv) {
             args.prune_dominated_edges == 1
         );
 
-        std::cout << "[main] Loaded instance: " << args.instance << '\n';
-        std::cout << "[main] Requests: " << data.requests.size() << '\n';
-        std::cout << "[main] Locations: " << data.locations << '\n';
-        std::cout << "[main] Node count: " << graph.number_of_nodes() << '\n';
-        std::cout << "[main] Edge count: " << graph.number_of_edges() << '\n';
-
-        if (args.sample_edges > 0) {
-            std::cout << "[main] Sample edges (up to " << args.sample_edges << "):\n";
-
-            int shown = 0;
-            for (const spdp::EdgeRecord& edge : graph.edges()) {
-                std::cout << "  " << edge.u << " -> " << edge.v
-                          << " | pi=" << format_sequence_pi(edge.data.sequence_pi)
-                          << " | time=" << format_two_decimals(edge.data.time)
-                          << " | cost=" << format_two_decimals(edge.data.cost)
-                          << '\n';
-
-                ++shown;
-                if (shown >= args.sample_edges) {
-                    break;
-                }
-            }
-        }
+        print_data_info(args, data, graph);
 
         const std::vector<std::pair<int, int>> target_pairs = {
             {0, 1}, {1, 2}, {1, 3}, {3, 1}, {3, 4},
         };
 
-        std::cout << "[main] Full edge list for selected node pairs:\n";
-
-        for (const auto& pair : target_pairs) {
-            const int u = pair.first;
-            const int v = pair.second;
-
-            const std::vector<spdp::EdgeRecord> pair_edges = graph.edges_between(u, v);
-            std::cout << "  Pair (" << u << ", " << v << ") -> " << pair_edges.size()
-                      << " edges\n";
-
-            for (const spdp::EdgeRecord& edge : pair_edges) {
-                std::cout << "    key=" << edge.key
-                          << " | pi=" << format_sequence_pi(edge.data.sequence_pi)
-                          << " | time=" << format_two_decimals(edge.data.time)
-                          << " | cost=" << format_two_decimals(edge.data.cost)
-                          << " | start=" << edge.data.start_state_str
-                          << " | end=" << edge.data.end_state_str
-                          << '\n';
-            }
-        }
+        print_selected_edge_info(graph, target_pairs);
 
         return 0;
     } catch (const std::exception& ex) {

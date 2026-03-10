@@ -60,14 +60,12 @@ struct EdgeData {
     double cost = 0.0;
     State start_state{};
     State end_state{};
-    std::string start_state_str;
-    std::string end_state_str;
 };
 
 struct EdgeRecord {
     NodeId u = 0;
     NodeId v = 0;
-    int key = 0;
+    int key = 0;  //같은 (u,v) 쌍에 대해 여러 edge가 있을 수 있으므로, 구분하기 위한 key
     EdgeData data;
 };
 
@@ -94,6 +92,7 @@ public:
 
     const std::vector<EdgeRecord>& edges() const;
     std::vector<EdgeRecord> edges_from(NodeId u) const;
+    std::vector<EdgeRecord> edges_to(NodeId v) const;
     std::vector<EdgeRecord> edges_between(NodeId u, NodeId v) const;
 
 private:
@@ -103,8 +102,9 @@ private:
 
     std::unordered_map<NodeId, NodeSpec> nodes_;
     std::vector<EdgeRecord> edges_;
-    std::unordered_map<std::pair<NodeId, NodeId>, int, PairHash> next_key_by_pair_;
-    std::unordered_map<NodeId, std::vector<std::size_t>> outgoing_edge_indices_;
+    std::unordered_map<std::pair<NodeId, NodeId>, int, PairHash> next_key_by_pair_; //(u,v) 쌍에 대해 여러 edge가 있을 수 있으므로, 각각 구분하기 위한 추가 key 요소
+    std::unordered_map<NodeId, std::vector<std::size_t>> outgoing_edge_indices_; //u에서 나가는 edge들의 edges_ 내 index 목록
+    std::unordered_map<NodeId, std::vector<std::size_t>> ingoing_edge_indices_; //v로 들어오는 edge들의 edges_ 내 index 목록
 };
 
 using LoggerFn = std::function<void(const std::string&)>;
@@ -114,8 +114,6 @@ MultiDiGraph build_multigraph(
     bool prune_dominated_edges = true,
     LoggerFn logger = LoggerFn{}
 );
-
-std::vector<CanonicalEdgeKey> build_canonical_edge_keys(const MultiDiGraph& graph);
 
 std::string state_to_str(const State& state);
 
