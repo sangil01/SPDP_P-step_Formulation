@@ -2,8 +2,8 @@
 
 #include <algorithm>
 #include <array>
-#include <functional>
 #include <iostream>
+#include <ostream>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -112,6 +112,206 @@ State canonical_state(const State& state) {
     return canonical_state(state[0], state[1]);
 }
 
+void log_line(std::ostream& out, const std::string& message) {
+    out << message << '\n';
+}
+
+void log_graph_generation_summary(
+    std::ostream& out,
+    const std::vector<State>& all_states,
+    int virtual_location,
+    std::size_t initial_edge_count,
+    std::size_t removed_infeasible_edge_count,
+    std::size_t removed_dominated_edge_count,
+    std::size_t kept_edge_count,
+    bool prune_infeasible_edges,
+    bool prune_dominated_edges
+) {
+    log_line(out, "[GenMultiGraph] State count: " + std::to_string(all_states.size()));
+    log_line(out, "[GenMultiGraph] Initial edge count: " + std::to_string(initial_edge_count));
+
+    if (prune_infeasible_edges) {
+        log_line(
+            out,
+            "[GenMultiGraph] Infeasible-pruned edge count: " +
+                std::to_string(removed_infeasible_edge_count)
+        );
+    } else {
+        log_line(out, "[GenMultiGraph] Infeasible pruning disabled");
+    }
+
+    if (prune_dominated_edges) {
+        log_line(
+            out,
+            "[GenMultiGraph] Dominated-pruned edge count: " +
+                std::to_string(removed_dominated_edge_count)
+        );
+    } else {
+        log_line(out, "[GenMultiGraph] Dominated pruning disabled");
+    }
+
+    log_line(out, "[GenMultiGraph] Final edge count: " + std::to_string(kept_edge_count));
+}
+
+double service_time(const NodeSpec& node, const SPDPData& data) {
+    if (node.kind == NodeSpec::Kind::Pickup) {
+        return data.time_pickup;
+    }
+    if (node.kind == NodeSpec::Kind::Delivery) {
+        return data.time_delivery;
+    }
+    return 0.0;
+}
+
+double path_metric(
+    const std::vector<std::vector<double>>& metric_matrix,
+    int start_loc,
+    const std::vector<int>& sequence_pi,
+    int end_loc
+) {
+    double value = 0.0;
+    int prev = start_loc;
+
+    for (int location : sequence_pi) {
+        value += metric_matrix[static_cast<std::size_t>(prev)][static_cast<std::size_t>(location)];
+        prev = location;
+    }
+
+    value += metric_matrix[static_cast<std::size_t>(prev)][static_cast<std::size_t>(end_loc)];
+    return value;
+}
+
+bool dominates(const EdgeData& a, const EdgeData& b) {
+    const bool weak = (a.time <= b.time && a.cost <= b.cost);
+    const bool strict = (a.time < b.time || a.cost < b.cost);
+    return weak && strict;
+}
+
+std::size_t find_or_create_edge_bucket(
+    const EdgeBucketKey& key,
+    std::vector<EdgeBucketEntry>& edge_bucket_entries,
+    std::unordered_map<EdgeBucketKey, std::size_t, EdgeBucketKeyHash>& edge_bucket_indices
+) {
+    const auto found = edge_bucket_indices.find(key);
+    if (found != edge_bucket_indices.end()) {
+        return found->second;
+    }
+
+    const std::size_t index = edge_bucket_entries.size();
+    edge_bucket_indices.emplace(key, index);
+
+    EdgeBucketEntry entry;
+    entry.key = key;
+    edge_bucket_entries.push_back(std::move(entry));
+    return index;
+}
+
+std::size_t insert_into_pareto_bucket(
+    std::vector<EdgeData>& candidates,
+    EdgeData edge_data,
+    bool prune_dominated_edges
+) {
+    if (!prune_dominated_edges) {
+        candidates.push_back(std::move(edge_data));
+        return 0;
+    }
+
+    for (const EdgeData& candidate : candidates) {
+        if (dominates(candidate, edge_data)) {
+            return 1;
+        }
+    }
+
+    const std::size_t previous_size = candidates.size();
+    candidates.erase(
+        std::remove_if(
+            candidates.begin(),
+            candidates.end(),
+            [&edge_data](const EdgeData& candidate) {
+                return dominates(edge_data, candidate);
+            }
+        ),
+        candidates.end()
+    );
+    const std::size_t removed_existing_count = previous_size - candidates.size();
+
+    candidates.push_back(std::move(edge_data));
+    return removed_existing_count;
+}
+
+bool try_add_edge_candidate(
+    const SPDPData& data,
+    const NodeSpec& u,
+    const NodeSpec& v,
+    const State& sigma_u,
+    bool sigma_u_violates,
+    const std::optional<State>& sigma_v,
+    const std::vector<int>& sequence_pi,
+    int emptied_count,
+    const std::unordered_map<State, bool, StateHash>& violates_cache,
+    bool prune_infeasible_edges,
+    bool prune_dominated_edges,
+    std::vector<EdgeBucketEntry>& edge_bucket_entries,
+    std::unordered_map<EdgeBucketKey, std::size_t, EdgeBucketKeyHash>& edge_bucket_indices,
+    std::size_t& initial_edge_count,
+    std::size_t& removed_infeasible_edge_count,
+    std::size_t& removed_dominated_edge_count
+) {
+    if (!sigma_v.has_value()) {
+        return false;
+    }
+
+    const double travel_time = path_metric(data.time, u.location, sequence_pi, v.location);
+    double travel_cost = path_metric(data.distance, u.location, sequence_pi, v.location);
+
+    if (u.node_id == 0 && v.kind != NodeSpec::Kind::End) {
+        travel_cost += data.fixed_vehicle_cost;
+    }
+
+    const double total_time =
+        travel_time + static_cast<double>(emptied_count) * data.time_empty + service_time(v, data);
+
+    ++initial_edge_count;
+
+    const bool violates_state_rules =
+        sigma_u_violates || violates_cache.at(sigma_v.value());
+    const bool violates_time_limit = total_time > data.time_limit;
+
+    if (prune_infeasible_edges && (violates_state_rules || violates_time_limit)) {
+        ++removed_infeasible_edge_count;
+        return false;
+    }
+
+    EdgeData edge_data;
+    edge_data.sequence_pi = sequence_pi;
+    edge_data.time = total_time;
+    edge_data.cost = travel_cost;
+    edge_data.start_state = sigma_u;
+    edge_data.end_state = sigma_v.value();
+
+    EdgeBucketKey key;
+    key.u = u.node_id;
+    key.v = v.node_id;
+    key.start_state = sigma_u;
+    key.end_state = sigma_v.value();
+
+    const std::size_t bucket_index =
+        find_or_create_edge_bucket(key, edge_bucket_entries, edge_bucket_indices);
+    std::vector<EdgeData>& candidates = edge_bucket_entries[bucket_index].candidates;
+
+    const std::size_t previous_size = candidates.size();
+    const std::size_t dominated_removed_count =
+        insert_into_pareto_bucket(candidates, std::move(edge_data), prune_dominated_edges);
+
+    if (candidates.size() == previous_size) {
+        removed_dominated_edge_count += dominated_removed_count;
+        return false;
+    }
+
+    removed_dominated_edge_count += dominated_removed_count;
+    return true;
+}
+
 std::vector<NodeSpec> build_node_specs(const SPDPData& data) {
     const int n_requests = static_cast<int>(data.requests.size());
     const int end_depot_id = 2 * n_requests + 1;
@@ -196,16 +396,6 @@ std::vector<State> generate_state_space(const SPDPData& data) {
     }
 
     return states;
-}
-
-double service_time(const NodeSpec& node, const SPDPData& data) {
-    if (node.kind == NodeSpec::Kind::Pickup) {
-        return data.time_pickup;
-    }
-    if (node.kind == NodeSpec::Kind::Delivery) {
-        return data.time_delivery;
-    }
-    return 0.0;
 }
 
 std::optional<State> apply_service(const NodeSpec& node, const State& state) {
@@ -297,30 +487,6 @@ std::pair<State, int> apply_emptying(const State& state, const std::vector<int>&
     }
 
     return {canonical_state(tokens), emptied_count};
-}
-
-double path_metric(
-    const std::vector<std::vector<double>>& metric_matrix,
-    int start_loc,
-    const std::vector<int>& sequence_pi,
-    int end_loc
-) {
-    double value = 0.0;
-    int prev = start_loc;
-
-    for (int location : sequence_pi) {
-        value += metric_matrix[static_cast<std::size_t>(prev)][static_cast<std::size_t>(location)];
-        prev = location;
-    }
-
-    value += metric_matrix[static_cast<std::size_t>(prev)][static_cast<std::size_t>(end_loc)];
-    return value;
-}
-
-bool dominates(const EdgeData& a, const EdgeData& b) {
-    const bool weak = (a.time <= b.time && a.cost <= b.cost);
-    const bool strict = (a.time < b.time || a.cost < b.cost);
-    return weak && strict;
 }
 
 bool violates_single_request_state_rules(
@@ -528,14 +694,11 @@ std::string state_to_str(const State& state) {
 
 MultiDiGraph build_multigraph(
     const SPDPData& data,
+    bool prune_infeasible_edges,
     bool prune_dominated_edges,
-    LoggerFn logger
+    std::ostream* log_stream
 ) {
-    if (!logger) {
-        logger = [](const std::string& message) {
-            std::cout << message << '\n';
-        };
-    }
+    std::ostream& log_out = log_stream != nullptr ? *log_stream : std::cout;
 
     MultiDiGraph graph;
     const std::vector<NodeSpec> node_specs = build_node_specs(data);
@@ -610,7 +773,9 @@ MultiDiGraph build_multigraph(
 
     std::vector<EdgeBucketEntry> edge_bucket_entries;
     std::unordered_map<EdgeBucketKey, std::size_t, EdgeBucketKeyHash> edge_bucket_indices;
-    std::size_t raw_edge_count = 0;
+    std::size_t initial_edge_count = 0;
+    std::size_t removed_infeasible_edge_count = 0;
+    std::size_t removed_dominated_edge_count = 0;
 
     edge_bucket_entries.reserve(4096);
     edge_bucket_indices.reserve(4096);
@@ -631,6 +796,7 @@ MultiDiGraph build_multigraph(
             }
 
             for (const State& sigma_u : feasible_states_u) {
+                const bool sigma_u_violates = violates_cache.at(sigma_u);
                 const std::vector<std::vector<int>>& sequences = sequence_cache.at(sigma_u);
                 
                 for (const std::vector<int>& sequence_pi : sequences) {
@@ -639,57 +805,24 @@ MultiDiGraph build_multigraph(
                     const int emptied_count = emptying_result.second;
 
                     const std::optional<State> sigma_v = apply_service(v, sigma_arrival);
-                    if (!sigma_v.has_value()) {
-                        continue;
-                    }
-
-                    if (violates_cache[sigma_u] || violates_cache[sigma_v.value()]) {
-                        continue;
-                    }
-
-                    const double travel_time = path_metric(data.time, u.location, sequence_pi, v.location);
-                    double travel_cost = path_metric(data.distance, u.location, sequence_pi, v.location);
-                    
-                    if (u.node_id == 0 && v.kind != NodeSpec::Kind::End) {
-                        travel_cost += data.fixed_vehicle_cost;
-                    }
-
-                    const double total_time = travel_time +
-                                              static_cast<double>(emptied_count) * data.time_empty +
-                                              service_time(v, data);
-
-                    if (total_time > data.time_limit) {
-                        continue;
-                    }
-
-                    EdgeData edge_data;
-                    edge_data.sequence_pi = sequence_pi;
-                    edge_data.time = total_time;
-                    edge_data.cost = travel_cost;
-                    edge_data.start_state = sigma_u;
-                    edge_data.end_state = sigma_v.value();
-
-                    EdgeBucketKey key;
-                    key.u = u.node_id;
-                    key.v = v.node_id;
-                    key.start_state = sigma_u;
-                    key.end_state = sigma_v.value();
-
-                    auto found = edge_bucket_indices.find(key);
-                    if (found == edge_bucket_indices.end()) {
-                        const std::size_t index = edge_bucket_entries.size();
-                        edge_bucket_indices.emplace(key, index);
-
-                        EdgeBucketEntry entry;
-                        entry.key = key;
-                        entry.candidates.push_back(std::move(edge_data));
-                        edge_bucket_entries.push_back(std::move(entry));
-                    } 
-                    else {
-                        edge_bucket_entries[found->second].candidates.push_back(std::move(edge_data));
-                    }
-
-                    ++raw_edge_count;
+                    try_add_edge_candidate(
+                        data,
+                        u,
+                        v,
+                        sigma_u,
+                        sigma_u_violates,
+                        sigma_v,
+                        sequence_pi,
+                        emptied_count,
+                        violates_cache,
+                        prune_infeasible_edges,
+                        prune_dominated_edges,
+                        edge_bucket_entries,
+                        edge_bucket_indices,
+                        initial_edge_count,
+                        removed_infeasible_edge_count,
+                        removed_dominated_edge_count
+                    );
                 }
             }
         }
@@ -698,60 +831,24 @@ MultiDiGraph build_multigraph(
     std::size_t kept_edge_count = 0;
 
     for (EdgeBucketEntry& entry : edge_bucket_entries) {
-        std::vector<EdgeData> kept;
+        kept_edge_count += entry.candidates.size();
 
-        if (prune_dominated_edges) {
-            kept.reserve(entry.candidates.size());
-
-            for (std::size_t i = 0; i < entry.candidates.size(); ++i) {
-                const EdgeData& candidate = entry.candidates[i];
-                bool is_dominated = false;
-
-                for (std::size_t j = 0; j < entry.candidates.size(); ++j) {
-                    if (i == j) {
-                        continue;
-                    }
-                    if (dominates(entry.candidates[j], candidate)) {
-                        is_dominated = true;
-                        break;
-                    }
-                }
-
-                if (!is_dominated) {
-                    kept.push_back(candidate);
-                }
-            }
-        } else {
-            kept = entry.candidates;
-        }
-
-        for (EdgeData& edge_data : kept) {
+        for (EdgeData& edge_data : entry.candidates) {
             graph.add_edge(entry.key.u, entry.key.v, edge_data);
-            ++kept_edge_count;
         }
     }
 
-    logger("[GenMultiGraph] Node count: " + std::to_string(graph.number_of_nodes()));
-    logger("[GenMultiGraph] State count: " + std::to_string(all_states.size()));
-
-    const std::string matrix_shape =
-        "(" + std::to_string(data.time.size()) + ", " +
-        std::to_string(data.time.empty() ? 0 : data.time[0].size()) + ")";
-    const std::string distance_shape =
-        "(" + std::to_string(data.distance.size()) + ", " +
-        std::to_string(data.distance.empty() ? 0 : data.distance[0].size()) + ")";
-
-    logger("[GenMultiGraph] Matrix shapes: time=" + matrix_shape + ", distance=" + distance_shape);
-    logger("[GenMultiGraph] Virtual location index: " + std::to_string(virtual_location));
-    logger("[GenMultiGraph] Raw edge count: " + std::to_string(raw_edge_count));
-
-    if (prune_dominated_edges) {
-        logger("[GenMultiGraph] Pareto-pruned edge count: " + std::to_string(kept_edge_count));
-    } else {
-        logger("[GenMultiGraph] Pruning disabled edge count: " + std::to_string(kept_edge_count));
-    }
-
-    logger("[GenMultiGraph] Graph edge count: " + std::to_string(graph.number_of_edges()));
+    log_graph_generation_summary(
+        log_out,
+        all_states,
+        virtual_location,
+        initial_edge_count,
+        removed_infeasible_edge_count,
+        removed_dominated_edge_count,
+        kept_edge_count,
+        prune_infeasible_edges,
+        prune_dominated_edges
+    );
 
     if (!is_weakly_connected(node_specs, graph.edges())) {
         throw std::runtime_error("Generated multi-graph is disconnected.");

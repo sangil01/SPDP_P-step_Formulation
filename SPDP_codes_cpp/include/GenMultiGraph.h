@@ -3,7 +3,7 @@
 
 #include <array>
 #include <cstddef>
-#include <functional>
+#include <iosfwd>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -107,12 +107,11 @@ private:
     std::unordered_map<NodeId, std::vector<std::size_t>> ingoing_edge_indices_; //v로 들어오는 edge들의 edges_ 내 index 목록
 };
 
-using LoggerFn = std::function<void(const std::string&)>;
-
 MultiDiGraph build_multigraph(
     const SPDPData& data,
+    bool prune_infeasible_edges = true,
     bool prune_dominated_edges = true,
-    LoggerFn logger = LoggerFn{}
+    std::ostream* log_stream = nullptr
 );
 
 std::string state_to_str(const State& state);

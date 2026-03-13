@@ -32,7 +32,7 @@ out/
 .idea/
 
 # [데이터 및 프로젝트 결과물]
-SPDP_solution/
+SPDP_solution_benchmark/
 SPDP_data/
 *.log
 
