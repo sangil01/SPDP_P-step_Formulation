@@ -23,6 +23,7 @@ env/
 *.exp
 SPDP_codes_cpp/build-debug/
 SPDP_codes_cpp/build-release/
+SPDP_codes_cpp/build/
 bin/
 
 # [IDE 및 도구]

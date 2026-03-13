@@ -187,6 +187,10 @@ bool dominates(const EdgeData& a, const EdgeData& b) {
     return weak && strict;
 }
 
+bool has_same_objective_values(const EdgeData& a, const EdgeData& b) {
+    return a.time == b.time && a.cost == b.cost;
+}
+
 std::size_t find_or_create_edge_bucket(
     const EdgeBucketKey& key,
     std::vector<EdgeBucketEntry>& edge_bucket_entries,
@@ -211,6 +215,12 @@ std::size_t insert_into_pareto_bucket(
     EdgeData edge_data,
     bool prune_dominated_edges
 ) {
+    for (const EdgeData& candidate : candidates) {
+        if (has_same_objective_values(candidate, edge_data)) {
+            return 1;
+        }
+    }
+
     if (!prune_dominated_edges) {
         candidates.push_back(std::move(edge_data));
         return 0;
@@ -239,6 +249,62 @@ std::size_t insert_into_pareto_bucket(
     return removed_existing_count;
 }
 
+std::optional<State> reconstruct_pre_service_state(const NodeSpec& node, const State& after_state) {
+    if (node.kind != NodeSpec::Kind::Delivery) {
+        return std::nullopt;
+    }
+
+    State before_state = after_state;
+    const StateToken delivered_empty = make_e(node.container_type.value());
+
+    for (StateToken& token : before_state) {
+        if (token.kind == 'N') {
+            token = delivered_empty;
+            return canonical_state(before_state);
+        }
+    }
+
+    throw std::runtime_error("Delivery after-state has no feasible pre-service state.");
+}
+
+bool violates_node_state_rules(
+    const NodeSpec& node,
+    const State& after_state,
+    const std::unordered_map<State, bool, StateHash>& violates_cache
+) {
+    if (violates_cache.at(after_state)) {
+        return true;
+    }
+
+    const std::optional<State> before_state = reconstruct_pre_service_state(node, after_state);
+    if (!before_state.has_value()) {
+        return false;
+    }
+
+    return violates_cache.at(before_state.value());
+}
+
+bool violates_singleton_delivery_to_own_pickup_rule(
+    const NodeSpec& u,
+    const NodeSpec& v,
+    const std::unordered_set<int>& singleton_types
+) {
+    if (u.kind != NodeSpec::Kind::Delivery || v.kind != NodeSpec::Kind::Pickup) {
+        return false;
+    }
+    if (!u.request_idx.has_value() || !v.request_idx.has_value()) {
+        return false;
+    }
+    if (u.request_idx.value() != v.request_idx.value()) {
+        return false;
+    }
+    if (!u.container_type.has_value()) {
+        return false;
+    }
+
+    return singleton_types.find(u.container_type.value()) != singleton_types.end();
+}
+
 bool try_add_edge_candidate(
     const SPDPData& data,
     const NodeSpec& u,
@@ -249,6 +315,7 @@ bool try_add_edge_candidate(
     const std::vector<int>& sequence_pi,
     int emptied_count,
     const std::unordered_map<State, bool, StateHash>& violates_cache,
+    const std::unordered_set<int>& singleton_types,
     bool prune_infeasible_edges,
     bool prune_dominated_edges,
     std::vector<EdgeBucketEntry>& edge_bucket_entries,
@@ -273,11 +340,14 @@ bool try_add_edge_candidate(
 
     ++initial_edge_count;
 
-    const bool violates_state_rules =
-        sigma_u_violates || violates_cache.at(sigma_v.value());
+    const bool sigma_v_violates = violates_node_state_rules(v, sigma_v.value(), violates_cache);
+    const bool violates_state_rules = sigma_u_violates || sigma_v_violates;
     const bool violates_time_limit = total_time > data.time_limit;
+    const bool violates_singleton_delivery_to_pickup =
+        violates_singleton_delivery_to_own_pickup_rule(u, v, singleton_types);
 
-    if (prune_infeasible_edges && (violates_state_rules || violates_time_limit)) {
+    if (prune_infeasible_edges &&
+        (violates_state_rules || violates_time_limit || violates_singleton_delivery_to_pickup)) {
         ++removed_infeasible_edge_count;
         return false;
     }
@@ -796,7 +866,8 @@ MultiDiGraph build_multigraph(
             }
 
             for (const State& sigma_u : feasible_states_u) {
-                const bool sigma_u_violates = violates_cache.at(sigma_u);
+                const bool sigma_u_violates =
+                    violates_node_state_rules(u, sigma_u, violates_cache);
                 const std::vector<std::vector<int>>& sequences = sequence_cache.at(sigma_u);
                 
                 for (const std::vector<int>& sequence_pi : sequences) {
@@ -815,6 +886,7 @@ MultiDiGraph build_multigraph(
                         sequence_pi,
                         emptied_count,
                         violates_cache,
+                        singleton_types,
                         prune_infeasible_edges,
                         prune_dominated_edges,
                         edge_bucket_entries,

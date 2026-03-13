@@ -17,7 +17,7 @@
 namespace {
 
 struct CliOptions {
-    std::string instance = "A0.dat";
+    std::string instance = "A3.dat";
     int sample_edges = 5;
     int prune_infeasible_edges = 1;
     int prune_dominated_edges = 1;
