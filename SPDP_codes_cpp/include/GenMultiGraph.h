@@ -18,11 +18,11 @@ using NodeId = int;
 struct StateToken {
     char kind = 'N';
     int container_type = -1;
-    int treatment_id = -1;
+    int landfill_location = -1;
 
     bool operator==(const StateToken& other) const {
         return kind == other.kind && container_type == other.container_type &&
-               treatment_id == other.treatment_id;
+               landfill_location == other.landfill_location;
     }
 
     bool operator<(const StateToken& other) const {
@@ -32,7 +32,7 @@ struct StateToken {
         if (container_type != other.container_type) {
             return container_type < other.container_type;
         }
-        return treatment_id < other.treatment_id;
+        return landfill_location < other.landfill_location;
     }
 };
 
@@ -51,7 +51,7 @@ struct NodeSpec {
     int location = 0;
     std::optional<int> request_idx;
     std::optional<int> container_type;
-    std::optional<int> treatment_id;
+    std::optional<int> landfill_location;
 };
 
 struct EdgeData {

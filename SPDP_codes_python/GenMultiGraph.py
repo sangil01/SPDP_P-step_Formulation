@@ -27,15 +27,15 @@ class NodeSpec:
     location: int
     request_idx: Optional[int] = None
     container_type: Optional[int] = None
-    treatment_id: Optional[int] = None
+    landfill_location: Optional[int] = None
 
 
 def _make_e(container_type: int) -> StateToken:
     return ("E", container_type, -1)
 
 
-def _make_f(container_type: int, treatment_id: int) -> StateToken:
-    return ("F", container_type, treatment_id)
+def _make_f(container_type: int, landfill_location: int) -> StateToken:
+    return ("F", container_type, landfill_location)
 
 
 def _canonical_state(tokens: Iterable[StateToken]) -> State: ##state 순서를 일관되게 하여 같은 state지만 순서만 다른 state가 나오지 않게 함
@@ -66,7 +66,7 @@ def _build_node_specs(data: SPDPData) -> Dict[NodeId, NodeSpec]:
             location=req.from_id,
             request_idx=idx,
             container_type=req.container_type,
-            treatment_id=req.to_id,
+            landfill_location=req.to_id,
         )
         nodes[delivery_id] = NodeSpec(
             node_id=delivery_id,
@@ -74,7 +74,7 @@ def _build_node_specs(data: SPDPData) -> Dict[NodeId, NodeSpec]:
             location=req.from_id,
             request_idx=idx,
             container_type=req.container_type,
-            treatment_id=req.to_id,
+            landfill_location=req.to_id,
         )
     return nodes
 
@@ -113,7 +113,7 @@ def _apply_service(node: NodeSpec, state: State) -> Optional[State]:
     if node.kind == "pickup":
         for i, token in enumerate(tokens):
             if token[0] == "N":
-                tokens[i] = _make_f(node.container_type, node.treatment_id)  # type: ignore[arg-type]
+                tokens[i] = _make_f(node.container_type, node.landfill_location)  # type: ignore[arg-type]
                 return _canonical_state(tokens)
         return None
 
@@ -224,7 +224,7 @@ def build_multigraph(
             location=node.location,
             request_idx=node.request_idx,
             container_type=node.container_type,
-            treatment_id=node.treatment_id,
+            landfill_location=node.landfill_location,
         )
 
     feasible_after_states: Dict[NodeId, Set[State]] = {}

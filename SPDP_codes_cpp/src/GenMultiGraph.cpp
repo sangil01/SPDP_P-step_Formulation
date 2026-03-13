@@ -30,7 +30,7 @@ struct StateHash {
         for (const StateToken& token : state) {
             seed = hash_combine(seed, static_cast<std::size_t>(token.kind));
             seed = hash_combine(seed, std::hash<int>{}(token.container_type));
-            seed = hash_combine(seed, std::hash<int>{}(token.treatment_id));
+            seed = hash_combine(seed, std::hash<int>{}(token.landfill_location));
         }
         return seed;
     }
@@ -88,15 +88,15 @@ bool state_less(const State& lhs, const State& rhs) {
 
 std::string token_to_str(const StateToken& token) {
     return "('" + std::string(1, token.kind) + "', " + std::to_string(token.container_type) +
-           ", " + std::to_string(token.treatment_id) + ")";
+           ", " + std::to_string(token.landfill_location) + ")";
 }
 
 StateToken make_e(int container_type) {
     return StateToken{'E', container_type, -1};
 }
 
-StateToken make_f(int container_type, int treatment_id) {
-    return StateToken{'F', container_type, treatment_id};
+StateToken make_f(int container_type, int landfill_location) {
+    return StateToken{'F', container_type, landfill_location};
 }
 
 //container state가 순서에 상관 없으므로, 항상 일관된 순서로 상태를 가지게 함으로써, 비교, 해시, 중복 제거 등이 일관되게 함
@@ -483,7 +483,7 @@ std::optional<State> apply_service(const NodeSpec& node, const State& state) {
     if (node.kind == NodeSpec::Kind::Pickup) {
         for (StateToken& token : tokens) {
             if (token.kind == 'N') {
-                token = make_f(node.container_type.value(), node.treatment_id.value());
+                token = make_f(node.container_type.value(), node.landfill_location.value());
                 return canonical_state(tokens);
             }
         }
@@ -510,7 +510,7 @@ std::vector<std::vector<int>> candidate_sequences(const State& state) {
 
     for (const StateToken& token : state) {
         if (token.kind == 'F') {
-            full_locations.push_back(token.treatment_id);
+            full_locations.push_back(token.landfill_location);
         }
     }
 
@@ -549,7 +549,7 @@ std::pair<State, int> apply_emptying(const State& state, const std::vector<int>&
 
     for (int treatment_location : sequence_pi) {
         for (StateToken& token : tokens) {
-            if (token.kind == 'F' && token.treatment_id == treatment_location) {
+            if (token.kind == 'F' && token.landfill_location == treatment_location) {
                 token = make_e(token.container_type);
                 ++emptied_count;
             }
@@ -580,8 +580,8 @@ bool violates_single_request_state_rules(
 
     if (state[0].kind == 'F' && state[1].kind == 'F') {
         if (state[0].container_type == state[1].container_type &&
-            state[0].treatment_id == state[1].treatment_id) {
-            std::pair<int, int> pair_key{state[0].container_type, state[0].treatment_id};
+            state[0].landfill_location == state[1].landfill_location) {
+            std::pair<int, int> pair_key{state[0].container_type, state[0].landfill_location};
             if (singleton_full_pairs.find(pair_key) != singleton_full_pairs.end()) {
                 return true;
             }
