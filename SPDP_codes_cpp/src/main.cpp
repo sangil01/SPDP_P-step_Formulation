@@ -11,6 +11,7 @@
 #include <vector>
 #include <set>
 
+#include "gurobi_c++.h"
 #include "GenMultiGraph.h"
 #include "ReadData.h"
 
