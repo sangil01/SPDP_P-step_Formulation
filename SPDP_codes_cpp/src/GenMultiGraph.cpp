@@ -698,20 +698,56 @@ std::size_t MultiDiGraph::number_of_edges() const {
     return edges_.size();
 }
 
+NodeId MultiDiGraph::end_node_id() const {
+    NodeId end_node_id = 0;
+    for (const auto& entry : nodes_) {
+        end_node_id = std::max(end_node_id, entry.first);
+    }
+    return end_node_id;
+}
+
+bool MultiDiGraph::is_physical_service_node(NodeId node_id) const {
+    return node_id != 0 && node_id != end_node_id();
+}
+
+const NodeSpec& MultiDiGraph::node(NodeId node_id) const {
+    const auto found = nodes_.find(node_id);
+    if (found == nodes_.end()) {
+        throw std::runtime_error("Requested node does not exist in MultiDiGraph.");
+    }
+    return found->second;
+}
+
 const std::vector<EdgeRecord>& MultiDiGraph::edges() const {
     return edges_;
+}
+
+const std::vector<std::size_t>& MultiDiGraph::outgoing_edge_indices(NodeId u) const {
+    static const std::vector<std::size_t> kEmptyIndices;
+
+    const auto found = outgoing_edge_indices_.find(u);
+    if (found == outgoing_edge_indices_.end()) {
+        return kEmptyIndices;
+    }
+    return found->second;
+}
+
+const std::vector<std::size_t>& MultiDiGraph::ingoing_edge_indices(NodeId v) const {
+    static const std::vector<std::size_t> kEmptyIndices;
+
+    const auto found = ingoing_edge_indices_.find(v);
+    if (found == ingoing_edge_indices_.end()) {
+        return kEmptyIndices;
+    }
+    return found->second;
 }
 
 std::vector<EdgeRecord> MultiDiGraph::edges_from(NodeId u) const {
     std::vector<EdgeRecord> result;
 
-    const auto found = outgoing_edge_indices_.find(u);
-    if (found == outgoing_edge_indices_.end()) {
-        return result;
-    }
-
-    result.reserve(found->second.size());
-    for (std::size_t index : found->second) {
+    const std::vector<std::size_t>& indices = outgoing_edge_indices(u);
+    result.reserve(indices.size());
+    for (std::size_t index : indices) {
         result.push_back(edges_[index]);
     }
 
@@ -721,13 +757,9 @@ std::vector<EdgeRecord> MultiDiGraph::edges_from(NodeId u) const {
 std::vector<EdgeRecord> MultiDiGraph::edges_to(NodeId v) const {
     std::vector<EdgeRecord> result;
 
-    const auto found = ingoing_edge_indices_.find(v);
-    if (found == ingoing_edge_indices_.end()) {
-        return result;
-    }
-
-    result.reserve(found->second.size());
-    for (std::size_t index : found->second) {
+    const std::vector<std::size_t>& indices = ingoing_edge_indices(v);
+    result.reserve(indices.size());
+    for (std::size_t index : indices) {
         result.push_back(edges_[index]);
     }
 
@@ -737,12 +769,7 @@ std::vector<EdgeRecord> MultiDiGraph::edges_to(NodeId v) const {
 std::vector<EdgeRecord> MultiDiGraph::edges_between(NodeId u, NodeId v) const {
     std::vector<EdgeRecord> result;
 
-    const auto found = outgoing_edge_indices_.find(u);
-    if (found == outgoing_edge_indices_.end()) {
-        return result;
-    }
-
-    for (std::size_t index : found->second) {
+    for (std::size_t index : outgoing_edge_indices(u)) {
         const EdgeRecord& record = edges_[index];
         if (record.v == v) {
             result.push_back(record);

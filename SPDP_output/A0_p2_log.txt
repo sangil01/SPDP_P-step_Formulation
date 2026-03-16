@@ -1,0 +1,47 @@
+[GenMultiGraph] State count: 15
+[GenMultiGraph] Initial edge count: 67
+[GenMultiGraph] Infeasible-pruned edge count: 32
+[GenMultiGraph] Dominated-pruned edge count: 4
+[GenMultiGraph] Final edge count: 31
+[main] Loaded instance: A0.dat
+[main] p: 2
+[main] Solver time limit: 3600.00
+[main] Locations: 4
+[main] Fixed vehicle cost: 500.00
+[main] Time pick-up: 7.00
+[main] Time empty: 8.00
+[main] Time delivery: 7.00
+[main] Time limit: 480.00
+[main] Requests: 2
+[main] Time matrix size: 5x5
+[main] Distance matrix size: 5x5
+[main] Node count: 6
+[main] Edge count: 31
+[main] Full edge list for selected node pairs:
+[main] Raw feasible p-step count: 55
+[main] Compact p-step count: 95
+[main] Sigma_i state counts:
+  node 1 -> 3
+  node 2 -> 3
+  node 3 -> 3
+  node 4 -> 3
+[main] Compact p-step set build time (sec): 0.00
+[p-step] Dumping 10 compact p-steps
+  id=0 raw_id=0 edges=[0] nodes=[0, 5] states=[('N', -1, -1)|('N', -1, -1) -> ('N', -1, -1)|('N', -1, -1)] tau=0.00 time=0.00 cost=0.00
+  id=1 raw_id=1 edges=[1] nodes=[0, 1] states=[('N', -1, -1)|('N', -1, -1) -> ('F', 1, 2)|('N', -1, -1)] tau=0.00 time=7.00 cost=500.00
+  id=2 raw_id=2 edges=[1, 6] nodes=[0, 1, 3] states=[('N', -1, -1)|('N', -1, -1) -> ('F', 1, 2)|('N', -1, -1) -> ('N', -1, -1)|('N', -1, -1)] tau=0.00 time=30.00 cost=506.00
+  id=3 raw_id=3 edges=[1, 7] nodes=[0, 1, 2] states=[('N', -1, -1)|('N', -1, -1) -> ('F', 1, 2)|('N', -1, -1) -> ('F', 1, 2)|('F', 2, 0)] tau=0.00 time=20.00 cost=505.00
+  id=4 raw_id=4 edges=[1, 8] nodes=[0, 1, 2] states=[('N', -1, -1)|('N', -1, -1) -> ('F', 1, 2)|('N', -1, -1) -> ('E', 1, -1)|('F', 2, 0)] tau=0.00 time=29.00 cost=505.00
+  id=5 raw_id=5 edges=[2] nodes=[0, 2] states=[('N', -1, -1)|('N', -1, -1) -> ('F', 2, 0)|('N', -1, -1)] tau=0.00 time=7.00 cost=500.00
+  id=6 raw_id=6 edges=[2, 17] nodes=[0, 2, 1] states=[('N', -1, -1)|('N', -1, -1) -> ('F', 2, 0)|('N', -1, -1) -> ('F', 1, 2)|('F', 2, 0)] tau=0.00 time=20.00 cost=505.00
+  id=7 raw_id=7 edges=[2, 18] nodes=[0, 2, 1] states=[('N', -1, -1)|('N', -1, -1) -> ('F', 2, 0)|('N', -1, -1) -> ('E', 2, -1)|('F', 1, 2)] tau=0.00 time=34.00 cost=510.00
+  id=8 raw_id=8 edges=[2, 26] nodes=[0, 2, 4] states=[('N', -1, -1)|('N', -1, -1) -> ('F', 2, 0)|('N', -1, -1) -> ('N', -1, -1)|('N', -1, -1)] tau=0.00 time=36.00 cost=512.00
+  id=9 raw_id=9 edges=[3, 15] nodes=[1, 3, 4] states=[('E', 2, -1)|('F', 1, 2) -> ('E', 2, -1)|('N', -1, -1) -> ('N', -1, -1)|('N', -1, -1)] tau=0.00 time=36.00 cost=11.00
+[main] Compact master model built successfully.
+[main] Gurobi status: 2
+[main] Objective value: 520.00
+[main] Lower bound: 520.00
+[main] Gap (%): 0.00
+[main] Solver runtime (sec): 0.01
+[main] Positive x_r count: 4
+[main] Active theta_e count: 5
