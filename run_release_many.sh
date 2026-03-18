@@ -13,17 +13,23 @@ fi
 # INPUT PARAMETERS
 # ============================================
 P=2
-SOLVER_TIME_LIMIT=3600
+SOLVER_TIME_LIMIT=1800
 DUMP_PSTEPS=10
 VALIDATE_PSTEPS=0
 SOLVE_MODEL=1
 PRUNE_INFEASIBLE_EDGES=1
 PRUNE_DOMINATED_EDGES=1
 DATA_LIST=(
-    "A0.dat"
-    "A1.dat"
-    "A2.dat"
-    "A3.dat"
+    #"A0.dat"
+    #"A1.dat"
+    #"A2.dat"
+    #"A3.dat"
+    "RecDep_day_B1.dat"
+    "RecDep_day_B2.dat"
+    "RecDep_day_C1.dat"
+    "RecDep_day_C2.dat"
+    "RecDep_day_C3.dat"
+    "RecDep_day_C4.dat"
     "RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
@@ -35,12 +41,6 @@ DATA_LIST=(
     "RecDep_day_A9.dat"
     "RecDep_day_A10.dat"
     "RecDep_day_A11.dat"
-    "RecDep_day_B1.dat"
-    "RecDep_day_B2.dat"
-    "RecDep_day_C1.dat"
-    "RecDep_day_C2.dat"
-    "RecDep_day_C3.dat"
-    "RecDep_day_C4.dat"
 )
 # Put one data file name per line in DATA_LIST.
 # ============================================

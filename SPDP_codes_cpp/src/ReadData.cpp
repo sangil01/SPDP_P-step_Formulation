@@ -62,6 +62,19 @@ std::string to_upper(std::string value) {
     return value;
 }
 
+std::string canonicalize_key(const std::string& value) {
+    std::string normalized;
+    normalized.reserve(value.size());
+
+    for (unsigned char ch : value) {
+        if (std::isalnum(ch) != 0) {
+            normalized.push_back(static_cast<char>(std::tolower(ch)));
+        }
+    }
+
+    return normalized;
+}
+
 double parse_number(const std::string& token) {
     try {
         return std::stod(token);
@@ -213,12 +226,12 @@ SPDPData read_spdp_data(const std::string& filename) {
     }
 
     std::unordered_map<std::string, std::optional<double>> params = {
-        {"FixedVehicleCost", std::nullopt},
-        {"TimePickUp", std::nullopt},
-        {"TimeEmpty", std::nullopt},
-        {"TimeDelivery", std::nullopt},
-        {"TimeLimit", std::nullopt},
-        {"LOCATIONS", std::nullopt},
+        {"fixedvehiclecost", std::nullopt},
+        {"timepickup", std::nullopt},
+        {"timeempty", std::nullopt},
+        {"timedelivery", std::nullopt},
+        {"timelimit", std::nullopt},
+        {"locations", std::nullopt},
     };
 
     std::vector<Request> requests;
@@ -244,6 +257,7 @@ SPDPData read_spdp_data(const std::string& filename) {
 
         const std::string key = tokens[0];
         const std::string key_lower = to_lower(key);
+        const std::string canonical_key = canonicalize_key(key);
 
         if (key_lower == "requests") {
             section = ParseSection::Requests;
@@ -254,12 +268,12 @@ SPDPData read_spdp_data(const std::string& filename) {
             continue;
         }
 
-        if (key_lower == "distance") {
-            if (!params["LOCATIONS"].has_value()) {
+        if (canonical_key == "distance" || canonical_key == "distances") {
+            if (!params["locations"].has_value()) {
                 throw std::runtime_error("LOCATIONS must be parsed before Distance matrix.");
             }
 
-            const int locations = static_cast<int>(params["LOCATIONS"].value());
+            const int locations = static_cast<int>(params["locations"].value());
             auto parsed = parse_matrix(raw_lines, idx + 1, locations, "Distance");
             distance = std::move(parsed.first);
             idx = parsed.second;
@@ -267,12 +281,12 @@ SPDPData read_spdp_data(const std::string& filename) {
             continue;
         }
 
-        if (key_lower == "time") {
-            if (!params["LOCATIONS"].has_value()) {
+        if (canonical_key == "time" || canonical_key == "times") {
+            if (!params["locations"].has_value()) {
                 throw std::runtime_error("LOCATIONS must be parsed before Time matrix.");
             }
 
-            const int locations = static_cast<int>(params["LOCATIONS"].value());
+            const int locations = static_cast<int>(params["locations"].value());
             auto parsed = parse_matrix(raw_lines, idx + 1, locations, "Time");
             time = std::move(parsed.first);
             idx = parsed.second;
@@ -281,7 +295,7 @@ SPDPData read_spdp_data(const std::string& filename) {
         }
 
         if (section == ParseSection::Header) {
-            const auto found = params.find(key);
+            const auto found = params.find(canonical_key);
             if (found != params.end() && tokens.size() > 1) {
                 found->second = parse_number(tokens[1]);
             }
@@ -341,12 +355,12 @@ SPDPData read_spdp_data(const std::string& filename) {
     }
 
     SPDPData data;
-    data.fixed_vehicle_cost = params["FixedVehicleCost"].value();
-    data.time_pickup = params["TimePickUp"].value();
-    data.time_empty = params["TimeEmpty"].value();
-    data.time_delivery = params["TimeDelivery"].value();
-    data.time_limit = params["TimeLimit"].value();
-    data.locations = static_cast<int>(params["LOCATIONS"].value());
+    data.fixed_vehicle_cost = params["fixedvehiclecost"].value();
+    data.time_pickup = params["timepickup"].value();
+    data.time_empty = params["timeempty"].value();
+    data.time_delivery = params["timedelivery"].value();
+    data.time_limit = params["timelimit"].value();
+    data.locations = static_cast<int>(params["locations"].value());
     data.requests = std::move(requests);
     data.distance = augment_metric_with_virtual_zero(distance);
     data.time = augment_metric_with_virtual_zero(time);
