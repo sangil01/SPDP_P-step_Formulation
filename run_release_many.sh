@@ -2,7 +2,7 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXE="$SCRIPT_DIR/SPDP_codes_cpp/build-release/SPDP_P_step"
+EXE="$SCRIPT_DIR/SPDP_codes/build-release/SPDP_P_step"
 
 if [[ ! -x "$EXE" ]]; then
     echo "Release executable not found or not executable: $EXE"

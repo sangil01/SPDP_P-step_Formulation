@@ -37,7 +37,7 @@ add_executable(SPDP_P_step
     src/main.cpp
     src/ReadData.cpp
     src/GenMultiGraph.cpp
-    "src/p-step formulation.cpp"
+    src/PstepFormulation.cpp
     ${GUROBI_CPP_SOURCES}
 )
 

@@ -21,9 +21,9 @@ env/
 *.pdb
 *.ilk
 *.exp
-SPDP_codes_cpp/build-debug/
-SPDP_codes_cpp/build-release/
-SPDP_codes_cpp/build/
+SPDP_codes/build-debug/
+SPDP_codes/build-release/
+SPDP_codes/build/
 bin/
 
 # [IDE 및 도구]
