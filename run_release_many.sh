@@ -19,11 +19,17 @@ VALIDATE_PSTEPS=0
 SOLVE_MODEL=1
 PRUNE_INFEASIBLE_EDGES=1
 PRUNE_DOMINATED_EDGES=1
+PRUNE_SYMMETRY_40=1
+PRUNE_SYMMETRY_41=1
+PRUNE_SYMMETRY_43=1
+ADD_VI_35=0
+ADD_VI_36=0
+ADD_VI_44=0
 DATA_LIST=(
-    #"A0.dat"
-    #"A1.dat"
-    #"A2.dat"
-    #"A3.dat"
+    "A0.dat"
+    "A1.dat"
+    "A2.dat"
+    "A3.dat"
     "RecDep_day_B1.dat"
     "RecDep_day_B2.dat"
     "RecDep_day_C1.dat"
@@ -58,7 +64,13 @@ for data_name in "${DATA_LIST[@]}"; do
         --validate-psteps "$VALIDATE_PSTEPS" \
         --solve "$SOLVE_MODEL" \
         --prune-infeasible-edges "$PRUNE_INFEASIBLE_EDGES" \
-        --prune-dominated-edges "$PRUNE_DOMINATED_EDGES"
+        --prune-dominated-edges "$PRUNE_DOMINATED_EDGES" \
+        --prune-symmetry-40 "$PRUNE_SYMMETRY_40" \
+        --prune-symmetry-41 "$PRUNE_SYMMETRY_41" \
+        --prune-symmetry-43 "$PRUNE_SYMMETRY_43" \
+        --add-vi-35 "$ADD_VI_35" \
+        --add-vi-36 "$ADD_VI_36" \
+        --add-vi-44 "$ADD_VI_44"
 
     exit_code=$?
     if [[ $exit_code -ne 0 ]]; then

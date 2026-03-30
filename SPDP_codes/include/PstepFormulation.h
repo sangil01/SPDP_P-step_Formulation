@@ -93,6 +93,7 @@ struct CompactPStepOptions {
     double time_limit = -1.0;
     std::size_t dump_limit = 10;
     bool validate = true;
+    bool prune_symmetry_43 = true;
 };
 
 // Gurobi master problem 객체와 변수 핸들 모음.
@@ -101,6 +102,14 @@ struct CompactMasterProblem {
     std::unique_ptr<GRBModel> model;
     std::vector<GRBVar> x_vars;
     std::vector<GRBVar> theta_vars;
+};
+
+// [수정] master problem 생성 시 사용할 valid inequality 옵션.
+struct CompactMasterBuildOptions {
+    std::string log_path;
+    bool add_vi_35 = true;
+    bool add_vi_36 = true;
+    bool add_vi_44 = true;
 };
 
 // 사람이 읽기 쉬운 해 복원 결과에서의 한 route action.
@@ -133,7 +142,8 @@ struct RecoveredSolution {
 std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
     const MultiDiGraph& graph,
     int p,
-    double time_limit
+    double time_limit,
+    bool prune_symmetry_43 = true
 );
 
 // raw path를 tau 값과 종료 노드 조건을 반영한 compact p-step으로 변환한다.
@@ -158,9 +168,10 @@ CompactPStepArtifacts build_compact_pstep_artifacts(
 
 // graph와 p-step 결과를 바탕으로 Gurobi compact master problem을 만든다.
 CompactMasterProblem build_compact_master_problem(
+    const SPDPData& data,
     const MultiDiGraph& graph,
     const CompactPStepArtifacts& artifacts,
-    const std::string& log_path = ""
+    const CompactMasterBuildOptions& options = {}
 );
 
 // raw p-step 나열 결과가 graph와 입력 제한을 만족하는지 검증한다.

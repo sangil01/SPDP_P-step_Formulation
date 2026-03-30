@@ -123,14 +123,15 @@ void log_graph_generation_summary(
     std::size_t initial_edge_count,
     std::size_t removed_infeasible_edge_count,
     std::size_t removed_dominated_edge_count,
+    std::size_t removed_symmetry_40_edge_count,
+    std::size_t removed_symmetry_41_edge_count,
     std::size_t kept_edge_count,
-    bool prune_infeasible_edges,
-    bool prune_dominated_edges
+    const GraphBuildOptions& options
 ) {
     log_line(out, "[GenMultiGraph] State count: " + std::to_string(all_states.size()));
     log_line(out, "[GenMultiGraph] Initial edge count: " + std::to_string(initial_edge_count));
 
-    if (prune_infeasible_edges) {
+    if (options.prune_infeasible_edges) {
         log_line(
             out,
             "[GenMultiGraph] Infeasible-pruned edge count: " +
@@ -140,7 +141,7 @@ void log_graph_generation_summary(
         log_line(out, "[GenMultiGraph] Infeasible pruning disabled");
     }
 
-    if (prune_dominated_edges) {
+    if (options.prune_dominated_edges) {
         log_line(
             out,
             "[GenMultiGraph] Dominated-pruned edge count: " +
@@ -148,6 +149,28 @@ void log_graph_generation_summary(
         );
     } else {
         log_line(out, "[GenMultiGraph] Dominated pruning disabled");
+    }
+
+    // [수정] 논문의 symmetry breaking 제약 (40), (41)에 대응하는 edge pruning 통계를 로그에 남긴다.
+    if (options.prune_symmetry_40) {
+        log_line(
+            out,
+            "[GenMultiGraph] Symmetry-40-pruned edge count: " +
+                std::to_string(removed_symmetry_40_edge_count)
+        );
+    } else {
+        log_line(out, "[GenMultiGraph] Symmetry-40 pruning disabled");
+    }
+
+    // [수정] 같은 방식으로 논문의 symmetry breaking 제약 (41) pruning 통계를 기록한다.
+    if (options.prune_symmetry_41) {
+        log_line(
+            out,
+            "[GenMultiGraph] Symmetry-41-pruned edge count: " +
+                std::to_string(removed_symmetry_41_edge_count)
+        );
+    } else {
+        log_line(out, "[GenMultiGraph] Symmetry-41 pruning disabled");
     }
 
     log_line(out, "[GenMultiGraph] Final edge count: " + std::to_string(kept_edge_count));
@@ -305,6 +328,79 @@ bool violates_singleton_delivery_to_own_pickup_rule(
     return singleton_types.find(u.container_type.value()) != singleton_types.end();
 }
 
+// [수정] 논문 식 (40a)의 compressed-edge 대응: 같은 location의 연속 pickup은 index 오름차순만 허용한다.
+bool violates_symmetry_40a_rule(
+    const NodeSpec& u,
+    const NodeSpec& v,
+    const std::vector<int>& sequence_pi
+) {
+    return sequence_pi.empty() && u.kind == NodeSpec::Kind::Pickup &&
+           v.kind == NodeSpec::Kind::Pickup && u.location == v.location &&
+           u.request_idx.has_value() && v.request_idx.has_value() &&
+           u.request_idx.value() > v.request_idx.value();
+}
+
+// [수정] 논문 식 (40c)의 compressed-edge 대응: 같은 location의 연속 delivery도 index 오름차순만 허용한다.
+bool violates_symmetry_40c_rule(
+    const NodeSpec& u,
+    const NodeSpec& v,
+    const std::vector<int>& sequence_pi
+) {
+    return sequence_pi.empty() && u.kind == NodeSpec::Kind::Delivery &&
+           v.kind == NodeSpec::Kind::Delivery && u.location == v.location &&
+           u.request_idx.has_value() && v.request_idx.has_value() &&
+           u.request_idx.value() > v.request_idx.value();
+}
+
+// [수정] 현재 compressed 모델에서 식 (40)에 해당하는 local 대칭성 제거 여부를 모은다.
+bool violates_symmetry_40_rules(
+    const NodeSpec& u,
+    const NodeSpec& v,
+    const std::vector<int>& sequence_pi
+) {
+    return violates_symmetry_40a_rule(u, v, sequence_pi) ||
+           violates_symmetry_40c_rule(u, v, sequence_pi);
+}
+
+// [수정] 논문 식 (41a)의 compressed-edge 대응: 같은 location의 연속 pickup -> delivery 순서를 제거한다.
+bool violates_symmetry_41a_rule(
+    const NodeSpec& u,
+    const NodeSpec& v,
+    const std::vector<int>& sequence_pi
+) {
+    return sequence_pi.empty() && u.kind == NodeSpec::Kind::Pickup &&
+           v.kind == NodeSpec::Kind::Delivery && u.location == v.location;
+}
+
+// [수정] 논문 식 (41b)의 compressed-edge 대응: 마지막 treatment와 도착 pickup이 같은 location이면 제거한다.
+bool violates_symmetry_41b_rule(
+    const NodeSpec& v,
+    const std::vector<int>& sequence_pi
+) {
+    return !sequence_pi.empty() && v.kind == NodeSpec::Kind::Pickup &&
+           sequence_pi.back() == v.location;
+}
+
+// [수정] 논문 식 (41c)의 compressed-edge 대응: 출발 delivery 직후 첫 treatment가 같은 location이면 제거한다.
+bool violates_symmetry_41c_rule(
+    const NodeSpec& u,
+    const std::vector<int>& sequence_pi
+) {
+    return !sequence_pi.empty() && u.kind == NodeSpec::Kind::Delivery &&
+           sequence_pi.front() == u.location;
+}
+
+// [수정] 현재 compressed 모델에서 식 (41)에 해당하는 local 대칭성 제거 여부를 모은다.
+bool violates_symmetry_41_rules(
+    const NodeSpec& u,
+    const NodeSpec& v,
+    const std::vector<int>& sequence_pi
+) {
+    return violates_symmetry_41a_rule(u, v, sequence_pi) ||
+           violates_symmetry_41b_rule(v, sequence_pi) ||
+           violates_symmetry_41c_rule(u, sequence_pi);
+}
+
 bool try_add_edge_candidate(
     const SPDPData& data,
     const NodeSpec& u,
@@ -316,12 +412,13 @@ bool try_add_edge_candidate(
     int emptied_count,
     const std::unordered_map<State, bool, StateHash>& violates_cache,
     const std::unordered_set<int>& singleton_types,
-    bool prune_infeasible_edges,
-    bool prune_dominated_edges,
+    const GraphBuildOptions& options,
     std::vector<EdgeBucketEntry>& edge_bucket_entries,
     std::unordered_map<EdgeBucketKey, std::size_t, EdgeBucketKeyHash>& edge_bucket_indices,
     std::size_t& initial_edge_count,
     std::size_t& removed_infeasible_edge_count,
+    std::size_t& removed_symmetry_40_edge_count,
+    std::size_t& removed_symmetry_41_edge_count,
     std::size_t& removed_dominated_edge_count
 ) {
     if (!sigma_v.has_value()) {
@@ -345,8 +442,22 @@ bool try_add_edge_candidate(
     const bool violates_time_limit = total_time > data.time_limit;
     const bool violates_singleton_delivery_to_pickup =
         violates_singleton_delivery_to_own_pickup_rule(u, v, singleton_types);
+    const bool violates_symmetry_40 =
+        options.prune_symmetry_40 && violates_symmetry_40_rules(u, v, sequence_pi);
+    const bool violates_symmetry_41 =
+        options.prune_symmetry_41 && violates_symmetry_41_rules(u, v, sequence_pi);
 
-    if (prune_infeasible_edges &&
+    if (violates_symmetry_40) {
+        ++removed_symmetry_40_edge_count;
+        return false;
+    }
+
+    if (violates_symmetry_41) {
+        ++removed_symmetry_41_edge_count;
+        return false;
+    }
+
+    if (options.prune_infeasible_edges &&
         (violates_state_rules || violates_time_limit || violates_singleton_delivery_to_pickup)) {
         ++removed_infeasible_edge_count;
         return false;
@@ -371,7 +482,7 @@ bool try_add_edge_candidate(
 
     const std::size_t previous_size = candidates.size();
     const std::size_t dominated_removed_count =
-        insert_into_pareto_bucket(candidates, std::move(edge_data), prune_dominated_edges);
+        insert_into_pareto_bucket(candidates, std::move(edge_data), options.prune_dominated_edges);
 
     if (candidates.size() == previous_size) {
         removed_dominated_edge_count += dominated_removed_count;
@@ -791,8 +902,7 @@ std::string state_to_str(const State& state) {
 
 MultiDiGraph build_multigraph(
     const SPDPData& data,
-    bool prune_infeasible_edges,
-    bool prune_dominated_edges,
+    const GraphBuildOptions& options,
     std::ostream* log_stream
 ) {
     std::ostream& log_out = log_stream != nullptr ? *log_stream : std::cout;
@@ -873,6 +983,8 @@ MultiDiGraph build_multigraph(
     std::size_t initial_edge_count = 0;
     std::size_t removed_infeasible_edge_count = 0;
     std::size_t removed_dominated_edge_count = 0;
+    std::size_t removed_symmetry_40_edge_count = 0;
+    std::size_t removed_symmetry_41_edge_count = 0;
 
     edge_bucket_entries.reserve(4096);
     edge_bucket_indices.reserve(4096);
@@ -914,12 +1026,13 @@ MultiDiGraph build_multigraph(
                         emptied_count,
                         violates_cache,
                         singleton_types,
-                        prune_infeasible_edges,
-                        prune_dominated_edges,
+                        options,
                         edge_bucket_entries,
                         edge_bucket_indices,
                         initial_edge_count,
                         removed_infeasible_edge_count,
+                        removed_symmetry_40_edge_count,
+                        removed_symmetry_41_edge_count,
                         removed_dominated_edge_count
                     );
                 }
@@ -944,9 +1057,10 @@ MultiDiGraph build_multigraph(
         initial_edge_count,
         removed_infeasible_edge_count,
         removed_dominated_edge_count,
+        removed_symmetry_40_edge_count,
+        removed_symmetry_41_edge_count,
         kept_edge_count,
-        prune_infeasible_edges,
-        prune_dominated_edges
+        options
     );
 
     if (!is_weakly_connected(node_specs, graph.edges())) {

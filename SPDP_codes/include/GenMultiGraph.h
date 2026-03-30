@@ -133,11 +133,18 @@ private:
     std::unordered_map<NodeId, std::vector<std::size_t>> ingoing_edge_indices_; //v로 들어오는 edge들의 edges_ 내 index 목록
 };
 
+// [수정] multigraph 생성 시 사용할 pruning 옵션을 한곳에서 제어한다.
+struct GraphBuildOptions {
+    bool prune_infeasible_edges = true;
+    bool prune_dominated_edges = true;
+    bool prune_symmetry_40 = true;
+    bool prune_symmetry_41 = true;
+};
+
 // 필요하면 infeasible edge와 dominated edge를 제거하며 SPDP state-space MultiDiGraph를 생성한다.
 MultiDiGraph build_multigraph(
     const SPDPData& data,
-    bool prune_infeasible_edges = true,
-    bool prune_dominated_edges = true,
+    const GraphBuildOptions& options = {},
     std::ostream* log_stream = nullptr
 );
 

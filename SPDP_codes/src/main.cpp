@@ -27,13 +27,22 @@ struct CliOptions {
     int solve_model = 1;
     int prune_infeasible_edges = 1;
     int prune_dominated_edges = 1;
+    int prune_symmetry_40 = 1;
+    int prune_symmetry_41 = 1;
+    int prune_symmetry_43 = 1;
+    int add_vi_35 = 1;
+    int add_vi_36 = 1;
+    int add_vi_44 = 1;
 };
 
 void print_usage(const char* executable) {
     std::cerr << "Usage: " << executable
               << " [instance] [--p N] [--solver-time-limit T]"
               << " [--dump-psteps N] [--validate-psteps 0|1] [--solve 0|1]"
-              << " [--prune-infeasible-edges 0|1] [--prune-dominated-edges 0|1]\n";
+              << " [--prune-infeasible-edges 0|1] [--prune-dominated-edges 0|1]"
+              << " [--prune-symmetry-40 0|1] [--prune-symmetry-41 0|1]"
+              << " [--prune-symmetry-43 0|1] [--add-vi-35 0|1] [--add-vi-36 0|1]"
+              << " [--add-vi-44 0|1]\n";
 }
 
 int parse_int(const std::string& value, const std::string& field_name) {
@@ -142,6 +151,72 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--prune-symmetry-40") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--prune-symmetry-40 requires a value.");
+            }
+            options.prune_symmetry_40 = parse_int(argv[++idx], "--prune-symmetry-40");
+            if (options.prune_symmetry_40 != 0 && options.prune_symmetry_40 != 1) {
+                throw std::runtime_error("--prune-symmetry-40 must be 0 or 1.");
+            }
+            continue;
+        }
+
+        if (arg == "--prune-symmetry-41") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--prune-symmetry-41 requires a value.");
+            }
+            options.prune_symmetry_41 = parse_int(argv[++idx], "--prune-symmetry-41");
+            if (options.prune_symmetry_41 != 0 && options.prune_symmetry_41 != 1) {
+                throw std::runtime_error("--prune-symmetry-41 must be 0 or 1.");
+            }
+            continue;
+        }
+
+        if (arg == "--prune-symmetry-43") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--prune-symmetry-43 requires a value.");
+            }
+            options.prune_symmetry_43 = parse_int(argv[++idx], "--prune-symmetry-43");
+            if (options.prune_symmetry_43 != 0 && options.prune_symmetry_43 != 1) {
+                throw std::runtime_error("--prune-symmetry-43 must be 0 or 1.");
+            }
+            continue;
+        }
+
+        if (arg == "--add-vi-35") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--add-vi-35 requires a value.");
+            }
+            options.add_vi_35 = parse_int(argv[++idx], "--add-vi-35");
+            if (options.add_vi_35 != 0 && options.add_vi_35 != 1) {
+                throw std::runtime_error("--add-vi-35 must be 0 or 1.");
+            }
+            continue;
+        }
+
+        if (arg == "--add-vi-36") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--add-vi-36 requires a value.");
+            }
+            options.add_vi_36 = parse_int(argv[++idx], "--add-vi-36");
+            if (options.add_vi_36 != 0 && options.add_vi_36 != 1) {
+                throw std::runtime_error("--add-vi-36 must be 0 or 1.");
+            }
+            continue;
+        }
+
+        if (arg == "--add-vi-44") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--add-vi-44 requires a value.");
+            }
+            options.add_vi_44 = parse_int(argv[++idx], "--add-vi-44");
+            if (options.add_vi_44 != 0 && options.add_vi_44 != 1) {
+                throw std::runtime_error("--add-vi-44 must be 0 or 1.");
+            }
+            continue;
+        }
+
         if (!arg.empty() && arg[0] == '-') {
             throw std::runtime_error("Unknown option: " + arg);
         }
@@ -231,6 +306,14 @@ void print_instance_summary(
         << (data.distance.empty() ? 0 : data.distance.front().size()) << '\n';
     out << "[main] Node count: " << graph.number_of_nodes() << '\n';
     out << "[main] Edge count: " << graph.number_of_edges() << '\n';
+    out << "[main] prune_infeasible_edges: " << args.prune_infeasible_edges << '\n';
+    out << "[main] prune_dominated_edges: " << args.prune_dominated_edges << '\n';
+    out << "[main] prune_symmetry_40: " << args.prune_symmetry_40 << '\n';
+    out << "[main] prune_symmetry_41: " << args.prune_symmetry_41 << '\n';
+    out << "[main] prune_symmetry_43: " << args.prune_symmetry_43 << '\n';
+    out << "[main] add_vi_35: " << args.add_vi_35 << '\n';
+    out << "[main] add_vi_36: " << args.add_vi_36 << '\n';
+    out << "[main] add_vi_44: " << args.add_vi_44 << '\n';
 }
 
 void print_selected_edge_info(
@@ -331,6 +414,8 @@ int main(int argc, char** argv) {
         const std::filesystem::path log_output_path = build_log_output_path(args.instance, args.p);
         const std::filesystem::path solution_output_path =
             build_solution_output_path(args.instance, args.p);
+        const std::filesystem::path gurobi_log_path =
+            build_gurobi_log_path(args.instance, args.p);
         std::filesystem::create_directories(log_output_path.parent_path());
 
         std::ofstream output_file(log_output_path);
@@ -345,10 +430,15 @@ int main(int argc, char** argv) {
             );
         }
 
-        const spdp::MultiDiGraph graph = spdp::build_multigraph(
-            data,
+        const spdp::GraphBuildOptions graph_build_options{
             args.prune_infeasible_edges == 1,
             args.prune_dominated_edges == 1,
+            args.prune_symmetry_40 == 1,
+            args.prune_symmetry_41 == 1,
+        };
+        const spdp::MultiDiGraph graph = spdp::build_multigraph(
+            data,
+            graph_build_options,
             &output_file
         );
 
@@ -360,6 +450,7 @@ int main(int argc, char** argv) {
             data.time_limit,
             static_cast<std::size_t>(std::max(args.dump_psteps, 0)),
             args.validate_psteps == 1,
+            args.prune_symmetry_43 == 1,
         };
         const auto compact_pstep_build_start = std::chrono::steady_clock::now();
         const spdp::CompactPStepArtifacts artifacts =
@@ -374,10 +465,23 @@ int main(int argc, char** argv) {
                     << format_double(compact_pstep_build_seconds) << '\n';
         spdp::dump_compact_psteps(output_file, artifacts.compact_psteps, options.dump_limit);
 
+        std::ofstream gurobi_log_file(gurobi_log_path, std::ios::trunc);
+        if (!gurobi_log_file) {
+            throw std::runtime_error("Failed to initialize Gurobi log file: " + gurobi_log_path.string());
+        }
+        gurobi_log_file.close();
+
+        const spdp::CompactMasterBuildOptions master_build_options{
+            gurobi_log_path.string(),
+            args.add_vi_35 == 1,
+            args.add_vi_36 == 1,
+            args.add_vi_44 == 1,
+        };
         spdp::CompactMasterProblem problem = spdp::build_compact_master_problem(
+            data,
             graph,
             artifacts,
-            build_gurobi_log_path(args.instance, args.p).string()
+            master_build_options
         );
         problem.model->set(GRB_DoubleParam_TimeLimit, args.solver_time_limit);
 

@@ -7,6 +7,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -73,6 +74,95 @@ void require_condition(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+// [수정] 논문 식 (44)의 flexible-return 하한 k_min을 계산한다.
+int flexible_route_lower_bound_kmin(const SPDPData& data) {
+    require_condition(data.time_limit > 0.0, "Time limit must be positive for VI-44.");
+
+    double pickup_to_treatment_sum = 0.0;
+    double treatment_to_compatible_pickup_sum = 0.0;
+    double total_service_time = 0.0;
+
+    std::map<int, std::vector<int>> pickup_locations_by_container_type;
+    for (const Request& request : data.requests) {
+        pickup_locations_by_container_type[request.container_type].push_back(request.from_id);
+    }
+
+    for (auto& entry : pickup_locations_by_container_type) {
+        std::vector<int>& pickup_locations = entry.second;
+        std::sort(pickup_locations.begin(), pickup_locations.end());
+        pickup_locations.erase(
+            std::unique(pickup_locations.begin(), pickup_locations.end()),
+            pickup_locations.end()
+        );
+    }
+
+    for (const Request& request : data.requests) {
+        pickup_to_treatment_sum += data.time[static_cast<std::size_t>(request.from_id)]
+                                            [static_cast<std::size_t>(request.to_id)];
+
+        const auto found = pickup_locations_by_container_type.find(request.container_type);
+        require_condition(
+            found != pickup_locations_by_container_type.end() && !found->second.empty(),
+            "Each request type must have at least one compatible pickup location for VI-44."
+        );
+
+        double best_compatible_return_time = std::numeric_limits<double>::infinity();
+        for (int compatible_pickup_location : found->second) {
+            best_compatible_return_time = std::min(
+                best_compatible_return_time,
+                data.time[static_cast<std::size_t>(request.to_id)]
+                         [static_cast<std::size_t>(compatible_pickup_location)]
+            );
+        }
+        treatment_to_compatible_pickup_sum += best_compatible_return_time;
+
+        total_service_time += data.time_pickup + data.time_empty + data.time_delivery;
+    }
+
+    const double route_time_lower_bound =
+        0.5 * (pickup_to_treatment_sum + treatment_to_compatible_pickup_sum) + total_service_time;
+    return static_cast<int>(std::ceil(route_time_lower_bound / data.time_limit));
+}
+
+// [수정] 논문 식 (43)의 request equivalence class를 표현하는 key.
+struct RequestEquivalenceClassKey {
+    int from_location = 0;
+    int treatment_location = 0;
+    int container_type = 0;
+
+    bool operator<(const RequestEquivalenceClassKey& other) const {
+        if (from_location != other.from_location) {
+            return from_location < other.from_location;
+        }
+        if (treatment_location != other.treatment_location) {
+            return treatment_location < other.treatment_location;
+        }
+        return container_type < other.container_type;
+    }
+};
+
+// [수정] 특정 노드의 타입이 pick-up이면 해당 노드가 속한 request의 equivalence class key를 반환한다. (43) 식을 따른 것
+std::optional<RequestEquivalenceClassKey> request_equivalence_class_of_node(
+    const MultiDiGraph& graph,
+    NodeId node_id
+) {
+    if (!graph.is_physical_service_node(node_id)) {
+        return std::nullopt;
+    }
+
+    const NodeSpec& node = graph.node(node_id);
+    if (node.kind != NodeSpec::Kind::Pickup || !node.container_type.has_value() ||
+        !node.landfill_location.has_value()) {
+        return std::nullopt;
+    }
+
+    return RequestEquivalenceClassKey{
+        node.location,
+        node.landfill_location.value(),
+        node.container_type.value(),
+    };
 }
 
 // raw p-step 길이 조건을 만족하는지 확인한다.
@@ -739,7 +829,8 @@ bool NodeStateKey::operator==(const NodeStateKey& other) const {
 std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
     const MultiDiGraph& graph,
     int p,
-    double time_limit
+    double time_limit,
+    bool prune_symmetry_43
 ) {
     require_condition(p >= 1, "p must be at least 1.");
     require_condition(double_greater_or_equal(time_limit, 0.0), "Time limit T must be nonnegative.");
@@ -750,7 +841,79 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
     std::vector<RawPStepPath> raw_paths;
     std::vector<int> current_edge_ids;
     std::set<NodeId> visited_physical_nodes;
+    std::map<RequestEquivalenceClassKey, int> max_pickup_request_idx_by_class;
     int next_path_id = 0;
+
+    struct PickupClassRegistration {
+        bool active = false;
+        RequestEquivalenceClassKey key{};
+        bool had_previous = false;
+        int previous_max_request_idx = -1;
+    };
+
+    // [수정] 현재 DFS 경로에 node_id를 새로 붙이기 직전에 호출한다.
+    // 역할은 두 가지다.
+    // 1. node_id가 pickup이면, 그 pickup이 속한 request equivalence class를 찾는다.
+    // 2. 그 class에서 지금까지 경로에 등장한 최대 request_idx보다 더 큰 index인지 검사한다.
+    // 즉 같은 (from, to, type) class의 pickup들이 한 raw p-step 안에서 여러 번 나오면
+    // request_idx가 항상 증가하는 순서만 허용한다.
+    // 재귀가 끝난 뒤 unregister_pickup_node(registration)를 호출하면
+    // 이 함수가 했던 갱신을 정확히 원래 상태로 되돌릴 수 있다.
+    const auto try_register_pickup_node = [&](NodeId node_id, PickupClassRegistration& registration)
+        -> bool {
+        registration = PickupClassRegistration{};
+        if (!prune_symmetry_43) {
+            return true;
+        }
+
+        const std::optional<RequestEquivalenceClassKey> class_key =
+            request_equivalence_class_of_node(graph, node_id);
+        if (!class_key.has_value()) {
+            return true;
+        }
+
+        const NodeSpec& node = graph.node(node_id);
+        require_condition(
+            node.request_idx.has_value(),
+            "Pickup node must have request_idx for symmetry-43 pruning."
+        );
+
+        const int request_idx = node.request_idx.value();
+        registration.active = true;
+        registration.key = class_key.value();
+
+        const auto found = max_pickup_request_idx_by_class.find(registration.key);
+        if (found == max_pickup_request_idx_by_class.end()) {
+            max_pickup_request_idx_by_class.emplace(registration.key, request_idx);
+            return true;
+        }
+
+        registration.had_previous = true;
+        registration.previous_max_request_idx = found->second;
+        if (request_idx <= found->second) {
+            registration.active = false;
+            return false;
+        }
+
+        found->second = request_idx;
+        return true;
+    };
+
+    // [수정] try_register_pickup_node가 남긴 class 상태 변경을 DFS 백트래킹 시점에 되돌린다.
+    // 예를 들어 어떤 class의 최대 request_idx를 2 -> 5로 올렸다면 다시 2로 복원하고,
+    // 그 class가 이번 경로에서 처음 등장한 것이었다면 map에서 제거한다.
+    const auto unregister_pickup_node = [&](const PickupClassRegistration& registration) {
+        if (!registration.active) {
+            return;
+        }
+
+        if (registration.had_previous) {
+            max_pickup_request_idx_by_class[registration.key] =
+                registration.previous_max_request_idx;
+        } else {
+            max_pickup_request_idx_by_class.erase(registration.key);
+        }
+    };
 
     const auto dfs = [&](auto&& self,
                          NodeId start_node_id,
@@ -801,6 +964,20 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
             if (adds_physical_node) {
                 visited_physical_nodes.insert(next_node_id);
             }
+            
+            // [수정] 다음 node를 현재 raw p-step 경로에 붙이기 전에,
+            // 같은 (from_id, to_id, container_type) class의 pickup들이
+            // request_idx 오름차순으로만 등장하도록 검사/등록한다.
+            // 통과하면 그 class의 현재 최대 request_idx를 갱신하고,
+            // 백트래킹 복구에 필요한 이전 상태를 registration에 저장한다.
+            PickupClassRegistration registration;
+            if (!try_register_pickup_node(next_node_id, registration)) {
+                if (adds_physical_node) {
+                    visited_physical_nodes.erase(next_node_id);
+                }
+                current_edge_ids.pop_back();
+                continue;
+            }
 
             self(
                 self,
@@ -810,6 +987,7 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
                 next_time
             );
 
+            unregister_pickup_node(registration);
             if (adds_physical_node) {
                 visited_physical_nodes.erase(next_node_id);
             }
@@ -845,7 +1023,14 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
 
         current_edge_ids.clear();
         visited_physical_nodes.clear();
+        max_pickup_request_idx_by_class.clear();
         current_edge_ids.push_back(static_cast<int>(edge_idx));
+
+        PickupClassRegistration start_registration;
+        if (!try_register_pickup_node(edge.u, start_registration)) {
+            current_edge_ids.pop_back();
+            continue;
+        }
 
         if (graph.is_physical_service_node(edge.u)) {
             visited_physical_nodes.insert(edge.u);
@@ -853,9 +1038,20 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
         if (graph.is_physical_service_node(edge.v)) {
             const auto inserted = visited_physical_nodes.insert(edge.v);
             if (!inserted.second) {
+                unregister_pickup_node(start_registration);
                 current_edge_ids.pop_back();
                 continue;
             }
+        }
+
+        PickupClassRegistration end_registration;
+        if (!try_register_pickup_node(edge.v, end_registration)) {
+            if (graph.is_physical_service_node(edge.v)) {
+                visited_physical_nodes.erase(edge.v);
+            }
+            unregister_pickup_node(start_registration);
+            current_edge_ids.pop_back();
+            continue;
         }
 
         dfs(
@@ -865,6 +1061,9 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
             canonicalize_state(edge.data.end_state),
             edge.data.time
         );
+
+        unregister_pickup_node(end_registration);
+        unregister_pickup_node(start_registration);
     }
 
     return raw_paths;
@@ -990,7 +1189,8 @@ CompactPStepArtifacts build_compact_pstep_artifacts(
     artifacts.p = options.p;
     artifacts.time_limit = time_limit;
     // raw p-step 생성 -> compact p-step 생성 -> 계수 구성 순서로 결과를 만든다.
-    artifacts.raw_paths = enumerate_feasible_raw_psteps(graph, options.p, time_limit);
+    artifacts.raw_paths =
+        enumerate_feasible_raw_psteps(graph, options.p, time_limit, options.prune_symmetry_43);
 
     const NodeId end_node_id = graph.end_node_id();
     artifacts.compact_psteps = build_compact_psteps(artifacts.raw_paths, time_limit, end_node_id);
@@ -1012,14 +1212,15 @@ CompactPStepArtifacts build_compact_pstep_artifacts(
 }
 
 CompactMasterProblem build_compact_master_problem(
+    const SPDPData& data,
     const MultiDiGraph& graph,
     const CompactPStepArtifacts& artifacts,
-    const std::string& log_path
+    const CompactMasterBuildOptions& options
 ) {
     CompactMasterProblem problem;
     problem.env = std::make_unique<GRBEnv>(true);
-    if (!log_path.empty()) {
-        problem.env->set(GRB_StringParam_LogFile, log_path);
+    if (!options.log_path.empty()) {
+        problem.env->set(GRB_StringParam_LogFile, options.log_path);
     }
     problem.env->start();
     problem.model = std::make_unique<GRBModel>(*problem.env);
@@ -1114,6 +1315,167 @@ CompactMasterProblem build_compact_master_problem(
         problem.model->addConstr(
             edge_expr == problem.theta_vars[edge_id],
             "edge_" + std::to_string(edge_id)
+        );
+    }
+
+    const auto cover_rhs = [](int request_count) -> int {
+        return (request_count + 1) / 2;
+    };
+
+    const auto edge_has_treatment = [](const EdgeRecord& edge) -> bool {
+        return !edge.data.sequence_pi.empty();
+    };
+
+    // [수정] 논문 식 (35)의 compressed-edge 대응을 theta 변수로 추가한다.
+    if (options.add_vi_35) {
+        const int request_count = static_cast<int>(artifacts.coefficients.physical_nodes.size() / 2);
+        const double rhs = static_cast<double>(cover_rhs(request_count));
+        GRBLinExpr pickup_in_expr = 0.0;
+        GRBLinExpr pickup_out_expr = 0.0;
+        GRBLinExpr treatment_in_expr = 0.0;
+        GRBLinExpr treatment_out_expr = 0.0;
+        GRBLinExpr delivery_in_expr = 0.0;
+        GRBLinExpr delivery_out_expr = 0.0;
+
+        for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
+            const EdgeRecord& edge = graph.edges()[edge_id];
+            const NodeSpec& u = graph.node(edge.u);
+            const NodeSpec& v = graph.node(edge.v);
+            const bool has_treatment = edge_has_treatment(edge);
+
+            if (v.kind == NodeSpec::Kind::Pickup &&
+                (has_treatment || u.kind == NodeSpec::Kind::Start ||
+                 u.kind == NodeSpec::Kind::Delivery)) {
+                pickup_in_expr += problem.theta_vars[edge_id];
+            }
+            if (u.kind == NodeSpec::Kind::Pickup &&
+                (has_treatment || v.kind == NodeSpec::Kind::Delivery ||
+                 v.kind == NodeSpec::Kind::End)) {
+                pickup_out_expr += problem.theta_vars[edge_id];
+            }
+            if (has_treatment) {
+                treatment_in_expr += problem.theta_vars[edge_id];
+                treatment_out_expr += problem.theta_vars[edge_id];
+            }
+            if (v.kind == NodeSpec::Kind::Delivery &&
+                (has_treatment || u.kind == NodeSpec::Kind::Pickup ||
+                 u.kind == NodeSpec::Kind::Start)) {
+                delivery_in_expr += problem.theta_vars[edge_id];
+            }
+            if (u.kind == NodeSpec::Kind::Delivery &&
+                (has_treatment || v.kind == NodeSpec::Kind::Pickup ||
+                 v.kind == NodeSpec::Kind::End)) {
+                delivery_out_expr += problem.theta_vars[edge_id];
+            }
+        }
+
+        problem.model->addConstr(pickup_in_expr >= rhs, "vi35_pickup_in");
+        problem.model->addConstr(pickup_out_expr >= rhs, "vi35_pickup_out");
+        problem.model->addConstr(treatment_in_expr >= rhs, "vi35_treatment_in");
+        problem.model->addConstr(treatment_out_expr >= rhs, "vi35_treatment_out");
+        problem.model->addConstr(delivery_in_expr >= rhs, "vi35_delivery_in");
+        problem.model->addConstr(delivery_out_expr >= rhs, "vi35_delivery_out");
+    }
+
+    // [수정] 논문 식 (36)의 location-based cover inequality를 theta 변수로 추가한다.
+    if (options.add_vi_36) {
+        std::map<int, int> pickup_count_by_location;
+        std::map<int, int> treatment_count_by_location;
+        std::map<int, int> delivery_count_by_location;
+
+        for (NodeId node_id : artifacts.coefficients.physical_nodes) {
+            const NodeSpec& node = graph.node(node_id);
+            if (node.kind == NodeSpec::Kind::Pickup) {
+                ++pickup_count_by_location[node.location];
+                require_condition(
+                    node.landfill_location.has_value(),
+                    "Pickup node must have treatment location for VI-36."
+                );
+                ++treatment_count_by_location[node.landfill_location.value()];
+            } else if (node.kind == NodeSpec::Kind::Delivery) {
+                ++delivery_count_by_location[node.location];
+            }
+        }
+
+        std::map<int, GRBLinExpr> pickup_expr_by_location;
+        std::map<int, GRBLinExpr> treatment_expr_by_location;
+        std::map<int, GRBLinExpr> delivery_expr_by_location;
+
+        for (const auto& entry : pickup_count_by_location) {
+            pickup_expr_by_location.try_emplace(entry.first);
+        }
+        for (const auto& entry : treatment_count_by_location) {
+            treatment_expr_by_location.try_emplace(entry.first);
+        }
+        for (const auto& entry : delivery_count_by_location) {
+            delivery_expr_by_location.try_emplace(entry.first);
+        }
+
+        for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
+            const EdgeRecord& edge = graph.edges()[edge_id];
+            const NodeSpec& u = graph.node(edge.u);
+            const NodeSpec& v = graph.node(edge.v);
+            const bool has_treatment = edge_has_treatment(edge);
+
+            if (v.kind == NodeSpec::Kind::Pickup) {
+                const bool continues_same_pickup_visit =
+                    !has_treatment && u.kind == NodeSpec::Kind::Pickup &&
+                    u.location == v.location;
+                if (!continues_same_pickup_visit) {
+                    pickup_expr_by_location[v.location] += problem.theta_vars[edge_id];
+                }
+            }
+
+            for (int treatment_location : edge.data.sequence_pi) {
+                treatment_expr_by_location[treatment_location] += problem.theta_vars[edge_id];
+            }
+
+            if (v.kind == NodeSpec::Kind::Delivery) {
+                const bool continues_same_delivery_visit =
+                    !has_treatment && u.kind == NodeSpec::Kind::Delivery &&
+                    u.location == v.location;
+                if (!continues_same_delivery_visit) {
+                    delivery_expr_by_location[v.location] += problem.theta_vars[edge_id];
+                }
+            }
+        }
+
+        for (const auto& entry : pickup_count_by_location) {
+            problem.model->addConstr(
+                pickup_expr_by_location[entry.first] >=
+                    static_cast<double>(cover_rhs(entry.second)),
+                "vi36_pickup_loc_" + std::to_string(entry.first)
+            );
+        }
+        for (const auto& entry : treatment_count_by_location) {
+            problem.model->addConstr(
+                treatment_expr_by_location[entry.first] >=
+                    static_cast<double>(cover_rhs(entry.second)),
+                "vi36_treatment_loc_" + std::to_string(entry.first)
+            );
+        }
+        for (const auto& entry : delivery_count_by_location) {
+            problem.model->addConstr(
+                delivery_expr_by_location[entry.first] >=
+                    static_cast<double>(cover_rhs(entry.second)),
+                "vi36_delivery_loc_" + std::to_string(entry.first)
+            );
+        }
+    }
+
+    // [수정] 논문 식 (44): depot에서 출발하는 route 수의 하한을 theta 변수로 직접 강제한다.
+    if (options.add_vi_44) {
+        const int k_min = flexible_route_lower_bound_kmin(data);
+        GRBLinExpr route_count_expr = 0.0;
+        for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
+            const EdgeRecord& edge = graph.edges()[edge_id];
+            if (edge.u == 0) {
+                route_count_expr += problem.theta_vars[edge_id];
+            }
+        }
+        problem.model->addConstr(
+            route_count_expr >= static_cast<double>(k_min),
+            "vi44_route_lower_bound"
         );
     }
 
