@@ -104,12 +104,18 @@ struct CompactMasterProblem {
     std::vector<GRBVar> theta_vars;
 };
 
+enum class VIFormulation {
+    Theta,
+    X,
+};
+
 // [수정] master problem 생성 시 사용할 valid inequality 옵션.
 struct CompactMasterBuildOptions {
     std::string log_path;
     bool add_vi_35 = true;
     bool add_vi_36 = true;
     bool add_vi_44 = true;
+    VIFormulation vi_formulation = VIFormulation::Theta;
 };
 
 // 사람이 읽기 쉬운 해 복원 결과에서의 한 route action.

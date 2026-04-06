@@ -3,6 +3,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXE="$SCRIPT_DIR/SPDP_codes/build-release/SPDP_P_step"
+RUNNER_LOG="$SCRIPT_DIR/P2_valid_by_x_A11.log"
 
 if [[ ! -x "$EXE" ]]; then
     echo "Release executable not found or not executable: $EXE"
@@ -14,6 +15,8 @@ fi
 # ============================================
 P=2
 SOLVER_TIME_LIMIT=1800
+GUROBI_THREADS=0
+VI_FORMULATION=x # Options: theta, x
 DUMP_PSTEPS=10
 VALIDATE_PSTEPS=0
 SOLVE_MODEL=1
@@ -22,44 +25,74 @@ PRUNE_DOMINATED_EDGES=1
 PRUNE_SYMMETRY_40=1
 PRUNE_SYMMETRY_41=1
 PRUNE_SYMMETRY_43=1
-ADD_VI_35=0
-ADD_VI_36=0
-ADD_VI_44=0
+ADD_VI_35=1
+ADD_VI_36=1
+ADD_VI_44=1
 DATA_LIST=(
-    "A0.dat"
-    "A1.dat"
-    "A2.dat"
-    "A3.dat"
-    "RecDep_day_B1.dat"
-    "RecDep_day_B2.dat"
-    "RecDep_day_C1.dat"
-    "RecDep_day_C2.dat"
-    "RecDep_day_C3.dat"
-    "RecDep_day_C4.dat"
-    "RecDep_day_A1.dat"
-    "RecDep_day_A2.dat"
-    "RecDep_day_A3.dat"
-    "RecDep_day_A4.dat"
-    "RecDep_day_A5.dat"
-    "RecDep_day_A6.dat"
-    "RecDep_day_A7.dat"
-    "RecDep_day_A8.dat"
-    "RecDep_day_A9.dat"
-    "RecDep_day_A10.dat"
+    #"RecDep_day_B1.dat"
+    #"RecDep_day_B2.dat"
+    #"RecDep_day_C1.dat"
+    #"RecDep_day_C2.dat"
+    #"RecDep_day_C3.dat"
+    #"RecDep_day_C4.dat"
+    #"RecDep_day_A1.dat"
+    #"RecDep_day_A2.dat"
+    #"RecDep_day_A3.dat"
+    #"RecDep_day_A4.dat"
+    #"RecDep_day_A5.dat"
+    #"RecDep_day_A6.dat"
+    #"RecDep_day_A7.dat"
+    #"RecDep_day_A8.dat"
+    #"RecDep_day_A9.dat"
+    #"RecDep_day_A10.dat"
     "RecDep_day_A11.dat"
 )
 # Put one data file name per line in DATA_LIST.
 # ============================================
 
 FAILED=0
+TOTAL=${#DATA_LIST[@]}
+CURRENT=0
+
+describe_exit_code() {
+    local exit_code=$1
+    if (( exit_code >= 128 )); then
+        local signal=$((exit_code - 128))
+        if command -v kill >/dev/null 2>&1; then
+            local signal_name
+            signal_name="$(kill -l "$signal" 2>/dev/null || true)"
+            if [[ -n "$signal_name" ]]; then
+                printf 'signal %s (%s)' "$signal" "$signal_name"
+                return
+            fi
+        fi
+        printf 'signal %s' "$signal"
+        return
+    fi
+
+    printf 'exit code %s' "$exit_code"
+}
 
 for data_name in "${DATA_LIST[@]}"; do
-    echo "=================================================="
-    echo "Running data: $data_name"
+    CURRENT=$((CURRENT + 1))
 
-    "$EXE" "$data_name" \
+    echo "=================================================="
+    echo "Running data [$CURRENT/$TOTAL]: $data_name"
+    echo "Runner log: $RUNNER_LOG"
+    {
+        echo "=================================================="
+        echo "Started at: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Running data [$CURRENT/$TOTAL]: $data_name"
+        echo "p: $P"
+        echo "vi-formulation: $VI_FORMULATION"
+        echo "----------------------------------------"
+    } >> "$RUNNER_LOG"
+
+    if "$EXE" "$data_name" \
         --p "$P" \
         --solver-time-limit "$SOLVER_TIME_LIMIT" \
+        --gurobi-threads "$GUROBI_THREADS" \
+        --vi-formulation "$VI_FORMULATION" \
         --dump-psteps "$DUMP_PSTEPS" \
         --validate-psteps "$VALIDATE_PSTEPS" \
         --solve "$SOLVE_MODEL" \
@@ -70,14 +103,21 @@ for data_name in "${DATA_LIST[@]}"; do
         --prune-symmetry-43 "$PRUNE_SYMMETRY_43" \
         --add-vi-35 "$ADD_VI_35" \
         --add-vi-36 "$ADD_VI_36" \
-        --add-vi-44 "$ADD_VI_44"
-
-    exit_code=$?
-    if [[ $exit_code -ne 0 ]]; then
-        echo "Failed: $data_name"
-        FAILED=$((FAILED + 1))
-    else
+        --add-vi-44 "$ADD_VI_44" >> "$RUNNER_LOG" 2>&1; then
         echo "Completed: $data_name"
+        {
+            echo "Finished at: $(date '+%Y-%m-%d %H:%M:%S')"
+            echo "Result: success"
+        } >> "$RUNNER_LOG"
+    else
+        exit_code=$?
+        exit_summary="$(describe_exit_code "$exit_code")"
+        echo "Failed: $data_name ($exit_summary)"
+        {
+            echo "Finished at: $(date '+%Y-%m-%d %H:%M:%S')"
+            echo "Result: failure ($exit_summary)"
+        } >> "$RUNNER_LOG"
+        FAILED=$((FAILED + 1))
     fi
 done
 

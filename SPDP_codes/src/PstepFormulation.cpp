@@ -1257,6 +1257,19 @@ CompactMasterProblem build_compact_master_problem(
         );
     }
 
+    const bool use_x_for_vi = options.vi_formulation == VIFormulation::X;
+    const auto add_vi_edge_term = [&](GRBLinExpr& expr, std::size_t edge_id) {
+        // VI를 x_r 기준으로 쓰는 경우, theta_e를 직접 쓰지 않고
+        // linking 식 theta_e = sum_r b_{e,r} x_r 로 치환해 같은 의미의 항을 만든다.
+        if (use_x_for_vi) {
+            for (int pstep_id : artifacts.coefficients.edge_rows[edge_id]) {
+                expr += problem.x_vars[static_cast<std::size_t>(pstep_id)];
+            }
+            return;
+        }
+        expr += problem.theta_vars[edge_id];
+    };
+
     // 각 physical node는 정확히 한 번 들어오고 한 번 나가도록 방문 제약을 둔다.
     for (NodeId node_id : artifacts.coefficients.physical_nodes) {
         GRBLinExpr visit_expr = 0.0;
@@ -1346,26 +1359,26 @@ CompactMasterProblem build_compact_master_problem(
             if (v.kind == NodeSpec::Kind::Pickup &&
                 (has_treatment || u.kind == NodeSpec::Kind::Start ||
                  u.kind == NodeSpec::Kind::Delivery)) {
-                pickup_in_expr += problem.theta_vars[edge_id];
+                add_vi_edge_term(pickup_in_expr, edge_id);
             }
             if (u.kind == NodeSpec::Kind::Pickup &&
                 (has_treatment || v.kind == NodeSpec::Kind::Delivery ||
                  v.kind == NodeSpec::Kind::End)) {
-                pickup_out_expr += problem.theta_vars[edge_id];
+                add_vi_edge_term(pickup_out_expr, edge_id);
             }
             if (has_treatment) {
-                treatment_in_expr += problem.theta_vars[edge_id];
-                treatment_out_expr += problem.theta_vars[edge_id];
+                add_vi_edge_term(treatment_in_expr, edge_id);
+                add_vi_edge_term(treatment_out_expr, edge_id);
             }
             if (v.kind == NodeSpec::Kind::Delivery &&
                 (has_treatment || u.kind == NodeSpec::Kind::Pickup ||
                  u.kind == NodeSpec::Kind::Start)) {
-                delivery_in_expr += problem.theta_vars[edge_id];
+                add_vi_edge_term(delivery_in_expr, edge_id);
             }
             if (u.kind == NodeSpec::Kind::Delivery &&
                 (has_treatment || v.kind == NodeSpec::Kind::Pickup ||
                  v.kind == NodeSpec::Kind::End)) {
-                delivery_out_expr += problem.theta_vars[edge_id];
+                add_vi_edge_term(delivery_out_expr, edge_id);
             }
         }
 
@@ -1422,12 +1435,12 @@ CompactMasterProblem build_compact_master_problem(
                     !has_treatment && u.kind == NodeSpec::Kind::Pickup &&
                     u.location == v.location;
                 if (!continues_same_pickup_visit) {
-                    pickup_expr_by_location[v.location] += problem.theta_vars[edge_id];
+                    add_vi_edge_term(pickup_expr_by_location[v.location], edge_id);
                 }
             }
 
             for (int treatment_location : edge.data.sequence_pi) {
-                treatment_expr_by_location[treatment_location] += problem.theta_vars[edge_id];
+                add_vi_edge_term(treatment_expr_by_location[treatment_location], edge_id);
             }
 
             if (v.kind == NodeSpec::Kind::Delivery) {
@@ -1435,7 +1448,7 @@ CompactMasterProblem build_compact_master_problem(
                     !has_treatment && u.kind == NodeSpec::Kind::Delivery &&
                     u.location == v.location;
                 if (!continues_same_delivery_visit) {
-                    delivery_expr_by_location[v.location] += problem.theta_vars[edge_id];
+                    add_vi_edge_term(delivery_expr_by_location[v.location], edge_id);
                 }
             }
         }
@@ -1470,7 +1483,7 @@ CompactMasterProblem build_compact_master_problem(
         for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
             const EdgeRecord& edge = graph.edges()[edge_id];
             if (edge.u == 0) {
-                route_count_expr += problem.theta_vars[edge_id];
+                add_vi_edge_term(route_count_expr, edge_id);
             }
         }
         problem.model->addConstr(

@@ -22,6 +22,8 @@ struct CliOptions {
     std::string instance = "A0.dat";
     int p = 2;
     double solver_time_limit = 3600.0;
+    int gurobi_threads = -1;
+    std::string vi_formulation = "theta";
     int dump_psteps = 10;
     int validate_psteps = 0;
     int solve_model = 1;
@@ -30,15 +32,15 @@ struct CliOptions {
     int prune_symmetry_40 = 1;
     int prune_symmetry_41 = 1;
     int prune_symmetry_43 = 1;
-    int add_vi_35 = 1;
-    int add_vi_36 = 1;
-    int add_vi_44 = 1;
+    int add_vi_35 = 0;
+    int add_vi_36 = 0;
+    int add_vi_44 = 0;
 };
 
 void print_usage(const char* executable) {
     std::cerr << "Usage: " << executable
-              << " [instance] [--p N] [--solver-time-limit T]"
-              << " [--dump-psteps N] [--validate-psteps 0|1] [--solve 0|1]"
+              << " [instance] [--p N] [--solver-time-limit T] [--gurobi-threads N]"
+              << " [--vi-formulation theta|x] [--dump-psteps N] [--validate-psteps 0|1] [--solve 0|1]"
               << " [--prune-infeasible-edges 0|1] [--prune-dominated-edges 0|1]"
               << " [--prune-symmetry-40 0|1] [--prune-symmetry-41 0|1]"
               << " [--prune-symmetry-43 0|1] [--add-vi-35 0|1] [--add-vi-36 0|1]"
@@ -71,6 +73,23 @@ double parse_double(const std::string& value, const std::string& field_name) {
     }
 }
 
+std::string parse_vi_formulation(const std::string& value) {
+    if (value == "theta" || value == "x") {
+        return value;
+    }
+    throw std::runtime_error("Invalid value for --vi-formulation: " + value + " (expected theta or x)");
+}
+
+spdp::VIFormulation to_vi_formulation(const std::string& value) {
+    if (value == "theta") {
+        return spdp::VIFormulation::Theta;
+    }
+    if (value == "x") {
+        return spdp::VIFormulation::X;
+    }
+    throw std::runtime_error("Unsupported VI formulation: " + value);
+}
+
 CliOptions parse_cli(int argc, char** argv) {
     CliOptions options;
     bool instance_set = false;
@@ -99,6 +118,14 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--vi-formulation") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--vi-formulation requires a value.");
+            }
+            options.vi_formulation = parse_vi_formulation(argv[++idx]);
+            continue;
+        }
+
         if (arg == "--validate-psteps") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error("--validate-psteps requires a value.");
@@ -115,6 +142,17 @@ CliOptions parse_cli(int argc, char** argv) {
                 throw std::runtime_error("--solver-time-limit requires a value.");
             }
             options.solver_time_limit = parse_double(argv[++idx], "--solver-time-limit");
+            continue;
+        }
+
+        if (arg == "--gurobi-threads") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--gurobi-threads requires a value.");
+            }
+            options.gurobi_threads = parse_int(argv[++idx], "--gurobi-threads");
+            if (options.gurobi_threads < 0) {
+                throw std::runtime_error("--gurobi-threads must be nonnegative.");
+            }
             continue;
         }
 
@@ -238,6 +276,13 @@ std::string format_double(double value) {
     return out.str();
 }
 
+std::string format_gurobi_threads(int threads) {
+    if (threads < 0) {
+        return "default(auto)";
+    }
+    return std::to_string(threads);
+}
+
 std::string format_sequence_pi(const std::vector<int>& sequence_pi) {
     if (sequence_pi.empty()) {
         return "()";
@@ -293,6 +338,8 @@ void print_instance_summary(
     out << "[main] Loaded instance: " << args.instance << '\n';
     out << "[main] p: " << args.p << '\n';
     out << "[main] Solver time limit: " << format_double(args.solver_time_limit) << '\n';
+    out << "[main] Gurobi threads: " << format_gurobi_threads(args.gurobi_threads) << '\n';
+    out << "[main] VI formulation: " << args.vi_formulation << '\n';
     out << "[main] Locations: " << data.locations << '\n';
     out << "[main] Fixed vehicle cost: " << format_double(data.fixed_vehicle_cost) << '\n';
     out << "[main] Time pick-up: " << format_double(data.time_pickup) << '\n';
@@ -476,6 +523,7 @@ int main(int argc, char** argv) {
             args.add_vi_35 == 1,
             args.add_vi_36 == 1,
             args.add_vi_44 == 1,
+            to_vi_formulation(args.vi_formulation),
         };
         spdp::CompactMasterProblem problem = spdp::build_compact_master_problem(
             data,
@@ -483,6 +531,9 @@ int main(int argc, char** argv) {
             artifacts,
             master_build_options
         );
+        if (args.gurobi_threads >= 0) {
+            problem.model->set(GRB_IntParam_Threads, args.gurobi_threads);
+        }
         problem.model->set(GRB_DoubleParam_TimeLimit, args.solver_time_limit);
 
         output_file << "[main] Compact master model built successfully.\n";

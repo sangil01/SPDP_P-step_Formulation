@@ -36,7 +36,9 @@ out/
 SPDP_solution_benchmark/
 SPDP_data/
 SPDP_output*/
+SPDP_optimal/
 *.log
+context.md
 
 # [OS 및 시스템]
 .DS_Store
