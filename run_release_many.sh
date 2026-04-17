@@ -3,7 +3,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXE="$SCRIPT_DIR/SPDP_codes/build-release/SPDP_P_step"
-RUNNER_LOG="$SCRIPT_DIR/P2_valid_by_x_A11.log"
+RUNNER_LOG="$SCRIPT_DIR/P3_root-cg_120s_64_4096.log"
 
 if [[ ! -x "$EXE" ]]; then
     echo "Release executable not found or not executable: $EXE"
@@ -13,10 +13,12 @@ fi
 # ============================================
 # INPUT PARAMETERS
 # ============================================
-P=2
-SOLVER_TIME_LIMIT=1800
+P=3
+SOLVER_MODE=root-cg # Options: enumeration, root-cg
+NODE_CG_PHASE1_MODE=exact-cg # Options: exact-cg, heuristic-seed
+SOLVER_TIME_LIMIT=120
 GUROBI_THREADS=0
-VI_FORMULATION=x # Options: theta, x
+VI_FORMULATION=theta # Options: theta, x
 DUMP_PSTEPS=10
 VALIDATE_PSTEPS=0
 SOLVE_MODEL=1
@@ -25,26 +27,30 @@ PRUNE_DOMINATED_EDGES=1
 PRUNE_SYMMETRY_40=1
 PRUNE_SYMMETRY_41=1
 PRUNE_SYMMETRY_43=1
-ADD_VI_35=1
-ADD_VI_36=1
-ADD_VI_44=1
+ADD_VI_35=0
+ADD_VI_36=0
+ADD_VI_44=0
+CG_MAX_ITERATIONS_PER_PHASE=1000
+CG_MAX_COLUMNS_PER_START=64
+CG_MAX_TOTAL_COLUMNS_PER_ROUND=4096
+CG_REDUCED_COST_TOLERANCE=-1e-6
 DATA_LIST=(
-    #"RecDep_day_B1.dat"
-    #"RecDep_day_B2.dat"
-    #"RecDep_day_C1.dat"
-    #"RecDep_day_C2.dat"
-    #"RecDep_day_C3.dat"
-    #"RecDep_day_C4.dat"
-    #"RecDep_day_A1.dat"
-    #"RecDep_day_A2.dat"
-    #"RecDep_day_A3.dat"
-    #"RecDep_day_A4.dat"
-    #"RecDep_day_A5.dat"
-    #"RecDep_day_A6.dat"
-    #"RecDep_day_A7.dat"
-    #"RecDep_day_A8.dat"
-    #"RecDep_day_A9.dat"
-    #"RecDep_day_A10.dat"
+    "RecDep_day_B1.dat"
+    "RecDep_day_B2.dat"
+    "RecDep_day_C1.dat"
+    "RecDep_day_C2.dat"
+    "RecDep_day_C3.dat"
+    "RecDep_day_C4.dat"
+    "RecDep_day_A1.dat"
+    "RecDep_day_A2.dat"
+    "RecDep_day_A3.dat"
+    "RecDep_day_A4.dat"
+    "RecDep_day_A5.dat"
+    "RecDep_day_A6.dat"
+    "RecDep_day_A7.dat"
+    "RecDep_day_A8.dat"
+    "RecDep_day_A9.dat"
+    "RecDep_day_A10.dat"
     "RecDep_day_A11.dat"
 )
 # Put one data file name per line in DATA_LIST.
@@ -84,12 +90,20 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "Started at: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "Running data [$CURRENT/$TOTAL]: $data_name"
         echo "p: $P"
+        echo "solver-mode: $SOLVER_MODE"
+        echo "node-cg-phase1-mode: $NODE_CG_PHASE1_MODE"
         echo "vi-formulation: $VI_FORMULATION"
+        echo "cg-max-iterations-per-phase: $CG_MAX_ITERATIONS_PER_PHASE"
+        echo "cg-max-columns-per-start: $CG_MAX_COLUMNS_PER_START"
+        echo "cg-max-total-columns-per-round: $CG_MAX_TOTAL_COLUMNS_PER_ROUND"
+        echo "cg-reduced-cost-tolerance: $CG_REDUCED_COST_TOLERANCE"
         echo "----------------------------------------"
     } >> "$RUNNER_LOG"
 
     if "$EXE" "$data_name" \
         --p "$P" \
+        --solver-mode "$SOLVER_MODE" \
+        --node-cg-phase1-mode "$NODE_CG_PHASE1_MODE" \
         --solver-time-limit "$SOLVER_TIME_LIMIT" \
         --gurobi-threads "$GUROBI_THREADS" \
         --vi-formulation "$VI_FORMULATION" \
@@ -103,7 +117,11 @@ for data_name in "${DATA_LIST[@]}"; do
         --prune-symmetry-43 "$PRUNE_SYMMETRY_43" \
         --add-vi-35 "$ADD_VI_35" \
         --add-vi-36 "$ADD_VI_36" \
-        --add-vi-44 "$ADD_VI_44" >> "$RUNNER_LOG" 2>&1; then
+        --add-vi-44 "$ADD_VI_44" \
+        --cg-max-iterations-per-phase "$CG_MAX_ITERATIONS_PER_PHASE" \
+        --cg-max-columns-per-start "$CG_MAX_COLUMNS_PER_START" \
+        --cg-max-total-columns-per-round "$CG_MAX_TOTAL_COLUMNS_PER_ROUND" \
+        --cg-reduced-cost-tolerance "$CG_REDUCED_COST_TOLERANCE" >> "$RUNNER_LOG" 2>&1; then
         echo "Completed: $data_name"
         {
             echo "Finished at: $(date '+%Y-%m-%d %H:%M:%S')"

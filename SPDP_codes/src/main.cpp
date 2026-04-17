@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "GenMultiGraph.h"
+#include "PstepBnP.h"
 #include "PstepFormulation.h"
 #include "ReadData.h"
 
@@ -23,6 +24,8 @@ struct CliOptions {
     int p = 2;
     double solver_time_limit = 3600.0;
     int gurobi_threads = -1;
+    std::string solver_mode = "enumeration";
+    std::string node_cg_phase_one_mode = "exact-cg";
     std::string vi_formulation = "theta";
     int dump_psteps = 10;
     int validate_psteps = 0;
@@ -35,16 +38,26 @@ struct CliOptions {
     int add_vi_35 = 0;
     int add_vi_36 = 0;
     int add_vi_44 = 0;
+    int cg_max_iterations_per_phase = 1000;
+    int cg_max_columns_per_start = 16;
+    int cg_max_total_columns_per_round = 1024;
+    double cg_reduced_cost_tolerance = -1e-6;
 };
 
 void print_usage(const char* executable) {
     std::cerr << "Usage: " << executable
               << " [instance] [--p N] [--solver-time-limit T] [--gurobi-threads N]"
+              << " [--solver-mode enumeration|root-cg]"
+              << " [--node-cg-phase1-mode exact-cg|heuristic-seed]"
               << " [--vi-formulation theta|x] [--dump-psteps N] [--validate-psteps 0|1] [--solve 0|1]"
               << " [--prune-infeasible-edges 0|1] [--prune-dominated-edges 0|1]"
               << " [--prune-symmetry-40 0|1] [--prune-symmetry-41 0|1]"
               << " [--prune-symmetry-43 0|1] [--add-vi-35 0|1] [--add-vi-36 0|1]"
-              << " [--add-vi-44 0|1]\n";
+              << " [--add-vi-44 0|1]"
+              << " [--cg-max-iterations-per-phase N]"
+              << " [--cg-max-columns-per-start N]"
+              << " [--cg-max-total-columns-per-round N]"
+              << " [--cg-reduced-cost-tolerance T]\n";
 }
 
 int parse_int(const std::string& value, const std::string& field_name) {
@@ -80,6 +93,26 @@ std::string parse_vi_formulation(const std::string& value) {
     throw std::runtime_error("Invalid value for --vi-formulation: " + value + " (expected theta or x)");
 }
 
+std::string parse_solver_mode(const std::string& value) {
+    if (value == "enumeration" || value == "root-cg") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --solver-mode: " + value +
+        " (expected enumeration or root-cg)"
+    );
+}
+
+std::string parse_node_cg_phase_one_mode(const std::string& value) {
+    if (value == "exact-cg" || value == "heuristic-seed") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for node CG phase-one mode: " + value +
+        " (expected exact-cg or heuristic-seed)"
+    );
+}
+
 spdp::VIFormulation to_vi_formulation(const std::string& value) {
     if (value == "theta") {
         return spdp::VIFormulation::Theta;
@@ -107,6 +140,22 @@ CliOptions parse_cli(int argc, char** argv) {
                 throw std::runtime_error("--p requires a value.");
             }
             options.p = parse_int(argv[++idx], "--p");
+            continue;
+        }
+
+        if (arg == "--solver-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--solver-mode requires a value.");
+            }
+            options.solver_mode = parse_solver_mode(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--node-cg-phase1-mode" || arg == "--root-phase1-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.node_cg_phase_one_mode = parse_node_cg_phase_one_mode(argv[++idx]);
             continue;
         }
 
@@ -142,6 +191,54 @@ CliOptions parse_cli(int argc, char** argv) {
                 throw std::runtime_error("--solver-time-limit requires a value.");
             }
             options.solver_time_limit = parse_double(argv[++idx], "--solver-time-limit");
+            continue;
+        }
+
+        if (arg == "--cg-max-iterations-per-phase") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--cg-max-iterations-per-phase requires a value.");
+            }
+            options.cg_max_iterations_per_phase =
+                parse_int(argv[++idx], "--cg-max-iterations-per-phase");
+            if (options.cg_max_iterations_per_phase <= 0) {
+                throw std::runtime_error("--cg-max-iterations-per-phase must be positive.");
+            }
+            continue;
+        }
+
+        if (arg == "--cg-max-columns-per-start") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--cg-max-columns-per-start requires a value.");
+            }
+            options.cg_max_columns_per_start =
+                parse_int(argv[++idx], "--cg-max-columns-per-start");
+            if (options.cg_max_columns_per_start <= 0) {
+                throw std::runtime_error("--cg-max-columns-per-start must be positive.");
+            }
+            continue;
+        }
+
+        if (arg == "--cg-max-total-columns-per-round") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--cg-max-total-columns-per-round requires a value.");
+            }
+            options.cg_max_total_columns_per_round =
+                parse_int(argv[++idx], "--cg-max-total-columns-per-round");
+            if (options.cg_max_total_columns_per_round <= 0) {
+                throw std::runtime_error("--cg-max-total-columns-per-round must be positive.");
+            }
+            continue;
+        }
+
+        if (arg == "--cg-reduced-cost-tolerance") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--cg-reduced-cost-tolerance requires a value.");
+            }
+            options.cg_reduced_cost_tolerance =
+                parse_double(argv[++idx], "--cg-reduced-cost-tolerance");
+            if (options.cg_reduced_cost_tolerance > 0.0) {
+                throw std::runtime_error("--cg-reduced-cost-tolerance must be nonpositive.");
+            }
             continue;
         }
 
@@ -337,6 +434,8 @@ void print_instance_summary(
 ) {
     out << "[main] Loaded instance: " << args.instance << '\n';
     out << "[main] p: " << args.p << '\n';
+    out << "[main] Solver mode: " << args.solver_mode << '\n';
+    out << "[main] Node CG phase-1 mode: " << args.node_cg_phase_one_mode << '\n';
     out << "[main] Solver time limit: " << format_double(args.solver_time_limit) << '\n';
     out << "[main] Gurobi threads: " << format_gurobi_threads(args.gurobi_threads) << '\n';
     out << "[main] VI formulation: " << args.vi_formulation << '\n';
@@ -361,6 +460,12 @@ void print_instance_summary(
     out << "[main] add_vi_35: " << args.add_vi_35 << '\n';
     out << "[main] add_vi_36: " << args.add_vi_36 << '\n';
     out << "[main] add_vi_44: " << args.add_vi_44 << '\n';
+    out << "[main] cg_max_iterations_per_phase: " << args.cg_max_iterations_per_phase << '\n';
+    out << "[main] cg_max_columns_per_start: " << args.cg_max_columns_per_start << '\n';
+    out << "[main] cg_max_total_columns_per_round: " << args.cg_max_total_columns_per_round << '\n';
+    out << "[main] cg_reduced_cost_tolerance: "
+        << std::scientific << std::setprecision(6) << args.cg_reduced_cost_tolerance << '\n';
+    out << std::defaultfloat;
 }
 
 void print_selected_edge_info(
@@ -492,63 +597,105 @@ int main(int argc, char** argv) {
         print_instance_summary(output_file, args, data, graph);
         print_selected_edge_info(output_file, graph);
 
-        const spdp::CompactPStepOptions options{
-            args.p,
-            data.time_limit,
-            static_cast<std::size_t>(std::max(args.dump_psteps, 0)),
-            args.validate_psteps == 1,
-            args.prune_symmetry_43 == 1,
-        };
-        const auto compact_pstep_build_start = std::chrono::steady_clock::now();
-        const spdp::CompactPStepArtifacts artifacts =
-            spdp::build_compact_pstep_artifacts(graph, options, &output_file);
-        const auto compact_pstep_build_end = std::chrono::steady_clock::now();
-        const double compact_pstep_build_seconds =
-            std::chrono::duration<double>(compact_pstep_build_end - compact_pstep_build_start)
-                .count();
-
-        print_pstep_summary(output_file, artifacts);
-        output_file << "[main] Compact p-step set build time (sec): "
-                    << format_double(compact_pstep_build_seconds) << '\n';
-        spdp::dump_compact_psteps(output_file, artifacts.compact_psteps, options.dump_limit);
-
         std::ofstream gurobi_log_file(gurobi_log_path, std::ios::trunc);
         if (!gurobi_log_file) {
             throw std::runtime_error("Failed to initialize Gurobi log file: " + gurobi_log_path.string());
         }
         gurobi_log_file.close();
 
-        const spdp::CompactMasterBuildOptions master_build_options{
-            gurobi_log_path.string(),
-            args.add_vi_35 == 1,
-            args.add_vi_36 == 1,
-            args.add_vi_44 == 1,
-            to_vi_formulation(args.vi_formulation),
-        };
-        spdp::CompactMasterProblem problem = spdp::build_compact_master_problem(
-            data,
-            graph,
-            artifacts,
-            master_build_options
-        );
-        if (args.gurobi_threads >= 0) {
-            problem.model->set(GRB_IntParam_Threads, args.gurobi_threads);
-        }
-        problem.model->set(GRB_DoubleParam_TimeLimit, args.solver_time_limit);
+        if (args.solver_mode == "root-cg") {
+            if (args.add_vi_35 == 1 || args.add_vi_36 == 1 || args.add_vi_44 == 1) {
+                throw std::runtime_error(
+                    "root-cg mode does not yet support VI-35/36/44. "
+                    "The seedless Phase-I RMP becomes infeasible without dedicated artificials "
+                    "for those inequalities. Please set them to 0."
+                );
+            }
+            if (args.vi_formulation != "theta") {
+                throw std::runtime_error(
+                    "root-cg mode currently supports only --vi-formulation theta."
+                );
+            }
 
-        output_file << "[main] Compact master model built successfully.\n";
-        if (args.solve_model == 1) {
-            spdp::solve_compact_master_problem(problem);
-            print_solution_summary(output_file, problem);
-            const spdp::RecoveredSolution recovered_solution =
-                spdp::recover_incumbent_solution(data, graph, artifacts, problem);
-            spdp::write_recovered_solution(solution_file, recovered_solution);
+            if (args.solve_model == 1) {
+                const spdp::NodeCGOptions cg_options{
+                    args.p,
+                    data.time_limit,
+                    args.solver_time_limit,
+                    args.gurobi_threads,
+                    static_cast<std::size_t>(args.cg_max_iterations_per_phase),
+                    static_cast<std::size_t>(args.cg_max_columns_per_start),
+                    static_cast<std::size_t>(args.cg_max_total_columns_per_round),
+                    args.cg_reduced_cost_tolerance,
+                    gurobi_log_path.string(),
+                    args.node_cg_phase_one_mode == "exact-cg"
+                        ? spdp::NodeCGPhaseOneMode::ExactCG
+                        : spdp::NodeCGPhaseOneMode::HeuristicSeed,
+                };
+                const spdp::NodeCGResult cg_result =
+                    spdp::solve_node_column_generation(data, graph, cg_options, &output_file);
+                spdp::write_node_cg_summary(output_file, cg_result);
+                spdp::write_node_cg_solution(solution_file, cg_result);
+            } else {
+                output_file << "[main] Solve skipped by CLI option.\n";
+                solution_file << "!! Print 2\n";
+                solution_file << "Solution:\n";
+                solution_file << "  Solve skipped by CLI option\n";
+                solution_file << "Solution done \n";
+            }
         } else {
-            output_file << "[main] Solve skipped by CLI option.\n";
-            solution_file << "!! Print 2\n";
-            solution_file << "Solution:\n";
-            solution_file << "  Solve skipped by CLI option\n";
-            solution_file << "Solution done \n";
+            const spdp::CompactPStepOptions options{
+                args.p,
+                data.time_limit,
+                static_cast<std::size_t>(std::max(args.dump_psteps, 0)),
+                args.validate_psteps == 1,
+                args.prune_symmetry_43 == 1,
+            };
+            const auto compact_pstep_build_start = std::chrono::steady_clock::now();
+            const spdp::CompactPStepArtifacts artifacts =
+                spdp::build_compact_pstep_artifacts(graph, options, &output_file);
+            const auto compact_pstep_build_end = std::chrono::steady_clock::now();
+            const double compact_pstep_build_seconds =
+                std::chrono::duration<double>(compact_pstep_build_end - compact_pstep_build_start)
+                    .count();
+
+            print_pstep_summary(output_file, artifacts);
+            output_file << "[main] Compact p-step set build time (sec): "
+                        << format_double(compact_pstep_build_seconds) << '\n';
+            spdp::dump_compact_psteps(output_file, artifacts.compact_psteps, options.dump_limit);
+
+            const spdp::CompactMasterBuildOptions master_build_options{
+                gurobi_log_path.string(),
+                args.add_vi_35 == 1,
+                args.add_vi_36 == 1,
+                args.add_vi_44 == 1,
+                to_vi_formulation(args.vi_formulation),
+            };
+            spdp::CompactMasterProblem problem = spdp::build_compact_master_problem(
+                data,
+                graph,
+                artifacts,
+                master_build_options
+            );
+            if (args.gurobi_threads >= 0) {
+                problem.model->set(GRB_IntParam_Threads, args.gurobi_threads);
+            }
+            problem.model->set(GRB_DoubleParam_TimeLimit, args.solver_time_limit);
+
+            output_file << "[main] Compact master model built successfully.\n";
+            if (args.solve_model == 1) {
+                spdp::solve_compact_master_problem(problem);
+                print_solution_summary(output_file, problem);
+                const spdp::RecoveredSolution recovered_solution =
+                    spdp::recover_incumbent_solution(data, graph, artifacts, problem);
+                spdp::write_recovered_solution(solution_file, recovered_solution);
+            } else {
+                output_file << "[main] Solve skipped by CLI option.\n";
+                solution_file << "!! Print 2\n";
+                solution_file << "Solution:\n";
+                solution_file << "  Solve skipped by CLI option\n";
+                solution_file << "Solution done \n";
+            }
         }
 
         std::cout << "Log written to " << log_output_path << '\n';

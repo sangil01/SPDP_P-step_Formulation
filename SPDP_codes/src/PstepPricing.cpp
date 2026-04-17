@@ -1,0 +1,881 @@
+#include "PstepPricing.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <cmath>
+#include <iomanip>
+#include <iosfwd>
+#include <limits>
+#include <map>
+#include <optional>
+#include <ostream>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace spdp {
+namespace {
+
+constexpr double kTolerance = 1e-9;
+
+bool double_equal(double lhs, double rhs) {
+    return std::fabs(lhs - rhs) <= kTolerance;
+}
+
+bool double_less_or_equal(double lhs, double rhs) {
+    return lhs <= rhs + kTolerance;
+}
+
+std::string format_double(double value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(6) << value;
+    return out.str();
+}
+
+State canonicalize_state(State state) {
+    if (state[1] < state[0]) {
+        std::swap(state[0], state[1]);
+    }
+    return state;
+}
+
+double lookup_dual(
+    const std::map<NodeId, double>& duals,
+    NodeId node_id
+) {
+    const auto found = duals.find(node_id);
+    if (found == duals.end()) {
+        return 0.0;
+    }
+    return found->second;
+}
+
+double lookup_dual(
+    const std::map<NodeStateKey, double>& duals,
+    const NodeStateKey& key
+) {
+    const auto found = duals.find(key);
+    if (found == duals.end()) {
+        return 0.0;
+    }
+    return found->second;
+}
+
+std::optional<PricingRequestClassKey> request_class_of_node(
+    const MultiDiGraph& graph,
+    NodeId node_id
+) {
+    if (!graph.is_physical_service_node(node_id)) {
+        return std::nullopt;
+    }
+
+    const NodeSpec& node = graph.node(node_id);
+    if (node.kind != NodeSpec::Kind::Pickup || !node.container_type.has_value() ||
+        !node.landfill_location.has_value()) {
+        return std::nullopt;
+    }
+
+    return PricingRequestClassKey{
+        node.location,
+        node.landfill_location.value(),
+        node.container_type.value(),
+    };
+}
+
+std::size_t bit_word_count(std::size_t bit_count) {
+    return (bit_count + 63U) / 64U;
+}
+
+struct Label {
+    int node_state_index = -1;
+    int depth = 0;
+    double base_cost = 0.0;
+    double total_time = 0.0;
+    std::vector<std::uint64_t> visited_physical_mask;
+    std::vector<int> symmetry_max_request_idx_by_class;
+    int parent_label_index = -1;
+    int incoming_pricing_edge_index = -1;
+};
+
+bool mask_contains(
+    const std::vector<std::uint64_t>& mask,
+    int bit_index
+) {
+    if (bit_index < 0) {
+        return false;
+    }
+    const std::size_t word = static_cast<std::size_t>(bit_index) / 64U;
+    const std::size_t offset = static_cast<std::size_t>(bit_index) % 64U;
+    return (mask[word] & (std::uint64_t{1} << offset)) != 0U;
+}
+
+void mask_add(
+    std::vector<std::uint64_t>& mask,
+    int bit_index
+) {
+    if (bit_index < 0) {
+        return;
+    }
+    const std::size_t word = static_cast<std::size_t>(bit_index) / 64U;
+    const std::size_t offset = static_cast<std::size_t>(bit_index) % 64U;
+    mask[word] |= (std::uint64_t{1} << offset);
+}
+
+bool mask_subset_of(
+    const std::vector<std::uint64_t>& lhs,
+    const std::vector<std::uint64_t>& rhs
+) {
+    for (std::size_t idx = 0; idx < lhs.size(); ++idx) {
+        if ((lhs[idx] & ~rhs[idx]) != 0U) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool symmetry_state_less_or_equal(
+    const std::vector<int>& lhs,
+    const std::vector<int>& rhs
+) {
+    for (std::size_t idx = 0; idx < lhs.size(); ++idx) {
+        if (lhs[idx] > rhs[idx]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_complete_label(
+    NodeId start_node_id,
+    int depth,
+    int p
+) {
+    if (start_node_id == 0) {
+        return depth >= 1 && depth <= p;
+    }
+    return depth == p;
+}
+
+double phase_edge_objective_cost(
+    CGPhase phase,
+    double original_edge_cost
+) {
+    if (phase == CGPhase::PhaseII) {
+        return original_edge_cost;
+    }
+    return 0.0;
+}
+
+double choose_best_tau(
+    const MultiDiGraph& graph,
+    const CGDualSolution& dual_solution,
+    NodeId start_node_id,
+    const State& start_state,
+    NodeId last_node_id,
+    const State& last_state,
+    double total_time,
+    double time_limit
+) {
+    const double latest_start = time_limit - total_time;
+    if (latest_start < -kTolerance) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    if (start_node_id == 0) {
+        return 0.0;
+    }
+
+    if (last_node_id == graph.end_node_id()) {
+        return std::max(0.0, latest_start);
+    }
+
+    const NodeStateKey start_key{start_node_id, canonicalize_state(start_state)};
+    const NodeStateKey last_key{last_node_id, canonicalize_state(last_state)};
+    const double gamma_start = graph.is_physical_service_node(start_node_id)
+                                   ? lookup_dual(dual_solution.time_duals, start_key)
+                                   : 0.0;
+    const double gamma_end = graph.is_physical_service_node(last_node_id)
+                                 ? lookup_dual(dual_solution.time_duals, last_key)
+                                 : 0.0;
+
+    return (gamma_end - gamma_start < 0.0) ? std::max(0.0, latest_start) : 0.0;
+}
+
+std::string build_column_key(
+    const std::vector<int>& edge_ids,
+    double tau
+) {
+    // edge id sequence와 tau를 조합한 문자열 key. 서로 다른 p-step임을 파악하기 위해 사용.
+    std::ostringstream out;
+    for (std::size_t idx = 0; idx < edge_ids.size(); ++idx) {
+        if (idx > 0U) {
+            out << ',';
+        }
+        out << edge_ids[idx];
+    }
+    out << '|';
+    out << std::fixed << std::setprecision(9) << tau;
+    return out.str();
+}
+
+// 일단은 original reduced cost form을 사용 (누적 cost + terminal dependent cost로 계산 x)
+double evaluate_sparse_column_reduced_cost(
+    const CGDualSolution& dual_solution,
+    CGPhase phase,
+    double total_cost,
+    const std::vector<std::pair<NodeId, int>>& visit_coefficients,
+    const std::vector<std::pair<NodeStateKey, int>>& state_coefficients,
+    const std::vector<std::pair<NodeStateKey, double>>& time_coefficients,
+    const std::vector<int>& edge_incidence
+) {
+    double reduced_cost = (phase == CGPhase::PhaseII) ? total_cost : 0.0;
+
+    for (const auto& entry : visit_coefficients) {
+        reduced_cost -= static_cast<double>(entry.second) *
+                        lookup_dual(dual_solution.visit_duals, entry.first);
+    }
+    for (const auto& entry : state_coefficients) {
+        reduced_cost -= static_cast<double>(entry.second) *
+                        lookup_dual(dual_solution.state_duals, entry.first);
+    }
+    for (const auto& entry : time_coefficients) {
+        reduced_cost -= entry.second *
+                        lookup_dual(dual_solution.time_duals, entry.first);
+    }
+    for (int edge_id : edge_incidence) {
+        if (edge_id >= 0 &&
+            static_cast<std::size_t>(edge_id) < dual_solution.edge_duals.size()) {
+            reduced_cost -= dual_solution.edge_duals[static_cast<std::size_t>(edge_id)];
+        }
+    }
+
+    return reduced_cost;
+}
+
+CGColumn build_column_from_complete_label(
+    const MultiDiGraph& graph,
+    const CGDualSolution& dual_solution,
+    CGPhase phase,
+    double time_limit,
+    const ForwardPricingContext& context,
+    const std::vector<Label>& labels,
+    int label_index,
+    double reduced_cost_tolerance
+) {
+    const Label& complete_label = labels[static_cast<std::size_t>(label_index)];
+
+    std::vector<int> reversed_edge_ids;
+    std::vector<int> reversed_node_state_indices;
+    int cursor = label_index;
+    while (cursor >= 0) {
+        const Label& label = labels[static_cast<std::size_t>(cursor)];
+        reversed_node_state_indices.push_back(label.node_state_index);
+        if (label.incoming_pricing_edge_index >= 0) {
+            reversed_edge_ids.push_back(label.incoming_pricing_edge_index);
+        }
+        cursor = label.parent_label_index;
+    }
+
+    std::reverse(reversed_node_state_indices.begin(), reversed_node_state_indices.end());
+    std::reverse(reversed_edge_ids.begin(), reversed_edge_ids.end());
+
+    CGColumn column;
+    column.q = complete_label.depth;
+    column.total_time = complete_label.total_time;
+
+    for (int node_state_index : reversed_node_state_indices) {
+        const ForwardPricingContext::NodeStateInfo& info =
+            context.node_states[static_cast<std::size_t>(node_state_index)];
+        column.node_sequence.push_back(info.node_id);
+        column.state_sequence.push_back(canonicalize_state(info.state));
+    }
+
+    for (int pricing_edge_index : reversed_edge_ids) {
+        const ForwardPricingContext::EdgeInfo& pricing_edge =
+            context.edges[static_cast<std::size_t>(pricing_edge_index)];
+        const EdgeRecord& edge = graph.edges()[static_cast<std::size_t>(pricing_edge.graph_edge_id)];
+        column.edge_ids.push_back(pricing_edge.graph_edge_id);
+        column.edge_incidence.push_back(pricing_edge.graph_edge_id);
+        column.total_cost += edge.data.cost;
+    }
+
+    column.start_node_id = column.node_sequence.front();
+    column.last_node_id = column.node_sequence.back();
+    column.start_state = canonicalize_state(column.state_sequence.front());
+    column.last_state = canonicalize_state(column.state_sequence.back());
+
+    // dynamic master coefficients independent of tau.
+    for (std::size_t pos = 0; pos < column.node_sequence.size(); ++pos) {
+        const NodeId node_id = column.node_sequence[pos];
+        if (!graph.is_physical_service_node(node_id)) {
+            continue;
+        }
+        const int coefficient =
+            (pos == 0U || pos + 1U == column.node_sequence.size()) ? 1 : 2;
+        column.visit_coefficients.push_back({node_id, coefficient});
+    }
+
+    if (graph.is_physical_service_node(column.start_node_id)) {
+        column.state_coefficients.push_back(
+            {NodeStateKey{column.start_node_id, canonicalize_state(column.start_state)}, 1}
+        );
+    }
+    if (graph.is_physical_service_node(column.last_node_id)) {
+        column.state_coefficients.push_back(
+            {NodeStateKey{column.last_node_id, canonicalize_state(column.last_state)}, -1}
+        );
+    }
+
+    column.tau = choose_best_tau(
+        graph,
+        dual_solution,
+        column.start_node_id,
+        column.start_state,
+        column.last_node_id,
+        column.last_state,
+        column.total_time,
+        time_limit
+    );
+    if (!std::isfinite(column.tau)) {
+        column.edge_ids.clear();
+        column.node_sequence.clear();
+        column.state_sequence.clear();
+        column.visit_coefficients.clear();
+        column.state_coefficients.clear();
+        column.time_coefficients.clear();
+        column.edge_incidence.clear();
+        return column;
+    }
+
+    if (graph.is_physical_service_node(column.start_node_id)) {
+        column.time_coefficients.push_back(
+            {NodeStateKey{column.start_node_id, canonicalize_state(column.start_state)}, column.tau}
+        );
+    }
+    if (graph.is_physical_service_node(column.last_node_id)) {
+        column.time_coefficients.push_back(
+            {NodeStateKey{column.last_node_id, canonicalize_state(column.last_state)},
+             -(column.tau + column.total_time)}
+        );
+    }
+
+    column.reduced_cost = evaluate_sparse_column_reduced_cost(
+        dual_solution,
+        phase,
+        column.total_cost,
+        column.visit_coefficients,
+        column.state_coefficients,
+        column.time_coefficients,
+        column.edge_incidence
+    );
+
+    if (!(column.reduced_cost < reduced_cost_tolerance)) {
+        column.edge_ids.clear();
+        column.node_sequence.clear();
+        column.state_sequence.clear();
+        column.visit_coefficients.clear();
+        column.state_coefficients.clear();
+        column.time_coefficients.clear();
+        column.edge_incidence.clear();
+    }
+
+    return column;
+}
+
+bool dominates_label(
+    const Label& lhs,
+    const Label& rhs
+) {
+    return double_less_or_equal(lhs.base_cost, rhs.base_cost) &&
+           double_less_or_equal(lhs.total_time, rhs.total_time) &&
+           mask_subset_of(lhs.visited_physical_mask, rhs.visited_physical_mask) &&
+           symmetry_state_less_or_equal(
+               lhs.symmetry_max_request_idx_by_class,
+               rhs.symmetry_max_request_idx_by_class
+           );
+}
+
+std::size_t count_surviving_labels(
+    const std::vector<std::vector<std::vector<int>>>& bucket_label_indices
+) {
+    std::size_t count = 0;
+    for (const auto& depth_buckets : bucket_label_indices) {
+        for (const auto& bucket : depth_buckets) {
+            count += bucket.size();
+        }
+    }
+    return count;
+}
+
+std::vector<State> collect_sigma_values_for_node(
+    const MultiDiGraph& graph,
+    NodeId node_id
+) {
+    std::set<State> sigma_set;
+
+    for (const EdgeRecord& edge : graph.edges()) {
+        if (edge.u == node_id && graph.is_physical_service_node(edge.u)) {
+            sigma_set.insert(canonicalize_state(edge.data.start_state));
+        }
+        if (edge.v == node_id && graph.is_physical_service_node(edge.v)) {
+            sigma_set.insert(canonicalize_state(edge.data.end_state));
+        }
+    }
+
+    return std::vector<State>(sigma_set.begin(), sigma_set.end());
+}
+
+}  // namespace
+
+ForwardPricingContext build_forward_pricing_context(
+    const MultiDiGraph& graph,
+    int p,
+    double time_limit
+) {
+    if (p < 1) {
+        throw std::runtime_error("Forward pricing requires p >= 1.");
+    }
+    if (time_limit < 0.0) {
+        throw std::runtime_error("Forward pricing requires a nonnegative time limit.");
+    }
+
+    ForwardPricingContext context;
+    context.p = p;
+    context.time_limit = time_limit;
+    context.end_node_id = graph.end_node_id();
+
+    std::map<NodeId, int> physical_bit_by_node;
+    for (NodeId node_id = 1; node_id < context.end_node_id; ++node_id) {
+        if (!graph.is_physical_service_node(node_id)) {
+            continue;
+        }
+        const int next_bit = static_cast<int>(physical_bit_by_node.size());
+        physical_bit_by_node.emplace(node_id, next_bit);
+        context.sigma_by_node[node_id] = collect_sigma_values_for_node(graph, node_id);
+    }
+    context.physical_node_count = physical_bit_by_node.size();
+
+    std::map<PricingRequestClassKey, int> request_class_index_by_key;
+    for (NodeId node_id = 1; node_id < context.end_node_id; ++node_id) {
+        const std::optional<PricingRequestClassKey> key = request_class_of_node(graph, node_id);
+        if (!key.has_value()) {
+            continue;
+        }
+        if (request_class_index_by_key.find(key.value()) == request_class_index_by_key.end()) {
+            const int next_index = static_cast<int>(request_class_index_by_key.size());
+            request_class_index_by_key.emplace(key.value(), next_index);
+        }
+    }
+    context.request_class_count = request_class_index_by_key.size();
+
+    for (const EdgeRecord& edge : graph.edges()) {
+        const NodeStateKey start_key{edge.u, canonicalize_state(edge.data.start_state)};
+        const NodeStateKey end_key{edge.v, canonicalize_state(edge.data.end_state)};
+
+        if (context.node_state_index_by_key.find(start_key) == context.node_state_index_by_key.end()) {
+            ForwardPricingContext::NodeStateInfo info;
+            info.node_id = start_key.node_id;
+            info.state = start_key.state;
+            info.is_physical_service_node = graph.is_physical_service_node(start_key.node_id);
+            const auto physical_found = physical_bit_by_node.find(start_key.node_id);
+            if (physical_found != physical_bit_by_node.end()) {
+                info.physical_bit_index = physical_found->second;
+            }
+
+            const NodeSpec& node = graph.node(start_key.node_id);
+            if (node.kind == NodeSpec::Kind::Pickup) {
+                info.is_pickup = true;
+                info.request_index = node.request_idx.value();
+                const std::optional<PricingRequestClassKey> class_key =
+                    request_class_of_node(graph, start_key.node_id);
+                if (class_key.has_value()) {
+                    info.request_class_index = request_class_index_by_key[class_key.value()];
+                }
+            }
+
+            const int new_index = static_cast<int>(context.node_states.size());
+            context.node_state_index_by_key.emplace(start_key, new_index);
+            context.node_states.push_back(info);
+        }
+
+        if (context.node_state_index_by_key.find(end_key) == context.node_state_index_by_key.end()) {
+            ForwardPricingContext::NodeStateInfo info;
+            info.node_id = end_key.node_id;
+            info.state = end_key.state;
+            info.is_physical_service_node = graph.is_physical_service_node(end_key.node_id);
+            const auto physical_found = physical_bit_by_node.find(end_key.node_id);
+            if (physical_found != physical_bit_by_node.end()) {
+                info.physical_bit_index = physical_found->second;
+            }
+
+            const NodeSpec& node = graph.node(end_key.node_id);
+            if (node.kind == NodeSpec::Kind::Pickup) {
+                info.is_pickup = true;
+                info.request_index = node.request_idx.value();
+                const std::optional<PricingRequestClassKey> class_key =
+                    request_class_of_node(graph, end_key.node_id);
+                if (class_key.has_value()) {
+                    info.request_class_index = request_class_index_by_key[class_key.value()];
+                }
+            }
+
+            const int new_index = static_cast<int>(context.node_states.size());
+            context.node_state_index_by_key.emplace(end_key, new_index);
+            context.node_states.push_back(info);
+        }
+    }
+
+    context.outgoing_edges_by_node_state.assign(context.node_states.size(), {});
+    context.incoming_edges_by_node_state.assign(context.node_states.size(), {});
+
+    for (std::size_t edge_idx = 0; edge_idx < graph.edges().size(); ++edge_idx) {
+        const EdgeRecord& edge = graph.edges()[edge_idx];
+        const NodeStateKey start_key{edge.u, canonicalize_state(edge.data.start_state)};
+        const NodeStateKey end_key{edge.v, canonicalize_state(edge.data.end_state)};
+        const int from_index = context.node_state_index_by_key.at(start_key);
+        const int to_index = context.node_state_index_by_key.at(end_key);
+
+        ForwardPricingContext::EdgeInfo info;
+        info.graph_edge_id = static_cast<int>(edge_idx);
+        info.from_node_state_index = from_index;
+        info.to_node_state_index = to_index;
+        info.time = edge.data.time;
+        info.cost = edge.data.cost;
+
+        const int pricing_edge_index = static_cast<int>(context.edges.size());
+        context.edges.push_back(info);
+        context.outgoing_edges_by_node_state[static_cast<std::size_t>(from_index)].push_back(
+            pricing_edge_index
+        );
+        context.incoming_edges_by_node_state[static_cast<std::size_t>(to_index)].push_back(
+            pricing_edge_index
+        );
+    }
+
+    for (std::size_t node_state_index = 0; node_state_index < context.node_states.size();
+         ++node_state_index) {
+        const NodeId node_id = context.node_states[node_state_index].node_id;
+        if (node_id == context.end_node_id) {
+        } else if (!context.outgoing_edges_by_node_state[node_state_index].empty()) {
+            context.start_node_state_indices.push_back(static_cast<int>(node_state_index));
+        }
+
+        if (node_id == 0) {
+        } else if (!context.incoming_edges_by_node_state[node_state_index].empty()) {
+            context.end_node_state_indices.push_back(static_cast<int>(node_state_index));
+        }
+    }
+
+    return context;
+}
+
+ForwardPricingResult run_forward_pricing(
+    const MultiDiGraph& graph,
+    const ForwardPricingContext& context,
+    const CGDualSolution& dual_solution,
+    CGPhase phase,
+    const ForwardPricingOptions& options
+) {
+    ForwardPricingResult result;
+    result.best_reduced_cost = std::numeric_limits<double>::infinity();
+
+    const std::size_t mask_word_count = bit_word_count(context.physical_node_count); // physical node 방문 여부를 나타내는 set을 비트마스크로 표현할 때 필요한 64bit cell 수.
+    std::vector<CGColumn> candidate_columns;
+
+    for (int start_node_state_index : context.start_node_state_indices) {
+        const ForwardPricingContext::NodeStateInfo& start_info =
+            context.node_states[static_cast<std::size_t>(start_node_state_index)];
+
+        std::vector<Label> labels;
+        labels.reserve(128);
+
+        Label root_label;
+        root_label.node_state_index = start_node_state_index;
+        root_label.depth = 0;
+        root_label.base_cost = 0.0;
+        root_label.total_time = 0.0;
+        root_label.visited_physical_mask.assign(mask_word_count, 0U);
+        root_label.symmetry_max_request_idx_by_class.assign(context.request_class_count, -1);
+        if (start_info.is_physical_service_node) {
+            mask_add(root_label.visited_physical_mask, start_info.physical_bit_index);
+        }
+        if (start_info.is_pickup && start_info.request_class_index >= 0) {
+            root_label.symmetry_max_request_idx_by_class
+                [static_cast<std::size_t>(start_info.request_class_index)] = start_info.request_index;
+        }
+        labels.push_back(root_label);
+        ++result.start_label_count;
+
+        // same (x, depth) bucket에서 dominance를 본다.
+        std::vector<std::vector<std::vector<int>>> bucket_label_indices(
+            context.p + 1,
+            std::vector<std::vector<int>>(context.node_states.size())
+        );
+        bucket_label_indices[0][static_cast<std::size_t>(start_node_state_index)].push_back(0);
+
+        std::vector<CGColumn> best_columns_for_start;
+        std::vector<int> current_layer_indices{0};
+
+        for (int depth = 0; depth <= context.p && !current_layer_indices.empty(); ++depth) {
+            for (int label_index : current_layer_indices) {
+                const Label current_label = labels[static_cast<std::size_t>(label_index)];
+
+                if (is_complete_label(start_info.node_id, current_label.depth, context.p)) {
+                    ++result.complete_label_count;
+                    CGColumn column = build_column_from_complete_label(
+                        graph,
+                        dual_solution,
+                        phase,
+                        context.time_limit,
+                        context,
+                        labels,
+                        label_index,
+                        options.reduced_cost_tolerance
+                    );
+                    if (!column.edge_ids.empty()) {
+                        result.best_reduced_cost = std::min(result.best_reduced_cost, column.reduced_cost);
+                        best_columns_for_start.push_back(std::move(column));
+                    }
+                }
+
+                // depot에서는 complete label이 depth 1 이상인 경우이므로 complete 평가 후에도 확장 가능할 수 있다.
+                if (current_label.depth >= context.p) {
+                    continue;
+                }
+
+                for (int pricing_edge_index :
+                     context.outgoing_edges_by_node_state[static_cast<std::size_t>(current_label.node_state_index)]) {
+                    const ForwardPricingContext::EdgeInfo& pricing_edge =
+                        context.edges[static_cast<std::size_t>(pricing_edge_index)];
+                    const ForwardPricingContext::NodeStateInfo& next_info =
+                        context.node_states[static_cast<std::size_t>(pricing_edge.to_node_state_index)];
+
+                    if (!double_less_or_equal(
+                            current_label.total_time + pricing_edge.time,
+                            context.time_limit
+                        )) {
+                        continue;
+                    }
+
+                    if (next_info.is_physical_service_node &&
+                        mask_contains(current_label.visited_physical_mask, next_info.physical_bit_index)) {
+                        continue;
+                    }
+
+                    if (next_info.is_pickup && next_info.request_class_index >= 0) {
+                        const int current_max =
+                            current_label.symmetry_max_request_idx_by_class
+                                [static_cast<std::size_t>(next_info.request_class_index)];
+                        if (next_info.request_index <= current_max) {
+                            continue;
+                        }
+                    }
+
+                    const EdgeRecord& graph_edge =
+                        graph.edges()[static_cast<std::size_t>(pricing_edge.graph_edge_id)];
+                    double alpha_head = 0.0;
+                    if (graph.is_physical_service_node(graph_edge.v)) {
+                        alpha_head = lookup_dual(dual_solution.visit_duals, graph_edge.v);
+                    }
+                    const double edge_objective_cost =
+                        phase_edge_objective_cost(phase, graph_edge.data.cost);
+                    const double delta =
+                        dual_solution.edge_duals[static_cast<std::size_t>(pricing_edge.graph_edge_id)];
+
+                    Label next_label = current_label;
+                    next_label.node_state_index = pricing_edge.to_node_state_index;
+                    next_label.depth = current_label.depth + 1;
+                    next_label.base_cost =
+                        current_label.base_cost + edge_objective_cost - delta - 2.0 * alpha_head;
+                    next_label.total_time = current_label.total_time + pricing_edge.time;
+                    next_label.parent_label_index = label_index;
+                    next_label.incoming_pricing_edge_index = pricing_edge_index;
+
+                    if (next_info.is_physical_service_node) {
+                        mask_add(next_label.visited_physical_mask, next_info.physical_bit_index);
+                    }
+                    if (next_info.is_pickup && next_info.request_class_index >= 0) {
+                        next_label.symmetry_max_request_idx_by_class
+                            [static_cast<std::size_t>(next_info.request_class_index)] =
+                                next_info.request_index;
+                    }
+
+                    ++result.generated_label_count;
+
+                    std::vector<int>& bucket =
+                        bucket_label_indices[static_cast<std::size_t>(next_label.depth)]
+                                          [static_cast<std::size_t>(next_label.node_state_index)];
+
+                    bool dominated = false;
+                    std::vector<std::size_t> dominated_bucket_positions;
+                    for (std::size_t bucket_pos = 0; bucket_pos < bucket.size(); ++bucket_pos) {
+                        const int existing_label_index = bucket[bucket_pos];
+                        const Label& existing_label =
+                            labels[static_cast<std::size_t>(existing_label_index)];
+                        if (dominates_label(existing_label, next_label)) {
+                            dominated = true;
+                            break;
+                        }
+                        if (dominates_label(next_label, existing_label)) {
+                            dominated_bucket_positions.push_back(bucket_pos);
+                        }
+                    }
+
+                    if (dominated) {
+                        ++result.dominated_label_count;
+                        continue;
+                    }
+
+                    if (!dominated_bucket_positions.empty()) {
+                        // Bucket order is irrelevant; remove dominated entries by swap-pop
+                        // to avoid rebuilding large buckets when only a few labels are dominated.
+                        for (auto pos_it = dominated_bucket_positions.rbegin();
+                             pos_it != dominated_bucket_positions.rend();
+                             ++pos_it) {
+                            const std::size_t bucket_pos = *pos_it;
+                            bucket[bucket_pos] = bucket.back();
+                            bucket.pop_back();
+                            ++result.dominated_label_count;
+                        }
+                    }
+
+                    const int new_label_index = static_cast<int>(labels.size());
+                    labels.push_back(std::move(next_label));
+                    bucket.push_back(new_label_index);
+                }
+            }
+
+            current_layer_indices.clear();
+            if (depth < context.p) {
+                const auto& next_layer_buckets =
+                    bucket_label_indices[static_cast<std::size_t>(depth + 1)];
+                for (const std::vector<int>& bucket : next_layer_buckets) {
+                    current_layer_indices.insert(
+                        current_layer_indices.end(),
+                        bucket.begin(),
+                        bucket.end()
+                    );
+                }
+            }
+        }
+
+        result.surviving_label_count += count_surviving_labels(bucket_label_indices);
+
+        if (!best_columns_for_start.empty()) {
+            std::sort(
+                best_columns_for_start.begin(),
+                best_columns_for_start.end(),
+                [](const CGColumn& lhs, const CGColumn& rhs) {
+                    return lhs.reduced_cost < rhs.reduced_cost;
+                }
+            );
+            if (best_columns_for_start.size() > options.max_columns_per_start) {
+                best_columns_for_start.resize(options.max_columns_per_start);
+            }
+            candidate_columns.insert(
+                candidate_columns.end(),
+                best_columns_for_start.begin(),
+                best_columns_for_start.end()
+            );
+        }
+    }
+
+    std::sort(
+        candidate_columns.begin(),
+        candidate_columns.end(),
+        [](const CGColumn& lhs, const CGColumn& rhs) {
+            return lhs.reduced_cost < rhs.reduced_cost;
+        }
+    );
+
+    std::map<std::string, int> seen_column_keys;
+    for (const CGColumn& column : candidate_columns) {
+        const std::string column_key = build_column_key(column.edge_ids, column.tau);
+        if (seen_column_keys.find(column_key) != seen_column_keys.end()) {
+            continue;
+        }
+        seen_column_keys.emplace(column_key, 1);
+        result.columns.push_back(column);
+        if (result.columns.size() >= options.max_total_columns) {
+            break;
+        }
+    }
+
+    if (!std::isfinite(result.best_reduced_cost)) {
+        result.best_reduced_cost = 0.0;
+    }
+    if (result.complete_label_count == 0U) {
+        result.status = ForwardPricingStatus::NoCompleteLabel;
+    } else if (result.columns.empty()) {
+        result.status = ForwardPricingStatus::NoNegativeColumn;
+    } else {
+        result.status = ForwardPricingStatus::ColumnsFound;
+    }
+
+    return result;
+}
+
+void write_generated_columns(
+    std::ostream& out,
+    const std::vector<CGColumn>& columns
+) {
+    out << "[pricing] Generated column count: " << columns.size() << '\n';
+    for (const CGColumn& column : columns) {
+        out << "  rc=" << format_double(column.reduced_cost)
+            << " q=" << column.q
+            << " tau=" << format_double(column.tau)
+            << " time=" << format_double(column.total_time)
+            << " cost=" << format_double(column.total_cost)
+            << " edges=[";
+        for (std::size_t idx = 0; idx < column.edge_ids.size(); ++idx) {
+            if (idx > 0U) {
+                out << ", ";
+            }
+            out << column.edge_ids[idx];
+        }
+        out << "]";
+        out << " visit={";
+        for (std::size_t idx = 0; idx < column.visit_coefficients.size(); ++idx) {
+            if (idx > 0U) {
+                out << ", ";
+            }
+            out << column.visit_coefficients[idx].first << ":" << column.visit_coefficients[idx].second;
+        }
+        out << "} state={";
+        for (std::size_t idx = 0; idx < column.state_coefficients.size(); ++idx) {
+            if (idx > 0U) {
+                out << ", ";
+            }
+            out << "(" << column.state_coefficients[idx].first.node_id << ","
+                << state_to_str(column.state_coefficients[idx].first.state) << "):"
+                << column.state_coefficients[idx].second;
+        }
+        out << "} time={";
+        for (std::size_t idx = 0; idx < column.time_coefficients.size(); ++idx) {
+            if (idx > 0U) {
+                out << ", ";
+            }
+            out << "(" << column.time_coefficients[idx].first.node_id << ","
+                << state_to_str(column.time_coefficients[idx].first.state) << "):"
+                << format_double(column.time_coefficients[idx].second);
+        }
+        out << "}\n";
+    }
+}
+
+const char* to_string(ForwardPricingStatus status) {
+    switch (status) {
+        case ForwardPricingStatus::ColumnsFound:
+            return "columns-found";
+        case ForwardPricingStatus::NoNegativeColumn:
+            return "no-negative-column";
+        case ForwardPricingStatus::NoCompleteLabel:
+            return "no-complete-label";
+    }
+    return "unknown";
+}
+
+}  // namespace spdp

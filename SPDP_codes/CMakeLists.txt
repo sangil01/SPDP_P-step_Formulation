@@ -38,6 +38,9 @@ add_executable(SPDP_P_step
     src/ReadData.cpp
     src/GenMultiGraph.cpp
     src/PstepFormulation.cpp
+    src/PstepPricing.cpp
+    src/PstepMasterCG.cpp
+    src/PstepBnP.cpp
     ${GUROBI_CPP_SOURCES}
 )
 
