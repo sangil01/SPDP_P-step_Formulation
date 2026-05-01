@@ -57,6 +57,21 @@ struct PricingRequestClassKey {
     }
 };
 
+// delivery symmetry용 request equivalence class.
+// 같은 (delivery location, container type) class에서
+// request index가 증가하는 순서만 허용한다.
+struct PricingDeliveryClassKey {
+    int delivery_location = 0;
+    int container_type = 0;
+
+    bool operator<(const PricingDeliveryClassKey& other) const {
+        if (delivery_location != other.delivery_location) {
+            return delivery_location < other.delivery_location;
+        }
+        return container_type < other.container_type;
+    }
+};
+
 // pricing이 생성하는 dynamic compact p-step column 표현.
 // 기존 CompactPStep과 거의 같은 경로 정보를 들고 가되,
 // column generation에서 바로 RMP에 추가할 sparse coefficient도 함께 저장한다.
@@ -118,9 +133,13 @@ struct ForwardPricingContext {
         // physical service node면 0-based dense bit index, 아니면 -1.
         int physical_bit_index = -1;
 
-        // pickup node면 symmetry-43용 class / request index를 갖는다.
+        // pickup / delivery node면 각 symmetry용 class / request index를 갖는다.
         bool is_pickup = false;
-        int request_class_index = -1;
+        int pickup_request_class_index = -1;
+
+        bool is_delivery = false;
+        int delivery_request_class_index = -1;
+
         int request_index = -1;
     };
 
@@ -154,9 +173,10 @@ struct ForwardPricingContext {
     // backward labeling을 위한 feasible end class 목록.
     std::vector<int> end_node_state_indices;
 
-    // physical service node 수와 서로 다른 request class 수.
+    // physical service node 수와 pickup / delivery symmetry class 수.
     std::size_t physical_node_count = 0;
-    std::size_t request_class_count = 0;
+    std::size_t pickup_request_class_count = 0;
+    std::size_t delivery_request_class_count = 0;
 
     // physical node별 가능한 sigma rows.
     std::map<NodeId, std::vector<State>> sigma_by_node;
@@ -172,6 +192,12 @@ struct ForwardPricingOptions {
 
     // reduced cost가 이 값보다 작을 때만 column으로 인정한다.
     double reduced_cost_tolerance = -1e-6;
+
+    // symmetry-43 pickup ordering을 적용할지 여부.
+    bool prune_pickup_symmetry_43 = true;
+
+    // delivery ordering symmetry를 적용할지 여부.
+    bool prune_delivery_symmetry_43 = true;
 };
 
 enum class ForwardPricingStatus {

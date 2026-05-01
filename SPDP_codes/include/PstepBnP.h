@@ -44,6 +44,12 @@ struct NodeCGOptions {
     // reduced cost tolerance.
     double reduced_cost_tolerance = -1e-6;
 
+    // pricing에서 pickup ordering symmetry를 적용할지 여부.
+    bool prune_pickup_symmetry_43 = true;
+
+    // pricing에서 delivery ordering symmetry를 적용할지 여부.
+    bool prune_delivery_symmetry_43 = true;
+
     // Gurobi log file 경로.
     std::string gurobi_log_path;
 

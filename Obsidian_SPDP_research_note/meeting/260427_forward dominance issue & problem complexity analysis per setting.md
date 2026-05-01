@@ -1,0 +1,427 @@
+## Forward dominance issue
+
+### Current setting
+
+Current pricing fixes only the source state
+
+$$
+u = (s,\sigma_s),
+$$
+
+and does not fix the terminal state
+
+$$
+v = (f,\sigma_f).
+$$
+
+Hence the pricing problem is a **single-source multi-sink** problem.
+
+### Reduced cost
+
+For each p-step $r$,
+
+$$
+\bar c_r
+=
+\sum_{(i,j)\in P_r} (c_{ij} - \delta_{ij} - 2\alpha_j)
++ t(r)\gamma_v
++ (\gamma_v - \gamma_u)\tau_r
+- \alpha_s + \alpha_f - \beta_u + \beta_v.
+$$
+
+Define
+
+$$
+C(P_r) = \sum_{(i,j)\in P_r} (c_{ij} - \delta_{ij} - 2\alpha_j),
+$$
+
+$$
+\Phi(u,v,t(r))
+=
+t(r)\gamma_v
++ (\gamma_v - \gamma_u)\tau_r
+- \alpha_s + \alpha_f - \beta_u + \beta_v.
+$$
+
+Then
+
+$$
+\bar c_r = C(P_r) + \Phi(u,v,t(r)).
+$$
+
+Key point:
+
+- $C(P_r)$ is path-dependent,
+- $\Phi(u,v,t(r))$ is terminal-dependent.
+
+### Current forward labeling rule
+
+The current label is
+
+$$
+l = (x, K_l, C_l, T_l, U_l, M_l),
+$$
+
+where
+
+$$
+C_l = \sum_{e\in l} w_e,
+\qquad
+w_e = c_{ij} - \delta_{ij} - 2\alpha_j.
+$$
+
+Current dominance rule:
+
+$$
+l_1 \text{ dominates } l_2
+$$
+
+if
+
+$$
+C_{l_1} \le C_{l_2}, \qquad
+T_{l_1} \le T_{l_2}, \qquad
+U_{l_1} \subseteq U_{l_2}, \qquad
+M_{l_1} \le M_{l_2}.
+$$
+
+### Why it initially seemed non-exact
+
+The original concern was the following.
+
+Take the same feasible suffix $Q$ and terminal state $v=(f,\sigma_f)$, and compare
+
+$$
+r_1 = P_{l_1} \oplus Q,
+\qquad
+r_2 = P_{l_2} \oplus Q.
+$$
+
+Then
+
+$$
+\bar c_{r_1} - \bar c_{r_2}
+=
+(C_{l_1} - C_{l_2})
++ \Phi(u,v,T_{l_1}+t(Q))
+- \Phi(u,v,T_{l_2}+t(Q)).
+$$
+
+Since $\Phi(u,v,t)$ depends on the terminal state $v$, it first looked as if the forward dominance rule could fail: even if
+
+$$
+C_{l_1} \le C_{l_2}, \qquad T_{l_1} \le T_{l_2},
+$$
+
+the terminal-dependent term might reverse the comparison.
+
+**This concern turns out to be incorrect**, but it is still useful to record it because it explains why the dominance rule looked suspicious at first glance.
+
+### Dual of the LP relaxation
+
+| Primal row | RHS | Dual variable | Sign |
+| --- | --- | --- | --- |
+| $\sum_r a_r^i x_r = 2$ | $2$ | $\alpha_i$ | free |
+| $\sum_r s_r^{i,\sigma} x_r = 0$ | $0$ | $\beta_{i,\sigma}$ | free |
+| $\sum_r q_r^{i,\sigma} x_r \ge 0$ | $0$ | $\gamma_{i,\sigma}$ | $\ge 0$ |
+| $\sum_r b_e^r x_r - \theta_e = 0$ | $0$ | $\delta_e$ | free |
+| $-\theta_e \ge -1$ | $-1$ | $\lambda_e$ | $\ge 0$ |
+
+So the dual objective is
+
+$$
+\max \;
+2 \sum_{i \in V\setminus\{0,2n+1\}} \alpha_i
+- \sum_{e\in E} \lambda_e.
+$$
+
+For each p-step column $x_r$, the coefficients in the primal rows are
+
+- $a_r^i$ in the visit rows,
+- $s_r^{i,\sigma}$ in the state rows,
+- $q_r^{i,\sigma}$ in the time rows,
+- $b_e^r$ in the linking rows.
+
+Since $x_r \ge 0$, its dual constraint is
+
+$$
+\sum_i a_r^i \alpha_i
++ \sum_{i,\sigma} s_r^{i,\sigma} \beta_{i,\sigma}
++ \sum_{i,\sigma} q_r^{i,\sigma} \gamma_{i,\sigma}
++ \sum_e b_e^r \delta_e
+\le c_r
+\qquad \forall r \in R^p.
+$$
+
+Therefore the reduced cost of p-step $r$ is
+
+$$
+\bar c_r
+=
+c_r
+- \sum_i a_r^i \alpha_i
+- \sum_{i,\sigma} s_r^{i,\sigma} \beta_{i,\sigma}
+- \sum_{i,\sigma} q_r^{i,\sigma} \gamma_{i,\sigma}
+- \sum_e b_e^r \delta_e.
+$$
+
+This is exactly the pricing objective.
+
+For each linking variable $\theta_e$, the coefficients are
+
+- $-1$ in the linking equality row,
+- $-1$ in the upper-bound row $-\theta_e \ge -1$,
+
+and its objective coefficient is $0$.
+
+Hence its dual constraint is
+
+$$
+\delta_e + \lambda_e \ge 0
+\qquad \forall e \in E.
+$$
+
+Finally,
+
+$$
+\gamma_{i,\sigma} \ge 0, \qquad \lambda_e \ge 0,
+$$
+
+$$
+\alpha_i,\ \beta_{i,\sigma},\ \delta_e \text{ free.}
+$$
+
+So, for pricing, the relevant dual variables are
+
+$$
+(\alpha,\beta,\gamma,\delta),
+$$
+
+while $\lambda$ only appears through the dual feasibility condition associated with the bounded variable $\theta_e$.
+
+
+
+### Proof that the current dominance rule is exact
+
+Assume that $l_1$ and $l_2$ have the same current **node-state** $x$ and the same length $K$, and satisfy
+
+$$
+C_{l_1} \le C_{l_2}, \qquad
+T_{l_1} \le T_{l_2}, \qquad
+U_{l_1} \subseteq U_{l_2}, \qquad
+M_{l_1} \le M_{l_2}.
+$$
+
+Take any feasible suffix $Q$ that can be appended to $l_2$, and let the resulting terminal state be
+
+$$
+v=(f,\sigma_f).
+$$
+
+Then the same suffix $Q$ is also feasible after $l_1$ because:
+
+- both labels start the suffix from the same current node-state $x$,
+- $U_{l_1} \subseteq U_{l_2}$ implies that every elementary extension feasible for $l_2$ is also feasible for $l_1$,
+- $M_{l_1} \le M_{l_2}$ implies that every symmetry-feasible extension feasible for $l_2$ is also feasible for $l_1$,
+- $T_{l_1} \le T_{l_2}$ implies that if $T_{l_2}+t(Q)\le T$, then also $T_{l_1}+t(Q)\le T$.
+
+Let
+
+$$
+r_1 = P_{l_1} \oplus Q,
+\qquad
+r_2 = P_{l_2} \oplus Q.
+$$
+
+Then
+
+$$
+\bar c_{r_1} - \bar c_{r_2}
+=
+(C_{l_1} - C_{l_2})
++ \Phi(u,v,T_{l_1}+t(Q))
+- \Phi(u,v,T_{l_2}+t(Q)).
+$$
+
+Now, from the LP dual,
+
+$$
+\gamma_{i,\sigma} \ge 0.
+$$
+
+For fixed total path time $t$, the feasible interval of $\tau_r$ is
+
+$$
+0 \le \tau_r \le T-t.
+$$
+
+Since
+
+$$
+\Phi(u,v,t)
+=
+t\gamma_v + (\gamma_v-\gamma_u)\tau_r
+- \alpha_s + \alpha_f - \beta_u + \beta_v
+$$
+
+is affine in $\tau_r$, the minimizing choice of $\tau_r$ is attained at an endpoint of this interval:
+
+- if $\gamma_v-\gamma_u \ge 0$, then $\Phi$ is nondecreasing in $\tau_r$, so the minimum is attained at $\tau_r=0$;
+- if $\gamma_v-\gamma_u < 0$, then $\Phi$ is decreasing in $\tau_r$, so the minimum is attained at $\tau_r=T-t$.
+
+Hence, for fixed $u$ and $v$, the function $\Phi(u,v,t)$ is nondecreasing in $t$:
+
+- if $\gamma_v-\gamma_u \ge 0$, then
+
+$$
+\tau_r=0,
+\qquad
+\Phi(u,v,t)
+=
+\gamma_v t
+- \alpha_s + \alpha_f - \beta_u + \beta_v,
+$$
+
+so the slope is $\gamma_v \ge 0$;
+
+- if $\gamma_v-\gamma_u < 0$, then
+
+$$
+\tau_r=T-t,
+\qquad
+\Phi(u,v,t)
+=
+\gamma_v t + (\gamma_v-\gamma_u)(T-t)
+- \alpha_s + \alpha_f - \beta_u + \beta_v
+$$
+
+and therefore
+
+$$
+\Phi(u,v,t)
+=
+\gamma_u t
++ (\gamma_v-\gamma_u)T
+- \alpha_s + \alpha_f - \beta_u + \beta_v,
+$$
+
+so the slope is $\gamma_u \ge 0$.
+
+Therefore
+
+$$
+T_{l_1} \le T_{l_2}
+\quad \Longrightarrow \quad
+\Phi(u,v,T_{l_1}+t(Q))
+\le
+\Phi(u,v,T_{l_2}+t(Q)).
+$$
+
+So although $\Phi$ is terminal-dependent, it is still nondecreasing in $t$ for every fixed terminal state $v$, because
+
+$$
+\gamma_{i,\sigma} \ge 0.
+$$
+
+Hence the terminal dependence of $\Phi$ does not invalidate the ordering induced by
+
+$$
+T_{l_1} \le T_{l_2}.
+$$
+
+Combining this with $C_{l_1} \le C_{l_2}$ gives
+
+$$
+\bar c_{r_1} \le \bar c_{r_2}.
+$$
+
+
+Therefore, the forward dominance rule is **exact**.
+
+### Dual of the LP relaxation
+
+| Primal row | RHS | Dual variable | Sign |
+| --- | --- | --- | --- |
+| $\sum_r a_r^i x_r = 2$ | $2$ | $\alpha_i$ | free |
+| $\sum_r s_r^{i,\sigma} x_r = 0$ | $0$ | $\beta_{i,\sigma}$ | free |
+| $\sum_r q_r^{i,\sigma} x_r \ge 0$ | $0$ | $\gamma_{i,\sigma}$ | $\ge 0$ |
+| $\sum_r b_e^r x_r - \theta_e = 0$ | $0$ | $\delta_e$ | free |
+| $-\theta_e \ge -1$ | $-1$ | $\lambda_e$ | $\ge 0$ |
+
+So the dual objective is
+
+$$
+\max \;
+2 \sum_{i \in V\setminus\{0,2n+1\}} \alpha_i
+- \sum_{e\in E} \lambda_e.
+$$
+
+For each p-step column $x_r$, the coefficients in the primal rows are
+
+- $a_r^i$ in the visit rows,
+- $s_r^{i,\sigma}$ in the state rows,
+- $q_r^{i,\sigma}$ in the time rows,
+- $b_e^r$ in the linking rows.
+
+Since $x_r \ge 0$, its dual constraint is
+
+$$
+\sum_i a_r^i \alpha_i
++ \sum_{i,\sigma} s_r^{i,\sigma} \beta_{i,\sigma}
++ \sum_{i,\sigma} q_r^{i,\sigma} \gamma_{i,\sigma}
++ \sum_e b_e^r \delta_e
+\le c_r
+\qquad \forall r \in R^p.
+$$
+
+Therefore the reduced cost of p-step $r$ is
+
+$$
+\bar c_r
+=
+c_r
+- \sum_i a_r^i \alpha_i
+- \sum_{i,\sigma} s_r^{i,\sigma} \beta_{i,\sigma}
+- \sum_{i,\sigma} q_r^{i,\sigma} \gamma_{i,\sigma}
+- \sum_e b_e^r \delta_e.
+$$
+
+This is exactly the pricing objective.
+
+For each linking variable $\theta_e$, the coefficients are
+
+- $-1$ in the linking equality row,
+- $-1$ in the upper-bound row $-\theta_e \ge -1$,
+
+and its objective coefficient is $0$.
+
+Hence its dual constraint is
+
+$$
+\delta_e + \lambda_e \ge 0
+\qquad \forall e \in E.
+$$
+
+Finally,
+
+$$
+\gamma_{i,\sigma} \ge 0, \qquad \lambda_e \ge 0,
+$$
+
+$$
+\alpha_i,\ \beta_{i,\sigma},\ \delta_e \text{ free.}
+$$
+
+So, for pricing, the relevant dual variables are
+
+$$
+(\alpha,\beta,\gamma,\delta),
+$$
+
+while $\lambda$ only appears through the dual feasibility condition associated with the bounded variable $\theta_e$.
+
+---
+## To do
+
+1. 현재 방법으로 pricing을 계속 진행 $\to$ 성능 극대화하기 w. 여러 잡다한 기술
+2. 기본 set-partitioning 일 때의 labeling에 비해 p-step일 때의 labeling 알고리즘의 효율성은 p로 고정된 길이라는 점 밖에 없는지

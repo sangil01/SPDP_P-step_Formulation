@@ -93,7 +93,8 @@ struct CompactPStepOptions {
     double time_limit = -1.0;
     std::size_t dump_limit = 10;
     bool validate = true;
-    bool prune_symmetry_43 = true;
+    bool prune_pickup_symmetry_43 = true;
+    bool prune_delivery_symmetry_43 = true;
 };
 
 // Gurobi master problem 객체와 변수 핸들 모음.
@@ -149,7 +150,8 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
     const MultiDiGraph& graph,
     int p,
     double time_limit,
-    bool prune_symmetry_43 = true
+    bool prune_pickup_symmetry_43 = true,
+    bool prune_delivery_symmetry_43 = true
 );
 
 // raw path를 tau 값과 종료 노드 조건을 반영한 compact p-step으로 변환한다.

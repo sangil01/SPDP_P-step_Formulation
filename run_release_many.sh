@@ -3,7 +3,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXE="$SCRIPT_DIR/SPDP_codes/build-release/SPDP_P_step"
-RUNNER_LOG="$SCRIPT_DIR/P3_root-cg_120s_64_4096.log"
+RUNNER_LOG="$SCRIPT_DIR/P3_root-cg_120s_64_4096_pickup_delivery_symmetry_split.log"
 
 if [[ ! -x "$EXE" ]]; then
     echo "Release executable not found or not executable: $EXE"
@@ -26,7 +26,8 @@ PRUNE_INFEASIBLE_EDGES=1
 PRUNE_DOMINATED_EDGES=1
 PRUNE_SYMMETRY_40=1
 PRUNE_SYMMETRY_41=1
-PRUNE_SYMMETRY_43=1
+PRUNE_PICKUP_SYMMETRY_43=1
+PRUNE_DELIVERY_SYMMETRY_43=1
 ADD_VI_35=0
 ADD_VI_36=0
 ADD_VI_44=0
@@ -35,6 +36,9 @@ CG_MAX_COLUMNS_PER_START=64
 CG_MAX_TOTAL_COLUMNS_PER_ROUND=4096
 CG_REDUCED_COST_TOLERANCE=-1e-6
 DATA_LIST=(
+    "RecDep_day_C4.dat"
+    "RecDep_day_A2.dat"
+    '''
     "RecDep_day_B1.dat"
     "RecDep_day_B2.dat"
     "RecDep_day_C1.dat"
@@ -52,6 +56,7 @@ DATA_LIST=(
     "RecDep_day_A9.dat"
     "RecDep_day_A10.dat"
     "RecDep_day_A11.dat"
+    '''
 )
 # Put one data file name per line in DATA_LIST.
 # ============================================
@@ -97,6 +102,8 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "cg-max-columns-per-start: $CG_MAX_COLUMNS_PER_START"
         echo "cg-max-total-columns-per-round: $CG_MAX_TOTAL_COLUMNS_PER_ROUND"
         echo "cg-reduced-cost-tolerance: $CG_REDUCED_COST_TOLERANCE"
+        echo "prune-pickup-symmetry-43: $PRUNE_PICKUP_SYMMETRY_43"
+        echo "prune-delivery-symmetry-43: $PRUNE_DELIVERY_SYMMETRY_43"
         echo "----------------------------------------"
     } >> "$RUNNER_LOG"
 
@@ -114,7 +121,8 @@ for data_name in "${DATA_LIST[@]}"; do
         --prune-dominated-edges "$PRUNE_DOMINATED_EDGES" \
         --prune-symmetry-40 "$PRUNE_SYMMETRY_40" \
         --prune-symmetry-41 "$PRUNE_SYMMETRY_41" \
-        --prune-symmetry-43 "$PRUNE_SYMMETRY_43" \
+        --prune-pickup-symmetry-43 "$PRUNE_PICKUP_SYMMETRY_43" \
+        --prune-delivery-symmetry-43 "$PRUNE_DELIVERY_SYMMETRY_43" \
         --add-vi-35 "$ADD_VI_35" \
         --add-vi-36 "$ADD_VI_36" \
         --add-vi-44 "$ADD_VI_44" \

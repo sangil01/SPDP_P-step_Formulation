@@ -34,7 +34,8 @@ struct CliOptions {
     int prune_dominated_edges = 1;
     int prune_symmetry_40 = 1;
     int prune_symmetry_41 = 1;
-    int prune_symmetry_43 = 1;
+    int prune_pickup_symmetry_43 = 1;
+    int prune_delivery_symmetry_43 = 1;
     int add_vi_35 = 0;
     int add_vi_36 = 0;
     int add_vi_44 = 0;
@@ -52,7 +53,9 @@ void print_usage(const char* executable) {
               << " [--vi-formulation theta|x] [--dump-psteps N] [--validate-psteps 0|1] [--solve 0|1]"
               << " [--prune-infeasible-edges 0|1] [--prune-dominated-edges 0|1]"
               << " [--prune-symmetry-40 0|1] [--prune-symmetry-41 0|1]"
-              << " [--prune-symmetry-43 0|1] [--add-vi-35 0|1] [--add-vi-36 0|1]"
+              << " [--prune-pickup-symmetry-43 0|1]"
+              << " [--prune-delivery-symmetry-43 0|1]"
+              << " [--add-vi-35 0|1] [--add-vi-36 0|1]"
               << " [--add-vi-44 0|1]"
               << " [--cg-max-iterations-per-phase N]"
               << " [--cg-max-columns-per-start N]"
@@ -308,13 +311,28 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
-        if (arg == "--prune-symmetry-43") {
+        if (arg == "--prune-pickup-symmetry-43") {
             if (idx + 1 >= argc) {
-                throw std::runtime_error("--prune-symmetry-43 requires a value.");
+                throw std::runtime_error("--prune-pickup-symmetry-43 requires a value.");
             }
-            options.prune_symmetry_43 = parse_int(argv[++idx], "--prune-symmetry-43");
-            if (options.prune_symmetry_43 != 0 && options.prune_symmetry_43 != 1) {
-                throw std::runtime_error("--prune-symmetry-43 must be 0 or 1.");
+            options.prune_pickup_symmetry_43 =
+                parse_int(argv[++idx], "--prune-pickup-symmetry-43");
+            if (options.prune_pickup_symmetry_43 != 0 &&
+                options.prune_pickup_symmetry_43 != 1) {
+                throw std::runtime_error("--prune-pickup-symmetry-43 must be 0 or 1.");
+            }
+            continue;
+        }
+
+        if (arg == "--prune-delivery-symmetry-43") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--prune-delivery-symmetry-43 requires a value.");
+            }
+            options.prune_delivery_symmetry_43 =
+                parse_int(argv[++idx], "--prune-delivery-symmetry-43");
+            if (options.prune_delivery_symmetry_43 != 0 &&
+                options.prune_delivery_symmetry_43 != 1) {
+                throw std::runtime_error("--prune-delivery-symmetry-43 must be 0 or 1.");
             }
             continue;
         }
@@ -456,7 +474,8 @@ void print_instance_summary(
     out << "[main] prune_dominated_edges: " << args.prune_dominated_edges << '\n';
     out << "[main] prune_symmetry_40: " << args.prune_symmetry_40 << '\n';
     out << "[main] prune_symmetry_41: " << args.prune_symmetry_41 << '\n';
-    out << "[main] prune_symmetry_43: " << args.prune_symmetry_43 << '\n';
+    out << "[main] prune_pickup_symmetry_43: " << args.prune_pickup_symmetry_43 << '\n';
+    out << "[main] prune_delivery_symmetry_43: " << args.prune_delivery_symmetry_43 << '\n';
     out << "[main] add_vi_35: " << args.add_vi_35 << '\n';
     out << "[main] add_vi_36: " << args.add_vi_36 << '\n';
     out << "[main] add_vi_44: " << args.add_vi_44 << '\n';
@@ -627,6 +646,8 @@ int main(int argc, char** argv) {
                     static_cast<std::size_t>(args.cg_max_columns_per_start),
                     static_cast<std::size_t>(args.cg_max_total_columns_per_round),
                     args.cg_reduced_cost_tolerance,
+                    args.prune_pickup_symmetry_43 == 1,
+                    args.prune_delivery_symmetry_43 == 1,
                     gurobi_log_path.string(),
                     args.node_cg_phase_one_mode == "exact-cg"
                         ? spdp::NodeCGPhaseOneMode::ExactCG
@@ -649,7 +670,8 @@ int main(int argc, char** argv) {
                 data.time_limit,
                 static_cast<std::size_t>(std::max(args.dump_psteps, 0)),
                 args.validate_psteps == 1,
-                args.prune_symmetry_43 == 1,
+                args.prune_pickup_symmetry_43 == 1,
+                args.prune_delivery_symmetry_43 == 1,
             };
             const auto compact_pstep_build_start = std::chrono::steady_clock::now();
             const spdp::CompactPStepArtifacts artifacts =

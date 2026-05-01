@@ -64,7 +64,9 @@ double lookup_dual(
     return found->second;
 }
 
-std::optional<PricingRequestClassKey> request_class_of_node(
+// symmetry-43 pickup ordering용 class:
+// 같은 (pickup location, treatment location, type)의 pickup만 같은 class로 본다.
+std::optional<PricingRequestClassKey> pickup_request_class_of_node(
     const MultiDiGraph& graph,
     NodeId node_id
 ) {
@@ -85,6 +87,28 @@ std::optional<PricingRequestClassKey> request_class_of_node(
     };
 }
 
+// delivery ordering symmetry용 class:
+// delivery service는 E(h) -> N만 수행하므로 landfill identity는 쓰지 않고
+// 같은 (delivery location, type)의 delivery만 같은 class로 본다.
+std::optional<PricingDeliveryClassKey> delivery_request_class_of_node(
+    const MultiDiGraph& graph,
+    NodeId node_id
+) {
+    if (!graph.is_physical_service_node(node_id)) {
+        return std::nullopt;
+    }
+
+    const NodeSpec& node = graph.node(node_id);
+    if (node.kind != NodeSpec::Kind::Delivery || !node.container_type.has_value()) {
+        return std::nullopt;
+    }
+
+    return PricingDeliveryClassKey{
+        node.location,
+        node.container_type.value(),
+    };
+}
+
 std::size_t bit_word_count(std::size_t bit_count) {
     return (bit_count + 63U) / 64U;
 }
@@ -95,7 +119,8 @@ struct Label {
     double base_cost = 0.0;
     double total_time = 0.0;
     std::vector<std::uint64_t> visited_physical_mask;
-    std::vector<int> symmetry_max_request_idx_by_class;
+    std::vector<int> pickup_max_request_idx_by_class;
+    std::vector<int> delivery_max_request_idx_by_class;
     int parent_label_index = -1;
     int incoming_pricing_edge_index = -1;
 };
@@ -393,8 +418,12 @@ bool dominates_label(
            double_less_or_equal(lhs.total_time, rhs.total_time) &&
            mask_subset_of(lhs.visited_physical_mask, rhs.visited_physical_mask) &&
            symmetry_state_less_or_equal(
-               lhs.symmetry_max_request_idx_by_class,
-               rhs.symmetry_max_request_idx_by_class
+               lhs.pickup_max_request_idx_by_class,
+               rhs.pickup_max_request_idx_by_class
+           ) &&
+           symmetry_state_less_or_equal(
+               lhs.delivery_max_request_idx_by_class,
+               rhs.delivery_max_request_idx_by_class
            );
 }
 
@@ -458,18 +487,29 @@ ForwardPricingContext build_forward_pricing_context(
     }
     context.physical_node_count = physical_bit_by_node.size();
 
-    std::map<PricingRequestClassKey, int> request_class_index_by_key;
+    std::map<PricingRequestClassKey, int> pickup_request_class_index_by_key;
+    std::map<PricingDeliveryClassKey, int> delivery_request_class_index_by_key;
     for (NodeId node_id = 1; node_id < context.end_node_id; ++node_id) {
-        const std::optional<PricingRequestClassKey> key = request_class_of_node(graph, node_id);
-        if (!key.has_value()) {
-            continue;
+        const std::optional<PricingRequestClassKey> pickup_key =
+            pickup_request_class_of_node(graph, node_id);
+        if (pickup_key.has_value() &&
+            pickup_request_class_index_by_key.find(pickup_key.value()) ==
+                pickup_request_class_index_by_key.end()) {
+            const int next_index = static_cast<int>(pickup_request_class_index_by_key.size());
+            pickup_request_class_index_by_key.emplace(pickup_key.value(), next_index);
         }
-        if (request_class_index_by_key.find(key.value()) == request_class_index_by_key.end()) {
-            const int next_index = static_cast<int>(request_class_index_by_key.size());
-            request_class_index_by_key.emplace(key.value(), next_index);
+
+        const std::optional<PricingDeliveryClassKey> delivery_key =
+            delivery_request_class_of_node(graph, node_id);
+        if (delivery_key.has_value() &&
+            delivery_request_class_index_by_key.find(delivery_key.value()) ==
+                delivery_request_class_index_by_key.end()) {
+            const int next_index = static_cast<int>(delivery_request_class_index_by_key.size());
+            delivery_request_class_index_by_key.emplace(delivery_key.value(), next_index);
         }
     }
-    context.request_class_count = request_class_index_by_key.size();
+    context.pickup_request_class_count = pickup_request_class_index_by_key.size();
+    context.delivery_request_class_count = delivery_request_class_index_by_key.size();
 
     for (const EdgeRecord& edge : graph.edges()) {
         const NodeStateKey start_key{edge.u, canonicalize_state(edge.data.start_state)};
@@ -490,9 +530,19 @@ ForwardPricingContext build_forward_pricing_context(
                 info.is_pickup = true;
                 info.request_index = node.request_idx.value();
                 const std::optional<PricingRequestClassKey> class_key =
-                    request_class_of_node(graph, start_key.node_id);
+                    pickup_request_class_of_node(graph, start_key.node_id);
                 if (class_key.has_value()) {
-                    info.request_class_index = request_class_index_by_key[class_key.value()];
+                    info.pickup_request_class_index =
+                        pickup_request_class_index_by_key[class_key.value()];
+                }
+            } else if (node.kind == NodeSpec::Kind::Delivery) {
+                info.is_delivery = true;
+                info.request_index = node.request_idx.value();
+                const std::optional<PricingDeliveryClassKey> class_key =
+                    delivery_request_class_of_node(graph, start_key.node_id);
+                if (class_key.has_value()) {
+                    info.delivery_request_class_index =
+                        delivery_request_class_index_by_key[class_key.value()];
                 }
             }
 
@@ -516,9 +566,19 @@ ForwardPricingContext build_forward_pricing_context(
                 info.is_pickup = true;
                 info.request_index = node.request_idx.value();
                 const std::optional<PricingRequestClassKey> class_key =
-                    request_class_of_node(graph, end_key.node_id);
+                    pickup_request_class_of_node(graph, end_key.node_id);
                 if (class_key.has_value()) {
-                    info.request_class_index = request_class_index_by_key[class_key.value()];
+                    info.pickup_request_class_index =
+                        pickup_request_class_index_by_key[class_key.value()];
+                }
+            } else if (node.kind == NodeSpec::Kind::Delivery) {
+                info.is_delivery = true;
+                info.request_index = node.request_idx.value();
+                const std::optional<PricingDeliveryClassKey> class_key =
+                    delivery_request_class_of_node(graph, end_key.node_id);
+                if (class_key.has_value()) {
+                    info.delivery_request_class_index =
+                        delivery_request_class_index_by_key[class_key.value()];
                 }
             }
 
@@ -598,13 +658,30 @@ ForwardPricingResult run_forward_pricing(
         root_label.base_cost = 0.0;
         root_label.total_time = 0.0;
         root_label.visited_physical_mask.assign(mask_word_count, 0U);
-        root_label.symmetry_max_request_idx_by_class.assign(context.request_class_count, -1);
+        root_label.pickup_max_request_idx_by_class.assign(
+            context.pickup_request_class_count,
+            -1
+        );
+        root_label.delivery_max_request_idx_by_class.assign(
+            context.delivery_request_class_count,
+            -1
+        );
         if (start_info.is_physical_service_node) {
             mask_add(root_label.visited_physical_mask, start_info.physical_bit_index);
         }
-        if (start_info.is_pickup && start_info.request_class_index >= 0) {
-            root_label.symmetry_max_request_idx_by_class
-                [static_cast<std::size_t>(start_info.request_class_index)] = start_info.request_index;
+        if (options.prune_pickup_symmetry_43 &&
+            start_info.is_pickup &&
+            start_info.pickup_request_class_index >= 0) {
+            root_label.pickup_max_request_idx_by_class
+                [static_cast<std::size_t>(start_info.pickup_request_class_index)] =
+                    start_info.request_index;
+        }
+        if (options.prune_delivery_symmetry_43 &&
+            start_info.is_delivery &&
+            start_info.delivery_request_class_index >= 0) {
+            root_label.delivery_max_request_idx_by_class
+                [static_cast<std::size_t>(start_info.delivery_request_class_index)] =
+                    start_info.request_index;
         }
         labels.push_back(root_label);
         ++result.start_label_count;
@@ -665,10 +742,26 @@ ForwardPricingResult run_forward_pricing(
                         continue;
                     }
 
-                    if (next_info.is_pickup && next_info.request_class_index >= 0) {
+                    if (options.prune_pickup_symmetry_43 &&
+                        next_info.is_pickup &&
+                        next_info.pickup_request_class_index >= 0) {
                         const int current_max =
-                            current_label.symmetry_max_request_idx_by_class
-                                [static_cast<std::size_t>(next_info.request_class_index)];
+                            current_label.pickup_max_request_idx_by_class
+                                [static_cast<std::size_t>(next_info.pickup_request_class_index)];
+                        if (next_info.request_index <= current_max) {
+                            continue;
+                        }
+                    }
+
+                    // [수정] delivery ordering symmetry:
+                    // 같은 (delivery location, type) class의 delivery들은
+                    // request_idx 오름차순으로만 등장하도록 제한한다.
+                    if (options.prune_delivery_symmetry_43 &&
+                        next_info.is_delivery &&
+                        next_info.delivery_request_class_index >= 0) {
+                        const int current_max =
+                            current_label.delivery_max_request_idx_by_class
+                                [static_cast<std::size_t>(next_info.delivery_request_class_index)];
                         if (next_info.request_index <= current_max) {
                             continue;
                         }
@@ -697,9 +790,18 @@ ForwardPricingResult run_forward_pricing(
                     if (next_info.is_physical_service_node) {
                         mask_add(next_label.visited_physical_mask, next_info.physical_bit_index);
                     }
-                    if (next_info.is_pickup && next_info.request_class_index >= 0) {
-                        next_label.symmetry_max_request_idx_by_class
-                            [static_cast<std::size_t>(next_info.request_class_index)] =
+                    if (options.prune_pickup_symmetry_43 &&
+                        next_info.is_pickup &&
+                        next_info.pickup_request_class_index >= 0) {
+                        next_label.pickup_max_request_idx_by_class
+                            [static_cast<std::size_t>(next_info.pickup_request_class_index)] =
+                                next_info.request_index;
+                    }
+                    if (options.prune_delivery_symmetry_43 &&
+                        next_info.is_delivery &&
+                        next_info.delivery_request_class_index >= 0) {
+                        next_label.delivery_max_request_idx_by_class
+                            [static_cast<std::size_t>(next_info.delivery_request_class_index)] =
                                 next_info.request_index;
                     }
 

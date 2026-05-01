@@ -165,6 +165,41 @@ std::optional<RequestEquivalenceClassKey> request_equivalence_class_of_node(
     };
 }
 
+// [수정] delivery ordering symmetry용 class.
+// delivery는 E(h) -> N만 수행하므로 landfill identity를 쓰지 않고
+// 같은 (delivery location, container type) class에서만 index ordering을 적용한다.
+struct DeliveryEquivalenceClassKey {
+    int location = 0;
+    int container_type = 0;
+
+    bool operator<(const DeliveryEquivalenceClassKey& other) const {
+        if (location != other.location) {
+            return location < other.location;
+        }
+        return container_type < other.container_type;
+    }
+};
+
+// [수정] 특정 노드의 타입이 delivery이면 delivery symmetry class key를 반환한다.
+std::optional<DeliveryEquivalenceClassKey> delivery_equivalence_class_of_node(
+    const MultiDiGraph& graph,
+    NodeId node_id
+) {
+    if (!graph.is_physical_service_node(node_id)) {
+        return std::nullopt;
+    }
+
+    const NodeSpec& node = graph.node(node_id);
+    if (node.kind != NodeSpec::Kind::Delivery || !node.container_type.has_value()) {
+        return std::nullopt;
+    }
+
+    return DeliveryEquivalenceClassKey{
+        node.location,
+        node.container_type.value(),
+    };
+}
+
 // raw p-step 길이 조건을 만족하는지 확인한다.
 bool is_valid_raw_length(
     NodeId start_node_id,
@@ -830,7 +865,8 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
     const MultiDiGraph& graph,
     int p,
     double time_limit,
-    bool prune_symmetry_43
+    bool prune_pickup_symmetry_43,
+    bool prune_delivery_symmetry_43
 ) {
     require_condition(p >= 1, "p must be at least 1.");
     require_condition(double_greater_or_equal(time_limit, 0.0), "Time limit T must be nonnegative.");
@@ -842,11 +878,19 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
     std::vector<int> current_edge_ids;
     std::set<NodeId> visited_physical_nodes;
     std::map<RequestEquivalenceClassKey, int> max_pickup_request_idx_by_class;
+    std::map<DeliveryEquivalenceClassKey, int> max_delivery_request_idx_by_class;
     int next_path_id = 0;
 
     struct PickupClassRegistration {
         bool active = false;
         RequestEquivalenceClassKey key{};
+        bool had_previous = false;
+        int previous_max_request_idx = -1;
+    };
+
+    struct DeliveryClassRegistration {
+        bool active = false;
+        DeliveryEquivalenceClassKey key{};
         bool had_previous = false;
         int previous_max_request_idx = -1;
     };
@@ -862,7 +906,7 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
     const auto try_register_pickup_node = [&](NodeId node_id, PickupClassRegistration& registration)
         -> bool {
         registration = PickupClassRegistration{};
-        if (!prune_symmetry_43) {
+        if (!prune_pickup_symmetry_43) {
             return true;
         }
 
@@ -912,6 +956,63 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
                 registration.previous_max_request_idx;
         } else {
             max_pickup_request_idx_by_class.erase(registration.key);
+        }
+    };
+
+    // [수정] delivery node를 현재 DFS 경로에 붙이기 직전에 호출한다.
+    // 같은 (delivery location, container type) class의 delivery들이
+    // request_idx 오름차순으로만 등장하도록 검사/등록한다.
+    const auto try_register_delivery_node =
+        [&](NodeId node_id, DeliveryClassRegistration& registration) -> bool {
+            registration = DeliveryClassRegistration{};
+            if (!prune_delivery_symmetry_43) {
+                return true;
+            }
+
+            const std::optional<DeliveryEquivalenceClassKey> class_key =
+                delivery_equivalence_class_of_node(graph, node_id);
+            if (!class_key.has_value()) {
+                return true;
+            }
+
+            const NodeSpec& node = graph.node(node_id);
+            require_condition(
+                node.request_idx.has_value(),
+                "Delivery node must have request_idx for delivery symmetry pruning."
+            );
+
+            const int request_idx = node.request_idx.value();
+            registration.active = true;
+            registration.key = class_key.value();
+
+            const auto found = max_delivery_request_idx_by_class.find(registration.key);
+            if (found == max_delivery_request_idx_by_class.end()) {
+                max_delivery_request_idx_by_class.emplace(registration.key, request_idx);
+                return true;
+            }
+
+            registration.had_previous = true;
+            registration.previous_max_request_idx = found->second;
+            if (request_idx <= found->second) {
+                registration.active = false;
+                return false;
+            }
+
+            found->second = request_idx;
+            return true;
+        };
+
+    // [수정] delivery symmetry register가 남긴 class 상태 변경을 백트래킹 시점에 복구한다.
+    const auto unregister_delivery_node = [&](const DeliveryClassRegistration& registration) {
+        if (!registration.active) {
+            return;
+        }
+
+        if (registration.had_previous) {
+            max_delivery_request_idx_by_class[registration.key] =
+                registration.previous_max_request_idx;
+        } else {
+            max_delivery_request_idx_by_class.erase(registration.key);
         }
     };
 
@@ -970,8 +1071,18 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
             // request_idx 오름차순으로만 등장하도록 검사/등록한다.
             // 통과하면 그 class의 현재 최대 request_idx를 갱신하고,
             // 백트래킹 복구에 필요한 이전 상태를 registration에 저장한다.
-            PickupClassRegistration registration;
-            if (!try_register_pickup_node(next_node_id, registration)) {
+            PickupClassRegistration pickup_registration;
+            if (!try_register_pickup_node(next_node_id, pickup_registration)) {
+                if (adds_physical_node) {
+                    visited_physical_nodes.erase(next_node_id);
+                }
+                current_edge_ids.pop_back();
+                continue;
+            }
+
+            DeliveryClassRegistration delivery_registration;
+            if (!try_register_delivery_node(next_node_id, delivery_registration)) {
+                unregister_pickup_node(pickup_registration);
                 if (adds_physical_node) {
                     visited_physical_nodes.erase(next_node_id);
                 }
@@ -987,7 +1098,8 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
                 next_time
             );
 
-            unregister_pickup_node(registration);
+            unregister_delivery_node(delivery_registration);
+            unregister_pickup_node(pickup_registration);
             if (adds_physical_node) {
                 visited_physical_nodes.erase(next_node_id);
             }
@@ -1024,10 +1136,18 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
         current_edge_ids.clear();
         visited_physical_nodes.clear();
         max_pickup_request_idx_by_class.clear();
+        max_delivery_request_idx_by_class.clear();
         current_edge_ids.push_back(static_cast<int>(edge_idx));
 
         PickupClassRegistration start_registration;
         if (!try_register_pickup_node(edge.u, start_registration)) {
+            current_edge_ids.pop_back();
+            continue;
+        }
+
+        DeliveryClassRegistration start_delivery_registration;
+        if (!try_register_delivery_node(edge.u, start_delivery_registration)) {
+            unregister_pickup_node(start_registration);
             current_edge_ids.pop_back();
             continue;
         }
@@ -1038,6 +1158,7 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
         if (graph.is_physical_service_node(edge.v)) {
             const auto inserted = visited_physical_nodes.insert(edge.v);
             if (!inserted.second) {
+                unregister_delivery_node(start_delivery_registration);
                 unregister_pickup_node(start_registration);
                 current_edge_ids.pop_back();
                 continue;
@@ -1049,6 +1170,19 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
             if (graph.is_physical_service_node(edge.v)) {
                 visited_physical_nodes.erase(edge.v);
             }
+            unregister_delivery_node(start_delivery_registration);
+            unregister_pickup_node(start_registration);
+            current_edge_ids.pop_back();
+            continue;
+        }
+
+        DeliveryClassRegistration end_delivery_registration;
+        if (!try_register_delivery_node(edge.v, end_delivery_registration)) {
+            unregister_pickup_node(end_registration);
+            if (graph.is_physical_service_node(edge.v)) {
+                visited_physical_nodes.erase(edge.v);
+            }
+            unregister_delivery_node(start_delivery_registration);
             unregister_pickup_node(start_registration);
             current_edge_ids.pop_back();
             continue;
@@ -1062,7 +1196,9 @@ std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
             edge.data.time
         );
 
+        unregister_delivery_node(end_delivery_registration);
         unregister_pickup_node(end_registration);
+        unregister_delivery_node(start_delivery_registration);
         unregister_pickup_node(start_registration);
     }
 
@@ -1190,7 +1326,13 @@ CompactPStepArtifacts build_compact_pstep_artifacts(
     artifacts.time_limit = time_limit;
     // raw p-step 생성 -> compact p-step 생성 -> 계수 구성 순서로 결과를 만든다.
     artifacts.raw_paths =
-        enumerate_feasible_raw_psteps(graph, options.p, time_limit, options.prune_symmetry_43);
+        enumerate_feasible_raw_psteps(
+            graph,
+            options.p,
+            time_limit,
+            options.prune_pickup_symmetry_43,
+            options.prune_delivery_symmetry_43
+        );
 
     const NodeId end_node_id = graph.end_node_id();
     artifacts.compact_psteps = build_compact_psteps(artifacts.raw_paths, time_limit, end_node_id);

@@ -94,6 +94,8 @@ bool run_node_pricing_phase(
         options.max_columns_per_start,
         options.max_total_columns_per_round,
         options.reduced_cost_tolerance,
+        options.prune_pickup_symmetry_43,
+        options.prune_delivery_symmetry_43,
     };
     CGLPSnapshot last_solved_snapshot;
     bool has_last_solved_snapshot = false;
