@@ -3,7 +3,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXE="$SCRIPT_DIR/SPDP_codes/build-release/SPDP_P_step"
-RUNNER_LOG="$SCRIPT_DIR/P3_root-cg_120s_64_4096_pickup_delivery_symmetry_split.log"
+RUNNER_LOG="$SCRIPT_DIR/P3_root-cg_120s_64_4096_pickup_delivery_symmetry_heuristic-cg.log"
 
 if [[ ! -x "$EXE" ]]; then
     echo "Release executable not found or not executable: $EXE"
@@ -15,7 +15,7 @@ fi
 # ============================================
 P=3
 SOLVER_MODE=root-cg # Options: enumeration, root-cg
-NODE_CG_PHASE1_MODE=exact-cg # Options: exact-cg, heuristic-seed
+NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg
 SOLVER_TIME_LIMIT=120
 GUROBI_THREADS=0
 VI_FORMULATION=theta # Options: theta, x
@@ -36,9 +36,6 @@ CG_MAX_COLUMNS_PER_START=64
 CG_MAX_TOTAL_COLUMNS_PER_ROUND=4096
 CG_REDUCED_COST_TOLERANCE=-1e-6
 DATA_LIST=(
-    "RecDep_day_C4.dat"
-    "RecDep_day_A2.dat"
-    '''
     "RecDep_day_B1.dat"
     "RecDep_day_B2.dat"
     "RecDep_day_C1.dat"
@@ -56,7 +53,6 @@ DATA_LIST=(
     "RecDep_day_A9.dat"
     "RecDep_day_A10.dat"
     "RecDep_day_A11.dat"
-    '''
 )
 # Put one data file name per line in DATA_LIST.
 # ============================================

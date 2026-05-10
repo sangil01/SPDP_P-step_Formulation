@@ -49,7 +49,7 @@ void print_usage(const char* executable) {
     std::cerr << "Usage: " << executable
               << " [instance] [--p N] [--solver-time-limit T] [--gurobi-threads N]"
               << " [--solver-mode enumeration|root-cg]"
-              << " [--node-cg-phase1-mode exact-cg|heuristic-seed]"
+              << " [--node-cg-phase1-mode exact-cg|heuristic-cg]"
               << " [--vi-formulation theta|x] [--dump-psteps N] [--validate-psteps 0|1] [--solve 0|1]"
               << " [--prune-infeasible-edges 0|1] [--prune-dominated-edges 0|1]"
               << " [--prune-symmetry-40 0|1] [--prune-symmetry-41 0|1]"
@@ -107,12 +107,12 @@ std::string parse_solver_mode(const std::string& value) {
 }
 
 std::string parse_node_cg_phase_one_mode(const std::string& value) {
-    if (value == "exact-cg" || value == "heuristic-seed") {
+    if (value == "exact-cg" || value == "heuristic-cg") {
         return value;
     }
     throw std::runtime_error(
         "Invalid value for node CG phase-one mode: " + value +
-        " (expected exact-cg or heuristic-seed)"
+        " (expected exact-cg or heuristic-cg)"
     );
 }
 
@@ -651,7 +651,7 @@ int main(int argc, char** argv) {
                     gurobi_log_path.string(),
                     args.node_cg_phase_one_mode == "exact-cg"
                         ? spdp::NodeCGPhaseOneMode::ExactCG
-                        : spdp::NodeCGPhaseOneMode::HeuristicSeed,
+                        : spdp::NodeCGPhaseOneMode::HeuristicCG,
                 };
                 const spdp::NodeCGResult cg_result =
                     spdp::solve_node_column_generation(data, graph, cg_options, &output_file);

@@ -15,7 +15,7 @@ namespace spdp {
 
 enum class NodeCGPhaseOneMode {
     ExactCG, // Phase I RMP를 CG로 풀어서 node-feasible한 solution을 찾는다.
-    HeuristicSeed, // Phase I RMP를 푸는게 아니라 heuristic한 seed column들을 추가해서 빠르게 node-feasible한 solution을 찾는다. 즉 artificial variable을 아예 안 만든다.
+    HeuristicCG, // heuristic한 column generation 절차로 빠르게 node-feasible한 solution을 찾는다. 즉 exact Phase I RMP 대신 heuristic CG를 사용한다.
 };
 
 // B&P node column generation solver 전체 제어 옵션.

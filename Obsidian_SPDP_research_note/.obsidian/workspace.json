@@ -4,21 +4,21 @@
     "type": "split",
     "children": [
       {
-        "id": "7c4bb9dea86c4ff5",
+        "id": "e7d65a491b384f2b",
         "type": "tabs",
         "children": [
           {
-            "id": "60256e038ade0800",
+            "id": "f709388940e97d59",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "99. p-step labeling efficiency.md",
+                "file": "5. Column Generation for root node.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "99. p-step labeling efficiency"
+              "title": "5. Column Generation for root node"
             }
           }
         ]
@@ -78,7 +78,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 310.5
   },
   "right": {
     "id": "b90d585d0fa44aa9",
@@ -183,22 +183,32 @@
       "bases:Create new base": false
     }
   },
-  "active": "60256e038ade0800",
+  "active": "f709388940e97d59",
   "lastOpenFiles": [
-    "code update.md",
-    "0. Current progress and issue.md",
+    "103.  Why using physical emptying locations inside arcs is more compact than using emptying-action identities inside arcs.md",
+    "2. Skip Pick-up and Delivery Problem (SPDP).md",
+    "5. Column Generation for root node.md",
     "3. P-step Formulation for SPDP-flexible.md",
     "4. Pricing.md",
-    "meeting/260504.md",
+    "101. Pick-up, Delivery symmetry breaking as a valid strengthening.md",
+    "104. Forward dominance rule exactness proof.md",
     "meeting/260427_forward dominance issue & problem complexity analysis per setting.md",
-    "99. p-step labeling efficiency.md",
-    "5. Column Generation.md",
+    "102. Pricing complexity.md",
+    "100. p-step labeling efficiency.md",
+    "0. For efficient pricing.md",
+    "meeting/260504.md",
     "1. P-step Formulation For CVRP.md",
-    "2. Skip Pick-up and Delivery Problem (SPDP).md",
+    "home/sangil/Documents/Kaist_PhD (1-1)/Partial Set Partitioning/SPDP_project/Obsidian_SPDP_research_note/101. Pick-up, Delivery symmetry breaking as a valid strengthening.md",
+    "home/sangil/Documents/Kaist_PhD (1-1)/Partial Set Partitioning/SPDP_project/Obsidian_SPDP_research_note",
+    "home/sangil/Documents/Kaist_PhD (1-1)/Partial Set Partitioning/SPDP_project",
+    "home/sangil/Documents/Kaist_PhD (1-1)/Partial Set Partitioning",
+    "home/sangil/Documents/Kaist_PhD (1-1)",
+    "home/sangil/Documents",
+    "home/sangil",
+    "home",
     "Untitled",
     "meeting.zip",
     "meeting",
-    "images/proposition1_for_compact_P-step_formulation.png",
-    "images"
+    "images/proposition1_for_compact_P-step_formulation.png"
   ]
 }
