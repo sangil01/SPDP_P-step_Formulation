@@ -1,5 +1,6 @@
 #include "PstepBnP.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -864,6 +865,217 @@ std::vector<CGColumn> build_phase_one_heuristic_columns(
     return columns;
 }
 
+struct PhaseTwoColumnPoolEntry {
+    CGColumn column;
+    double best_reduced_cost = std::numeric_limits<double>::infinity();
+};
+
+std::vector<int> build_ladder_level_starts(
+    const std::vector<int>& ordered_starts,
+    std::size_t max_start_cap,
+    double start_ratio,
+    std::size_t ladder_levels,
+    std::size_t level_index,
+    std::size_t& explored_prefix_size
+) {
+    if (explored_prefix_size >= ordered_starts.size()) {
+        return {};
+    }
+
+    std::size_t current_prefix_size = ordered_starts.size();
+    if (ladder_levels > 0U) {
+        const std::size_t ratio_limit = static_cast<std::size_t>(
+            std::ceil(start_ratio * static_cast<double>(ordered_starts.size()))
+        );
+        const std::size_t final_prefix_size = std::min(
+            max_start_cap,
+            std::min(ratio_limit, ordered_starts.size())
+        );
+        const std::size_t effective_final_prefix_size =
+            std::max<std::size_t>(1U, final_prefix_size);
+        current_prefix_size = static_cast<std::size_t>(
+            std::ceil(
+                static_cast<double>(level_index) *
+                static_cast<double>(effective_final_prefix_size) /
+                static_cast<double>(ladder_levels)
+            )
+        );
+        current_prefix_size = std::min(current_prefix_size, effective_final_prefix_size);
+    }
+
+    current_prefix_size = std::min(current_prefix_size, ordered_starts.size());
+    if (current_prefix_size <= explored_prefix_size) {
+        return {};
+    }
+
+    std::vector<int> level_starts;
+    level_starts.reserve(current_prefix_size - explored_prefix_size);
+    for (std::size_t idx = explored_prefix_size; idx < current_prefix_size; ++idx) {
+        level_starts.push_back(ordered_starts[idx]);
+    }
+    explored_prefix_size = current_prefix_size;
+    return level_starts;
+}
+
+void rebuild_column_pool_index(
+    const std::vector<PhaseTwoColumnPoolEntry>& column_pool,
+    std::unordered_map<std::string, std::size_t>& pool_index_by_key
+) {
+    pool_index_by_key.clear();
+    for (std::size_t idx = 0; idx < column_pool.size(); ++idx) {
+        pool_index_by_key.emplace(
+            build_column_key(column_pool[idx].column.edge_ids, column_pool[idx].column.tau),
+            idx
+        );
+    }
+}
+
+void prune_column_pool(
+    std::vector<PhaseTwoColumnPoolEntry>& column_pool,
+    std::unordered_map<std::string, std::size_t>& pool_index_by_key,
+    const CGMasterProblem& master_problem,
+    std::size_t max_pool_size
+) {
+    column_pool.erase(
+        std::remove_if(
+            column_pool.begin(),
+            column_pool.end(),
+            [&](const PhaseTwoColumnPoolEntry& entry) {
+                const std::string key =
+                    build_column_key(entry.column.edge_ids, entry.column.tau);
+                return master_problem.column_id_by_key.find(key) !=
+                       master_problem.column_id_by_key.end();
+            }
+        ),
+        column_pool.end()
+    );
+
+    if (column_pool.size() > max_pool_size) {
+        std::sort(
+            column_pool.begin(),
+            column_pool.end(),
+            [](const PhaseTwoColumnPoolEntry& lhs, const PhaseTwoColumnPoolEntry& rhs) {
+                if (!double_equal(lhs.best_reduced_cost, rhs.best_reduced_cost)) {
+                    return lhs.best_reduced_cost < rhs.best_reduced_cost;
+                }
+                return lhs.column.reduced_cost < rhs.column.reduced_cost;
+            }
+        );
+        column_pool.resize(max_pool_size);
+    }
+
+    rebuild_column_pool_index(column_pool, pool_index_by_key);
+}
+
+void add_columns_to_phase_two_pool(
+    const std::vector<CGColumn>& columns,
+    const CGMasterProblem& master_problem,
+    std::size_t max_pool_size,
+    std::vector<PhaseTwoColumnPoolEntry>& column_pool,
+    std::unordered_map<std::string, std::size_t>& pool_index_by_key
+) {
+    for (const CGColumn& column : columns) {
+        const std::string key = build_column_key(column.edge_ids, column.tau);
+        if (master_problem.column_id_by_key.find(key) != master_problem.column_id_by_key.end()) {
+            continue;
+        }
+        const auto found = pool_index_by_key.find(key);
+        if (found != pool_index_by_key.end()) {
+            auto& entry = column_pool[found->second];
+            entry.best_reduced_cost = std::min(entry.best_reduced_cost, column.reduced_cost);
+            entry.column = column;
+            continue;
+        }
+
+        PhaseTwoColumnPoolEntry entry;
+        entry.column = column;
+        entry.best_reduced_cost = column.reduced_cost;
+        column_pool.push_back(std::move(entry));
+    }
+
+    prune_column_pool(column_pool, pool_index_by_key, master_problem, max_pool_size);
+}
+
+ForwardPricingResult reprice_phase_two_column_pool(
+    const CGMasterProblem& master_problem,
+    const CGDualSolution& dual_solution,
+    CGPhase phase,
+    double reduced_cost_tolerance,
+    std::size_t max_total_columns,
+    std::size_t max_reprice,
+    std::vector<PhaseTwoColumnPoolEntry>& column_pool,
+    std::unordered_map<std::string, std::size_t>& pool_index_by_key
+) {
+    ForwardPricingResult result;
+    result.best_reduced_cost = std::numeric_limits<double>::infinity();
+
+    prune_column_pool(
+        column_pool,
+        pool_index_by_key,
+        master_problem,
+        column_pool.size()
+    );
+
+    std::vector<std::size_t> candidate_indices(column_pool.size(), 0U);
+    for (std::size_t idx = 0; idx < column_pool.size(); ++idx) {
+        candidate_indices[idx] = idx;
+    }
+    std::sort(
+        candidate_indices.begin(),
+        candidate_indices.end(),
+        [&](std::size_t lhs, std::size_t rhs) {
+            if (!double_equal(
+                    column_pool[lhs].best_reduced_cost,
+                    column_pool[rhs].best_reduced_cost
+                )) {
+                return column_pool[lhs].best_reduced_cost <
+                       column_pool[rhs].best_reduced_cost;
+            }
+            return column_pool[lhs].column.reduced_cost <
+                   column_pool[rhs].column.reduced_cost;
+        }
+    );
+
+    const std::size_t reprice_count = std::min(max_reprice, candidate_indices.size());
+    std::vector<CGColumn> negative_columns;
+    negative_columns.reserve(reprice_count);
+    for (std::size_t pos = 0; pos < reprice_count; ++pos) {
+        auto& entry = column_pool[candidate_indices[pos]];
+        entry.column.reduced_cost = evaluate_column_reduced_cost(
+            dual_solution,
+            phase,
+            entry.column
+        );
+        entry.best_reduced_cost = std::min(entry.best_reduced_cost, entry.column.reduced_cost);
+        result.best_reduced_cost = std::min(result.best_reduced_cost, entry.column.reduced_cost);
+        if (entry.column.reduced_cost < reduced_cost_tolerance) {
+            negative_columns.push_back(entry.column);
+        }
+    }
+
+    std::sort(
+        negative_columns.begin(),
+        negative_columns.end(),
+        [](const CGColumn& lhs, const CGColumn& rhs) {
+            return lhs.reduced_cost < rhs.reduced_cost;
+        }
+    );
+    for (const CGColumn& column : negative_columns) {
+        if (result.columns.size() >= max_total_columns) {
+            break;
+        }
+        result.columns.push_back(column);
+    }
+
+    if (!std::isfinite(result.best_reduced_cost)) {
+        result.best_reduced_cost = 0.0;
+    }
+    result.status = result.columns.empty()
+                        ? ForwardPricingStatus::NoNegativeColumn
+                        : ForwardPricingStatus::ColumnsFound;
+    return result;
+}
+
 void write_iteration_log(
     std::ostream& out,
     const NodeCGIterationLog& log
@@ -882,6 +1094,10 @@ void write_iteration_log(
         << " generated_labels=" << log.generated_label_count
         << " surviving_labels=" << log.surviving_label_count
         << " dominated_labels=" << log.dominated_label_count
+        << " heuristic_attempted=" << (log.heuristic_pricing_attempted ? 1 : 0)
+        << " exact_fallback=" << (log.exact_pricing_fallback_used ? 1 : 0)
+        << " heuristic_pricing_starts=" << log.heuristic_explored_start_count
+        << " heuristic_pricing_cols=" << log.heuristic_found_column_count
         << '\n';
 }
 
@@ -912,15 +1128,39 @@ bool run_node_pricing_phase(
     NodeCGResult& result,
     std::ostream* log_stream
 ) {
-    const ForwardPricingOptions pricing_options{
-        options.max_columns_per_start,
-        options.max_total_columns_per_round,
-        options.reduced_cost_tolerance,
-        options.prune_pickup_symmetry_43,
-        options.prune_delivery_symmetry_43,
-    };
+    ForwardPricingOptions exact_pricing_options;
+    exact_pricing_options.max_columns_per_start =
+        options.exact_pricing_max_columns_per_start;
+    exact_pricing_options.max_total_columns =
+        options.exact_pricing_max_total_columns_per_round;
+    exact_pricing_options.reduced_cost_tolerance = options.reduced_cost_tolerance;
+    exact_pricing_options.prune_pickup_symmetry_43 = options.prune_pickup_symmetry_43;
+    exact_pricing_options.prune_delivery_symmetry_43 = options.prune_delivery_symmetry_43;
+
+    ForwardPricingOptions heuristic_pricing_options;
+    heuristic_pricing_options.max_columns_per_start =
+        options.phase_two_heuristic_max_columns_per_start;
+    heuristic_pricing_options.max_total_columns =
+        options.phase_two_heuristic_max_total_columns;
+    heuristic_pricing_options.reduced_cost_tolerance = options.reduced_cost_tolerance;
+    heuristic_pricing_options.prune_pickup_symmetry_43 = options.prune_pickup_symmetry_43;
+    heuristic_pricing_options.prune_delivery_symmetry_43 = options.prune_delivery_symmetry_43;
+    heuristic_pricing_options.heuristic_pricing = true;
+    heuristic_pricing_options.heuristic_max_starts = options.phase_two_heuristic_max_starts;
+    heuristic_pricing_options.heuristic_start_ratio = options.phase_two_heuristic_start_ratio;
+    heuristic_pricing_options.heuristic_search_column_ratio =
+        options.phase_two_heuristic_search_column_ratio;
+    heuristic_pricing_options.heuristic_start_score_mode =
+        options.phase_two_heuristic_start_score_mode;
+    heuristic_pricing_options.labeling_top_k_next =
+        options.phase_two_labeling_top_k_next;
+    heuristic_pricing_options.shallow_k1 = options.phase_two_shallow_k1;
+    heuristic_pricing_options.shallow_k2 = options.phase_two_shallow_k2;
+
     CGLPSnapshot last_solved_snapshot;
     bool has_last_solved_snapshot = false;
+    std::vector<PhaseTwoColumnPoolEntry> phase_two_column_pool;
+    std::unordered_map<std::string, std::size_t> phase_two_pool_index_by_key;
 
     for (std::size_t iteration = 1; iteration <= options.max_iterations_per_phase; ++iteration) {
         const double remaining = remaining_time_seconds(global_start_time, options.solver_time_limit);
@@ -973,13 +1213,143 @@ bool run_node_pricing_phase(
 
         const CGDualSolution dual_solution = extract_cg_master_duals(master_problem);
         const auto pricing_start_time = std::chrono::steady_clock::now();
-        const ForwardPricingResult pricing_result = run_forward_pricing(
-            graph,
-            pricing_context,
-            dual_solution,
-            phase,
-            pricing_options
-        );
+        ForwardPricingResult pricing_result;
+        std::vector<CGColumn> columns_to_add_to_pool;
+        if (phase == CGPhase::PhaseII &&
+            options.phase_two_pricing_mode ==
+                NodeCGPhaseTwoPricingMode::HeuristicPricingThenExact) {
+            iteration_log.heuristic_pricing_attempted = true;
+            ForwardPricingResult heuristic_stats;
+            heuristic_stats.best_reduced_cost = std::numeric_limits<double>::infinity();
+            ForwardPricingResult selected_heuristic_result;
+            bool heuristic_found = false;
+
+            if (options.phase_two_column_pool_enabled) {
+                const ForwardPricingResult pool_result = reprice_phase_two_column_pool(
+                    master_problem,
+                    dual_solution,
+                    phase,
+                    options.reduced_cost_tolerance,
+                    options.phase_two_heuristic_max_total_columns,
+                    options.phase_two_column_pool_max_reprice,
+                    phase_two_column_pool,
+                    phase_two_pool_index_by_key
+                );
+                heuristic_stats.best_reduced_cost =
+                    std::min(heuristic_stats.best_reduced_cost, pool_result.best_reduced_cost);
+                if (!pool_result.columns.empty()) {
+                    selected_heuristic_result = pool_result;
+                    heuristic_found = true;
+                }
+            }
+
+            if (!heuristic_found) {
+                const std::vector<int> ordered_starts = build_heuristic_start_order(
+                    graph,
+                    pricing_context,
+                    dual_solution,
+                    phase,
+                    options.phase_two_heuristic_start_score_mode
+                );
+                std::size_t explored_prefix_size = 0U;
+                const std::size_t ladder_levels =
+                    (options.phase_two_heuristic_ladder_levels == 0U)
+                        ? 1U
+                        : options.phase_two_heuristic_ladder_levels;
+
+                for (std::size_t level = 1; level <= ladder_levels; ++level) {
+                    const std::vector<int> level_starts = build_ladder_level_starts(
+                        ordered_starts,
+                        options.phase_two_heuristic_max_starts,
+                        options.phase_two_heuristic_start_ratio,
+                        options.phase_two_heuristic_ladder_levels,
+                        level,
+                        explored_prefix_size
+                    );
+                    if (level_starts.empty()) {
+                        continue;
+                    }
+
+                    ForwardPricingOptions level_options = heuristic_pricing_options;
+                    level_options.explicit_start_node_state_indices = level_starts;
+
+                    ForwardPricingResult level_result;
+                    if (options.phase_two_heuristic_engine ==
+                        NodeCGPhaseTwoHeuristicEngine::ShallowSearch) {
+                        level_result = run_phase_two_shallow_search(
+                            graph,
+                            pricing_context,
+                            dual_solution,
+                            phase,
+                            level_options
+                        );
+                    } else {
+                        level_result = run_forward_pricing(
+                            graph,
+                            pricing_context,
+                            dual_solution,
+                            phase,
+                            level_options
+                        );
+                    }
+
+                    heuristic_stats.best_reduced_cost =
+                        std::min(heuristic_stats.best_reduced_cost, level_result.best_reduced_cost);
+                    heuristic_stats.complete_label_count += level_result.complete_label_count;
+                    heuristic_stats.start_label_count += level_result.start_label_count;
+                    heuristic_stats.generated_label_count += level_result.generated_label_count;
+                    heuristic_stats.surviving_label_count += level_result.surviving_label_count;
+                    heuristic_stats.dominated_label_count += level_result.dominated_label_count;
+
+                    if (!level_result.columns.empty()) {
+                        selected_heuristic_result = level_result;
+                        heuristic_found = true;
+                        columns_to_add_to_pool = level_result.deferred_columns;
+                        break;
+                    }
+                }
+            }
+
+            iteration_log.heuristic_explored_start_count = heuristic_stats.start_label_count;
+            iteration_log.heuristic_found_column_count =
+                heuristic_found ? selected_heuristic_result.columns.size() : 0U;
+
+            if (heuristic_found) {
+                pricing_result = selected_heuristic_result;
+                pricing_result.best_reduced_cost = heuristic_stats.best_reduced_cost;
+                pricing_result.complete_label_count = heuristic_stats.complete_label_count;
+                pricing_result.start_label_count = heuristic_stats.start_label_count;
+                pricing_result.generated_label_count = heuristic_stats.generated_label_count;
+                pricing_result.surviving_label_count = heuristic_stats.surviving_label_count;
+                pricing_result.dominated_label_count = heuristic_stats.dominated_label_count;
+            } else {
+                iteration_log.exact_pricing_fallback_used = true;
+                const ForwardPricingResult exact_result = run_forward_pricing(
+                    graph,
+                    pricing_context,
+                    dual_solution,
+                    phase,
+                    exact_pricing_options
+                );
+                pricing_result = exact_result;
+                pricing_result.best_reduced_cost =
+                    std::min(heuristic_stats.best_reduced_cost, exact_result.best_reduced_cost);
+                pricing_result.complete_label_count += heuristic_stats.complete_label_count;
+                pricing_result.start_label_count += heuristic_stats.start_label_count;
+                pricing_result.generated_label_count += heuristic_stats.generated_label_count;
+                pricing_result.surviving_label_count += heuristic_stats.surviving_label_count;
+                pricing_result.dominated_label_count += heuristic_stats.dominated_label_count;
+                columns_to_add_to_pool = exact_result.deferred_columns;
+            }
+        } else {
+            pricing_result = run_forward_pricing(
+                graph,
+                pricing_context,
+                dual_solution,
+                phase,
+                exact_pricing_options
+            );
+        }
         const auto pricing_end_time = std::chrono::steady_clock::now();
         iteration_log.best_reduced_cost = pricing_result.best_reduced_cost;
         iteration_log.pricing_status = pricing_result.status;
@@ -993,6 +1363,17 @@ bool run_node_pricing_phase(
 
         const std::size_t added_columns =
             add_columns_to_cg_master(master_problem, pricing_result.columns);
+        if (phase == CGPhase::PhaseII &&
+            options.phase_two_column_pool_enabled &&
+            !columns_to_add_to_pool.empty()) {
+            add_columns_to_phase_two_pool(
+                columns_to_add_to_pool,
+                master_problem,
+                options.phase_two_column_pool_max_size,
+                phase_two_column_pool,
+                phase_two_pool_index_by_key
+            );
+        }
         iteration_log.added_column_count = added_columns;
         result.iteration_logs.push_back(iteration_log);
         result.total_columns_added += added_columns;
@@ -1149,7 +1530,8 @@ bool run_node_phase_two(
     switch_cg_master_to_phase_two(master_problem);
     result.phase_two_reached = true;
     if (log_stream != nullptr) {
-        *log_stream << "[node-cg] Entering Phase II.\n";
+        *log_stream << "[node-cg] Entering Phase II mode="
+                    << to_string(options.phase_two_pricing_mode) << '\n';
     }
     return run_node_pricing_phase(
         graph,
@@ -1180,6 +1562,7 @@ NodeCGResult solve_node_column_generation(
 
     NodeCGResult result;
     result.phase_one_mode = options.phase_one_mode;
+    result.phase_two_pricing_mode = options.phase_two_pricing_mode;
 
     const ForwardPricingContext pricing_context =
         build_forward_pricing_context(graph, options.p, options.time_limit);
@@ -1234,6 +1617,8 @@ void write_node_cg_summary(
     const NodeCGResult& result
 ) {
     out << "[node-cg-summary] phase_one_mode=" << to_string(result.phase_one_mode) << '\n';
+    out << "[node-cg-summary] phase_two_pricing_mode="
+        << to_string(result.phase_two_pricing_mode) << '\n';
     out << "[node-cg-summary] phase_one_feasible=" << (result.phase_one_feasible ? 1 : 0) << '\n';
     out << "[node-cg-summary] phase_two_reached=" << (result.phase_two_reached ? 1 : 0) << '\n';
     out << "[node-cg-summary] solved_to_completion=" << (result.solved_to_completion ? 1 : 0) << '\n';
@@ -1296,6 +1681,26 @@ const char* to_string(NodeCGPhaseOneMode mode) {
             return "exact-cg";
         case NodeCGPhaseOneMode::HeuristicCG:
             return "heuristic-cg";
+    }
+    return "unknown";
+}
+
+const char* to_string(NodeCGPhaseTwoPricingMode mode) {
+    switch (mode) {
+        case NodeCGPhaseTwoPricingMode::ExactPricing:
+            return "exact-pricing";
+        case NodeCGPhaseTwoPricingMode::HeuristicPricingThenExact:
+            return "heuristic-pricing-then-exact";
+    }
+    return "unknown";
+}
+
+const char* to_string(NodeCGPhaseTwoHeuristicEngine mode) {
+    switch (mode) {
+        case NodeCGPhaseTwoHeuristicEngine::Labeling:
+            return "labeling";
+        case NodeCGPhaseTwoHeuristicEngine::ShallowSearch:
+            return "shallow-search";
     }
     return "unknown";
 }

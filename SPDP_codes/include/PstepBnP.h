@@ -18,6 +18,16 @@ enum class NodeCGPhaseOneMode {
     HeuristicCG, // heuristic한 column generation 절차로 빠르게 node-feasible한 solution을 찾는다. 즉 exact Phase I RMP 대신 heuristic CG를 사용한다.
 };
 
+enum class NodeCGPhaseTwoPricingMode {
+    ExactPricing,
+    HeuristicPricingThenExact,
+};
+
+enum class NodeCGPhaseTwoHeuristicEngine {
+    Labeling,
+    ShallowSearch,
+};
+
 // B&P node column generation solver 전체 제어 옵션.
 struct NodeCGOptions {
     // pricing에 사용할 p.
@@ -35,11 +45,11 @@ struct NodeCGOptions {
     // 한 phase에서 허용하는 최대 CG iteration 수.
     std::size_t max_iterations_per_phase = 1000;
 
-    // pricing이 start class마다 유지할 negative column 수.
-    std::size_t max_columns_per_start = 1;
+    // exact pricing이 start class마다 유지할 negative column 수.
+    std::size_t exact_pricing_max_columns_per_start = 1;
 
-    // 한 pricing round에서 master에 추가할 최대 column 수.
-    std::size_t max_total_columns_per_round = 256;
+    // exact pricing 한 round에서 master에 추가할 최대 column 수.
+    std::size_t exact_pricing_max_total_columns_per_round = 256;
 
     // reduced cost tolerance.
     double reduced_cost_tolerance = -1e-6;
@@ -55,6 +65,50 @@ struct NodeCGOptions {
 
     // Phase I에서 node-feasible RMP를 만드는 방식.
     NodeCGPhaseOneMode phase_one_mode = NodeCGPhaseOneMode::ExactCG;
+
+    // Phase II pricing 방식.
+    NodeCGPhaseTwoPricingMode phase_two_pricing_mode =
+        NodeCGPhaseTwoPricingMode::ExactPricing;
+
+    // Phase II heuristic pricing에서 앞에서부터 몇 개의 start class만 볼지.
+    std::size_t phase_two_heuristic_max_starts = 128;
+
+    // Phase II heuristic pricing에서 탐색할 start class 수 비율.
+    double phase_two_heuristic_start_ratio = 0.25;
+
+    // Adaptive K_start ladder level 수.
+    // 0이면 heuristic 단계에서 모든 start class를 한 번에 본다.
+    std::size_t phase_two_heuristic_ladder_levels = 3;
+
+    // Phase II heuristic pricing이 start class마다 유지할 negative column 수.
+    std::size_t phase_two_heuristic_max_columns_per_start = 1;
+
+    // Phase II heuristic pricing이 한 round에서 master에 넘길 최대 column 수.
+    std::size_t phase_two_heuristic_max_total_columns = 256;
+
+    // Phase II heuristic pricing에서 search cap을 output cap 대비 몇 배까지 허용할지.
+    double phase_two_heuristic_search_column_ratio = 1.0;
+
+    // Phase II heuristic pricing의 start score 방식.
+    HeuristicStartScoreMode phase_two_heuristic_start_score_mode =
+        HeuristicStartScoreMode::OneStepMin;
+
+    // Phase II heuristic engine 선택.
+    NodeCGPhaseTwoHeuristicEngine phase_two_heuristic_engine =
+        NodeCGPhaseTwoHeuristicEngine::ShallowSearch;
+
+    // Phase II heuristic labeling에서 현재 label마다 확장할 top-k next transition 수.
+    // 0이면 exact/full forward labeling과 동일하게 모든 outgoing transition을 확장한다.
+    std::size_t phase_two_labeling_top_k_next = 0;
+
+    // 3-step shallow search branching cap.
+    std::size_t phase_two_shallow_k1 = 8;
+    std::size_t phase_two_shallow_k2 = 4;
+
+    // Column pool 사용 여부와 제어 파라미터.
+    bool phase_two_column_pool_enabled = false;
+    std::size_t phase_two_column_pool_max_size = 5000;
+    std::size_t phase_two_column_pool_max_reprice = 256;
 };
 
 // 한 CG iteration의 phase / LP / pricing 결과 요약.
@@ -72,11 +126,16 @@ struct NodeCGIterationLog {
     std::size_t generated_label_count = 0;
     std::size_t surviving_label_count = 0;
     std::size_t dominated_label_count = 0;
+    bool heuristic_pricing_attempted = false;
+    bool exact_pricing_fallback_used = false;
+    std::size_t heuristic_explored_start_count = 0;
+    std::size_t heuristic_found_column_count = 0;
 };
 
 // B&P node column generation 종료 결과.
 struct NodeCGResult {
     NodeCGPhaseOneMode phase_one_mode = NodeCGPhaseOneMode::ExactCG;
+    NodeCGPhaseTwoPricingMode phase_two_pricing_mode = NodeCGPhaseTwoPricingMode::ExactPricing;
     bool phase_one_feasible = false;
     bool solved_to_completion = false;
     bool phase_two_reached = false;
@@ -112,6 +171,8 @@ void write_node_cg_solution(std::ostream& out, const NodeCGResult& result);
 
 // CLI/logging용 phase-one mode 이름.
 const char* to_string(NodeCGPhaseOneMode mode);
+const char* to_string(NodeCGPhaseTwoPricingMode mode);
+const char* to_string(NodeCGPhaseTwoHeuristicEngine mode);
 
 }  // namespace spdp
 

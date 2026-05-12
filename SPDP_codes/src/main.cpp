@@ -26,6 +26,7 @@ struct CliOptions {
     int gurobi_threads = -1;
     std::string solver_mode = "enumeration";
     std::string node_cg_phase_one_mode = "exact-cg";
+    std::string node_cg_phase_two_pricing_mode = "exact-pricing";
     std::string vi_formulation = "theta";
     int dump_psteps = 10;
     int validate_psteps = 0;
@@ -40,9 +41,23 @@ struct CliOptions {
     int add_vi_36 = 0;
     int add_vi_44 = 0;
     int cg_max_iterations_per_phase = 1000;
-    int cg_max_columns_per_start = 16;
-    int cg_max_total_columns_per_round = 1024;
+    int exact_pricing_max_columns_per_start = 16;
+    int exact_pricing_max_total_columns_per_round = 1024;
     double cg_reduced_cost_tolerance = -1e-6;
+    int phase_two_heuristic_max_starts = 128;
+    double phase_two_heuristic_start_ratio = 0.25;
+    int phase_two_heuristic_ladder_levels = 3;
+    int phase_two_heuristic_max_columns_per_start = 1;
+    int phase_two_heuristic_max_columns_total = 256;
+    double phase_two_heuristic_search_column_ratio = 1.0;
+    std::string phase_two_heuristic_start_score_mode = "one-step-min";
+    std::string phase_two_heuristic_engine = "shallow-search";
+    int phase_two_labeling_top_k_next = 0;
+    int phase_two_shallow_k1 = 8;
+    int phase_two_shallow_k2 = 4;
+    int phase_two_column_pool_enable = 0;
+    int phase_two_column_pool_max_size = 5000;
+    int phase_two_column_pool_max_reprice = 256;
 };
 
 void print_usage(const char* executable) {
@@ -50,6 +65,7 @@ void print_usage(const char* executable) {
               << " [instance] [--p N] [--solver-time-limit T] [--gurobi-threads N]"
               << " [--solver-mode enumeration|root-cg]"
               << " [--node-cg-phase1-mode exact-cg|heuristic-cg]"
+              << " [--node-cg-phase2-pricing-mode exact-pricing|heuristic-pricing-then-exact]"
               << " [--vi-formulation theta|x] [--dump-psteps N] [--validate-psteps 0|1] [--solve 0|1]"
               << " [--prune-infeasible-edges 0|1] [--prune-dominated-edges 0|1]"
               << " [--prune-symmetry-40 0|1] [--prune-symmetry-41 0|1]"
@@ -58,9 +74,22 @@ void print_usage(const char* executable) {
               << " [--add-vi-35 0|1] [--add-vi-36 0|1]"
               << " [--add-vi-44 0|1]"
               << " [--cg-max-iterations-per-phase N]"
-              << " [--cg-max-columns-per-start N]"
-              << " [--cg-max-total-columns-per-round N]"
-              << " [--cg-reduced-cost-tolerance T]\n";
+              << " [--exact-pricing-max-columns-per-start N]"
+              << " [--exact-pricing-max-total-columns-per-round N]"
+              << " [--cg-reduced-cost-tolerance T]"
+              << " [--phase2-heuristic-max-starts N]"
+              << " [--phase2-heuristic-start-ratio R]"
+              << " [--phase2-heuristic-ladder-levels L]"
+              << " [--phase2-heuristic-max-columns-per-start N]"
+              << " [--phase2-heuristic-max-columns-total N]"
+              << " [--phase2-heuristic-search-column-ratio R]"
+              << " [--phase2-heuristic-start-score-mode one-step-min]"
+              << " [--phase2-heuristic-engine labeling|shallow-search]"
+              << " [--phase2-labeling-top-k-next N]"
+              << " [--phase2-shallow-k1 N] [--phase2-shallow-k2 N]"
+              << " [--phase2-column-pool-enable 0|1]"
+              << " [--phase2-column-pool-max-size N]"
+              << " [--phase2-column-pool-max-reprice N]\n";
 }
 
 int parse_int(const std::string& value, const std::string& field_name) {
@@ -116,6 +145,36 @@ std::string parse_node_cg_phase_one_mode(const std::string& value) {
     );
 }
 
+std::string parse_node_cg_phase_two_pricing_mode(const std::string& value) {
+    if (value == "exact-pricing" || value == "heuristic-pricing-then-exact") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for node CG phase-two pricing mode: " + value +
+        " (expected exact-pricing or heuristic-pricing-then-exact)"
+    );
+}
+
+std::string parse_phase_two_heuristic_start_score_mode(const std::string& value) {
+    if (value == "one-step-min") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --phase2-heuristic-start-score-mode: " + value +
+        " (expected one-step-min)"
+    );
+}
+
+std::string parse_phase_two_heuristic_engine(const std::string& value) {
+    if (value == "labeling" || value == "shallow-search") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --phase2-heuristic-engine: " + value +
+        " (expected labeling or shallow-search)"
+    );
+}
+
 spdp::VIFormulation to_vi_formulation(const std::string& value) {
     if (value == "theta") {
         return spdp::VIFormulation::Theta;
@@ -154,11 +213,20 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
-        if (arg == "--node-cg-phase1-mode" || arg == "--root-phase1-mode") {
+        if (arg == "--node-cg-phase1-mode") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
             }
             options.node_cg_phase_one_mode = parse_node_cg_phase_one_mode(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--node-cg-phase2-pricing-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--node-cg-phase2-pricing-mode requires a value.");
+            }
+            options.node_cg_phase_two_pricing_mode =
+                parse_node_cg_phase_two_pricing_mode(argv[++idx]);
             continue;
         }
 
@@ -209,26 +277,26 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
-        if (arg == "--cg-max-columns-per-start") {
+        if (arg == "--exact-pricing-max-columns-per-start") {
             if (idx + 1 >= argc) {
-                throw std::runtime_error("--cg-max-columns-per-start requires a value.");
+                throw std::runtime_error(arg + " requires a value.");
             }
-            options.cg_max_columns_per_start =
-                parse_int(argv[++idx], "--cg-max-columns-per-start");
-            if (options.cg_max_columns_per_start <= 0) {
-                throw std::runtime_error("--cg-max-columns-per-start must be positive.");
+            options.exact_pricing_max_columns_per_start =
+                parse_int(argv[++idx], arg);
+            if (options.exact_pricing_max_columns_per_start <= 0) {
+                throw std::runtime_error(arg + " must be positive.");
             }
             continue;
         }
 
-        if (arg == "--cg-max-total-columns-per-round") {
+        if (arg == "--exact-pricing-max-total-columns-per-round") {
             if (idx + 1 >= argc) {
-                throw std::runtime_error("--cg-max-total-columns-per-round requires a value.");
+                throw std::runtime_error(arg + " requires a value.");
             }
-            options.cg_max_total_columns_per_round =
-                parse_int(argv[++idx], "--cg-max-total-columns-per-round");
-            if (options.cg_max_total_columns_per_round <= 0) {
-                throw std::runtime_error("--cg-max-total-columns-per-round must be positive.");
+            options.exact_pricing_max_total_columns_per_round =
+                parse_int(argv[++idx], arg);
+            if (options.exact_pricing_max_total_columns_per_round <= 0) {
+                throw std::runtime_error(arg + " must be positive.");
             }
             continue;
         }
@@ -241,6 +309,188 @@ CliOptions parse_cli(int argc, char** argv) {
                 parse_double(argv[++idx], "--cg-reduced-cost-tolerance");
             if (options.cg_reduced_cost_tolerance > 0.0) {
                 throw std::runtime_error("--cg-reduced-cost-tolerance must be nonpositive.");
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-heuristic-max-starts") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-heuristic-max-starts requires a value.");
+            }
+            options.phase_two_heuristic_max_starts =
+                parse_int(argv[++idx], "--phase2-heuristic-max-starts");
+            if (options.phase_two_heuristic_max_starts <= 0) {
+                throw std::runtime_error("--phase2-heuristic-max-starts must be positive.");
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-heuristic-start-ratio") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-heuristic-start-ratio requires a value.");
+            }
+            options.phase_two_heuristic_start_ratio =
+                parse_double(argv[++idx], "--phase2-heuristic-start-ratio");
+            if (options.phase_two_heuristic_start_ratio <= 0.0 ||
+                options.phase_two_heuristic_start_ratio > 1.0) {
+                throw std::runtime_error(
+                    "--phase2-heuristic-start-ratio must lie in (0, 1]."
+                );
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-heuristic-ladder-levels") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-heuristic-ladder-levels requires a value.");
+            }
+            options.phase_two_heuristic_ladder_levels =
+                parse_int(argv[++idx], "--phase2-heuristic-ladder-levels");
+            if (options.phase_two_heuristic_ladder_levels < 0) {
+                throw std::runtime_error(
+                    "--phase2-heuristic-ladder-levels must be nonnegative."
+                );
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-heuristic-max-columns-per-start") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--phase2-heuristic-max-columns-per-start requires a value."
+                );
+            }
+            options.phase_two_heuristic_max_columns_per_start =
+                parse_int(argv[++idx], "--phase2-heuristic-max-columns-per-start");
+            if (options.phase_two_heuristic_max_columns_per_start <= 0) {
+                throw std::runtime_error(
+                    "--phase2-heuristic-max-columns-per-start must be positive."
+                );
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-heuristic-max-columns-total") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-heuristic-max-columns-total requires a value.");
+            }
+            options.phase_two_heuristic_max_columns_total =
+                parse_int(argv[++idx], "--phase2-heuristic-max-columns-total");
+            if (options.phase_two_heuristic_max_columns_total <= 0) {
+                throw std::runtime_error(
+                    "--phase2-heuristic-max-columns-total must be positive."
+                );
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-heuristic-search-column-ratio") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-heuristic-search-column-ratio requires a value.");
+            }
+            options.phase_two_heuristic_search_column_ratio =
+                parse_double(argv[++idx], "--phase2-heuristic-search-column-ratio");
+            if (options.phase_two_heuristic_search_column_ratio < 1.0) {
+                throw std::runtime_error(
+                    "--phase2-heuristic-search-column-ratio must be at least 1.0."
+                );
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-heuristic-start-score-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--phase2-heuristic-start-score-mode requires a value."
+                );
+            }
+            options.phase_two_heuristic_start_score_mode =
+                parse_phase_two_heuristic_start_score_mode(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--phase2-heuristic-engine") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-heuristic-engine requires a value.");
+            }
+            options.phase_two_heuristic_engine =
+                parse_phase_two_heuristic_engine(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--phase2-labeling-top-k-next") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-labeling-top-k-next requires a value.");
+            }
+            options.phase_two_labeling_top_k_next =
+                parse_int(argv[++idx], "--phase2-labeling-top-k-next");
+            if (options.phase_two_labeling_top_k_next < 0) {
+                throw std::runtime_error(
+                    "--phase2-labeling-top-k-next must be nonnegative."
+                );
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-shallow-k1") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-shallow-k1 requires a value.");
+            }
+            options.phase_two_shallow_k1 =
+                parse_int(argv[++idx], "--phase2-shallow-k1");
+            if (options.phase_two_shallow_k1 <= 0) {
+                throw std::runtime_error("--phase2-shallow-k1 must be positive.");
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-shallow-k2") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-shallow-k2 requires a value.");
+            }
+            options.phase_two_shallow_k2 =
+                parse_int(argv[++idx], "--phase2-shallow-k2");
+            if (options.phase_two_shallow_k2 <= 0) {
+                throw std::runtime_error("--phase2-shallow-k2 must be positive.");
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-column-pool-enable") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-column-pool-enable requires a value.");
+            }
+            options.phase_two_column_pool_enable =
+                parse_int(argv[++idx], "--phase2-column-pool-enable");
+            if (options.phase_two_column_pool_enable != 0 &&
+                options.phase_two_column_pool_enable != 1) {
+                throw std::runtime_error("--phase2-column-pool-enable must be 0 or 1.");
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-column-pool-max-size") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-column-pool-max-size requires a value.");
+            }
+            options.phase_two_column_pool_max_size =
+                parse_int(argv[++idx], "--phase2-column-pool-max-size");
+            if (options.phase_two_column_pool_max_size <= 0) {
+                throw std::runtime_error("--phase2-column-pool-max-size must be positive.");
+            }
+            continue;
+        }
+
+        if (arg == "--phase2-column-pool-max-reprice") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--phase2-column-pool-max-reprice requires a value.");
+            }
+            options.phase_two_column_pool_max_reprice =
+                parse_int(argv[++idx], "--phase2-column-pool-max-reprice");
+            if (options.phase_two_column_pool_max_reprice <= 0) {
+                throw std::runtime_error(
+                    "--phase2-column-pool-max-reprice must be positive."
+                );
             }
             continue;
         }
@@ -454,6 +704,8 @@ void print_instance_summary(
     out << "[main] p: " << args.p << '\n';
     out << "[main] Solver mode: " << args.solver_mode << '\n';
     out << "[main] Node CG phase-1 mode: " << args.node_cg_phase_one_mode << '\n';
+    out << "[main] Node CG phase-2 pricing mode: "
+        << args.node_cg_phase_two_pricing_mode << '\n';
     out << "[main] Solver time limit: " << format_double(args.solver_time_limit) << '\n';
     out << "[main] Gurobi threads: " << format_gurobi_threads(args.gurobi_threads) << '\n';
     out << "[main] VI formulation: " << args.vi_formulation << '\n';
@@ -480,8 +732,35 @@ void print_instance_summary(
     out << "[main] add_vi_36: " << args.add_vi_36 << '\n';
     out << "[main] add_vi_44: " << args.add_vi_44 << '\n';
     out << "[main] cg_max_iterations_per_phase: " << args.cg_max_iterations_per_phase << '\n';
-    out << "[main] cg_max_columns_per_start: " << args.cg_max_columns_per_start << '\n';
-    out << "[main] cg_max_total_columns_per_round: " << args.cg_max_total_columns_per_round << '\n';
+    out << "[main] exact_pricing_max_columns_per_start: "
+        << args.exact_pricing_max_columns_per_start << '\n';
+    out << "[main] exact_pricing_max_total_columns_per_round: "
+        << args.exact_pricing_max_total_columns_per_round << '\n';
+    out << "[main] phase2_heuristic_max_starts: " << args.phase_two_heuristic_max_starts << '\n';
+    out << "[main] phase2_heuristic_start_ratio: "
+        << format_double(args.phase_two_heuristic_start_ratio) << '\n';
+    out << "[main] phase2_heuristic_ladder_levels: "
+        << args.phase_two_heuristic_ladder_levels << '\n';
+    out << "[main] phase2_heuristic_max_columns_per_start: "
+        << args.phase_two_heuristic_max_columns_per_start << '\n';
+    out << "[main] phase2_heuristic_max_columns_total: "
+        << args.phase_two_heuristic_max_columns_total << '\n';
+    out << "[main] phase2_heuristic_search_column_ratio: "
+        << format_double(args.phase_two_heuristic_search_column_ratio) << '\n';
+    out << "[main] phase2_heuristic_start_score_mode: "
+        << args.phase_two_heuristic_start_score_mode << '\n';
+    out << "[main] phase2_heuristic_engine: "
+        << args.phase_two_heuristic_engine << '\n';
+    out << "[main] phase2_labeling_top_k_next: "
+        << args.phase_two_labeling_top_k_next << '\n';
+    out << "[main] phase2_shallow_k1: " << args.phase_two_shallow_k1 << '\n';
+    out << "[main] phase2_shallow_k2: " << args.phase_two_shallow_k2 << '\n';
+    out << "[main] phase2_column_pool_enable: "
+        << args.phase_two_column_pool_enable << '\n';
+    out << "[main] phase2_column_pool_max_size: "
+        << args.phase_two_column_pool_max_size << '\n';
+    out << "[main] phase2_column_pool_max_reprice: "
+        << args.phase_two_column_pool_max_reprice << '\n';
     out << "[main] cg_reduced_cost_tolerance: "
         << std::scientific << std::setprecision(6) << args.cg_reduced_cost_tolerance << '\n';
     out << std::defaultfloat;
@@ -637,22 +916,59 @@ int main(int argc, char** argv) {
             }
 
             if (args.solve_model == 1) {
-                const spdp::NodeCGOptions cg_options{
-                    args.p,
-                    data.time_limit,
-                    args.solver_time_limit,
-                    args.gurobi_threads,
-                    static_cast<std::size_t>(args.cg_max_iterations_per_phase),
-                    static_cast<std::size_t>(args.cg_max_columns_per_start),
-                    static_cast<std::size_t>(args.cg_max_total_columns_per_round),
-                    args.cg_reduced_cost_tolerance,
-                    args.prune_pickup_symmetry_43 == 1,
-                    args.prune_delivery_symmetry_43 == 1,
-                    gurobi_log_path.string(),
+                spdp::NodeCGOptions cg_options;
+                cg_options.p = args.p;
+                cg_options.time_limit = data.time_limit;
+                cg_options.solver_time_limit = args.solver_time_limit;
+                cg_options.gurobi_threads = args.gurobi_threads;
+                cg_options.max_iterations_per_phase =
+                    static_cast<std::size_t>(args.cg_max_iterations_per_phase);
+                cg_options.exact_pricing_max_columns_per_start =
+                    static_cast<std::size_t>(args.exact_pricing_max_columns_per_start);
+                cg_options.exact_pricing_max_total_columns_per_round =
+                    static_cast<std::size_t>(args.exact_pricing_max_total_columns_per_round);
+                cg_options.reduced_cost_tolerance = args.cg_reduced_cost_tolerance;
+                cg_options.prune_pickup_symmetry_43 = args.prune_pickup_symmetry_43 == 1;
+                cg_options.prune_delivery_symmetry_43 = args.prune_delivery_symmetry_43 == 1;
+                cg_options.gurobi_log_path = gurobi_log_path.string();
+                cg_options.phase_one_mode =
                     args.node_cg_phase_one_mode == "exact-cg"
                         ? spdp::NodeCGPhaseOneMode::ExactCG
-                        : spdp::NodeCGPhaseOneMode::HeuristicCG,
-                };
+                        : spdp::NodeCGPhaseOneMode::HeuristicCG;
+                cg_options.phase_two_pricing_mode =
+                    args.node_cg_phase_two_pricing_mode == "exact-pricing"
+                        ? spdp::NodeCGPhaseTwoPricingMode::ExactPricing
+                        : spdp::NodeCGPhaseTwoPricingMode::HeuristicPricingThenExact;
+                cg_options.phase_two_heuristic_max_starts =
+                    static_cast<std::size_t>(args.phase_two_heuristic_max_starts);
+                cg_options.phase_two_heuristic_start_ratio =
+                    args.phase_two_heuristic_start_ratio;
+                cg_options.phase_two_heuristic_ladder_levels =
+                    static_cast<std::size_t>(args.phase_two_heuristic_ladder_levels);
+                cg_options.phase_two_heuristic_max_columns_per_start =
+                    static_cast<std::size_t>(args.phase_two_heuristic_max_columns_per_start);
+                cg_options.phase_two_heuristic_max_total_columns =
+                    static_cast<std::size_t>(args.phase_two_heuristic_max_columns_total);
+                cg_options.phase_two_heuristic_search_column_ratio =
+                    args.phase_two_heuristic_search_column_ratio;
+                cg_options.phase_two_heuristic_start_score_mode =
+                    spdp::HeuristicStartScoreMode::OneStepMin;
+                cg_options.phase_two_heuristic_engine =
+                    args.phase_two_heuristic_engine == "labeling"
+                        ? spdp::NodeCGPhaseTwoHeuristicEngine::Labeling
+                        : spdp::NodeCGPhaseTwoHeuristicEngine::ShallowSearch;
+                cg_options.phase_two_labeling_top_k_next =
+                    static_cast<std::size_t>(args.phase_two_labeling_top_k_next);
+                cg_options.phase_two_shallow_k1 =
+                    static_cast<std::size_t>(args.phase_two_shallow_k1);
+                cg_options.phase_two_shallow_k2 =
+                    static_cast<std::size_t>(args.phase_two_shallow_k2);
+                cg_options.phase_two_column_pool_enabled =
+                    args.phase_two_column_pool_enable == 1;
+                cg_options.phase_two_column_pool_max_size =
+                    static_cast<std::size_t>(args.phase_two_column_pool_max_size);
+                cg_options.phase_two_column_pool_max_reprice =
+                    static_cast<std::size_t>(args.phase_two_column_pool_max_reprice);
                 const spdp::NodeCGResult cg_result =
                     spdp::solve_node_column_generation(data, graph, cg_options, &output_file);
                 spdp::write_node_cg_summary(output_file, cg_result);

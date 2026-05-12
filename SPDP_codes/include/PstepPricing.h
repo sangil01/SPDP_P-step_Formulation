@@ -22,6 +22,10 @@ enum class CGPhase {
     PhaseII,
 };
 
+enum class HeuristicStartScoreMode {
+    OneStepMin,
+};
+
 // node LP dual을 pricing이 읽기 쉬운 형태로 묶은 구조체.
 // visit / state / time / edge-linking row dual을 모두 저장한다.
 struct CGDualSolution {
@@ -184,10 +188,10 @@ struct ForwardPricingContext {
 
 // forward pricing 제어 옵션.
 struct ForwardPricingOptions {
-    // 한 pricing round에서 start class마다 몇 개의 best negative column을 유지할지.
+    // 한 pricing round에서 start class마다 몇 개의 best negative column을 유지할지. (heurstic/exact pricing 별로 다른 값)
     std::size_t max_columns_per_start = 1;
 
-    // 전체 pricing round에서 RMP에 넘길 최대 column 수.
+    // 전체 pricing round에서 RMP에 넘길 최대 column 수. (heurstic/exact pricing 별로 다른 값)
     std::size_t max_total_columns = 256;
 
     // reduced cost가 이 값보다 작을 때만 column으로 인정한다.
@@ -198,6 +202,33 @@ struct ForwardPricingOptions {
 
     // delivery ordering symmetry를 적용할지 여부.
     bool prune_delivery_symmetry_43 = true;
+
+    // heuristic pricing pass를 수행할지 여부.
+    bool heuristic_pricing = false;
+
+    // heuristic pricing에서 앞에서부터 몇 개의 start class만 볼지.
+    std::size_t heuristic_max_starts = 0;
+
+    // heuristic pricing에서 탐색할 start class 수 비율.
+    double heuristic_start_ratio = 0.0;
+
+    // heuristic pricing에서 search cap을 output cap 대비 몇 배까지 허용할지.
+    // 1.0이면 search cap과 output cap이 같고, 1.0보다 크면 overflow column이 deferred로 남을 수 있다.
+    double heuristic_search_column_ratio = 1.0;
+
+    // heuristic pricing에서 사용할 start ordering score 방식.
+    HeuristicStartScoreMode heuristic_start_score_mode = HeuristicStartScoreMode::OneStepMin;
+
+    // heuristic labeling에서 현재 label의 outgoing transition 중 score 기준 상위 몇 개만 확장할지.
+    // 0이면 기존 exact/full forward labeling처럼 모든 outgoing transition을 확장한다.
+    std::size_t labeling_top_k_next = 0;
+
+    // 3-step shallow search용 first/second arc branching cap.
+    std::size_t shallow_k1 = 8;
+    std::size_t shallow_k2 = 4;
+
+    // 비어 있지 않으면 이 start class subset만 순서대로 pricing한다.
+    std::vector<int> explicit_start_node_state_indices;
 };
 
 enum class ForwardPricingStatus {
@@ -208,8 +239,17 @@ enum class ForwardPricingStatus {
 
 // forward pricing 실행 결과 요약.
 struct ForwardPricingResult {
+
+    // 현재 pricing round의 종료 상태: improving column을 찾았는지, complete label은 있었지만 음수 column이 없었는지, 아니면 complete label 자체가 없었는지를 나타낸다.
     ForwardPricingStatus status = ForwardPricingStatus::NoCompleteLabel;
+
+    // 이번 pricing round에서 caller가 restricted master에 바로 추가할 최종 accepted negative reduced-cost columns이다.
     std::vector<CGColumn> columns;
+
+    // 이번 pricing round에서 생성되었지만 global insertion cap 등으로 master에는 바로 넣지 못해 이후 재사용이나 pool 보관 대상으로 넘기는 columns이다.
+    std::vector<CGColumn> deferred_columns;
+
+    // 이번 pricing round에서 평가된 모든 complete candidate 중 가장 작은 reduced cost 값이다.
     double best_reduced_cost = 0.0;
 
     // complete path 조건을 만족해 column 후보 평가까지 간 label 수.
@@ -248,11 +288,37 @@ ForwardPricingResult run_forward_pricing(
     const ForwardPricingOptions& options
 );
 
+// p=3 phase-two heuristic용 shallow search pricing을 수행한다.
+ForwardPricingResult run_phase_two_shallow_search(
+    const MultiDiGraph& graph,
+    const ForwardPricingContext& context,
+    const CGDualSolution& dual_solution,
+    CGPhase phase,
+    const ForwardPricingOptions& options
+);
+
+// 현재 dual에서 heuristic start score 기준으로 start class를 정렬한다.
+std::vector<int> build_heuristic_start_order(
+    const MultiDiGraph& graph,
+    const ForwardPricingContext& context,
+    const CGDualSolution& dual_solution,
+    CGPhase phase,
+    HeuristicStartScoreMode mode
+);
+
+// sparse master coefficients를 이용해 column의 exact reduced cost를 계산한다.
+double evaluate_column_reduced_cost(
+    const CGDualSolution& dual_solution,
+    CGPhase phase,
+    const CGColumn& column
+);
+
 // 현재 dual에서 나온 dynamic column을 읽기 쉬운 텍스트로 출력한다.
 void write_generated_columns(std::ostream& out, const std::vector<CGColumn>& columns);
 
 // CLI/logging용 pricing status 이름.
 const char* to_string(ForwardPricingStatus status);
+const char* to_string(HeuristicStartScoreMode mode);
 
 }  // namespace spdp
 
