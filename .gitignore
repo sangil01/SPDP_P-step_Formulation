@@ -39,7 +39,9 @@ SPDP_output*/
 SPDP_optimal/
 Obsidian_SPDP_research_notes/
 *.log
+*.xlsx
 context.md
+generate_root_cg_summary_xlsx.py
 
 
 # [OS 및 시스템]

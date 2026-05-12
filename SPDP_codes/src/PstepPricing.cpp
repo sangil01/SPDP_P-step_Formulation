@@ -136,6 +136,11 @@ struct ShallowSearchState {
     std::vector<int> edge_ids;
 };
 
+struct TopKForwardEdgeSelection {
+    std::vector<int> pricing_edge_indices;
+    std::size_t feasible_edge_count_before_top_k = 0;
+};
+
 bool mask_contains(
     const std::vector<std::uint64_t>& mask,
     int bit_index
@@ -748,7 +753,7 @@ std::vector<int> collect_feasible_shallow_edges(
     return feasible_edges;
 }
 
-std::vector<int> collect_top_k_forward_labeling_edges(
+TopKForwardEdgeSelection collect_top_k_forward_labeling_edges(
     const MultiDiGraph& graph,
     const ForwardPricingContext& context,
     const CGDualSolution& dual_solution,
@@ -757,6 +762,7 @@ std::vector<int> collect_top_k_forward_labeling_edges(
     const Label& current_label,
     std::size_t top_k_next
 ) {
+    TopKForwardEdgeSelection selection;
     std::vector<std::pair<double, int>> scored_edges;
     scored_edges.reserve(
         context.outgoing_edges_by_node_state[static_cast<std::size_t>(current_label.node_state_index)]
@@ -816,6 +822,8 @@ std::vector<int> collect_top_k_forward_labeling_edges(
         });
     }
 
+    selection.feasible_edge_count_before_top_k = scored_edges.size();
+
     if (top_k_next > 0U && scored_edges.size() > top_k_next) {
         std::partial_sort(
             scored_edges.begin(),
@@ -842,12 +850,11 @@ std::vector<int> collect_top_k_forward_labeling_edges(
         );
     }
 
-    std::vector<int> pricing_edge_indices;
-    pricing_edge_indices.reserve(scored_edges.size());
+    selection.pricing_edge_indices.reserve(scored_edges.size());
     for (const auto& entry : scored_edges) {
-        pricing_edge_indices.push_back(entry.second);
+        selection.pricing_edge_indices.push_back(entry.second);
     }
-    return pricing_edge_indices;
+    return selection;
 }
 
 bool evaluate_shallow_complete_state(
@@ -1269,13 +1276,13 @@ ForwardPricingResult run_forward_pricing(
     const std::size_t mask_word_count = bit_word_count(context.physical_node_count); // physical node 방문 여부를 나타내는 set을 비트마스크로 표현할 때 필요한 64bit cell 수.
     std::vector<CGColumn> candidate_columns;
     std::vector<CGColumn> deferred_candidate_columns;
-    std::size_t total_negative_column_count = 0U;
     const std::vector<int> ordered_start_node_state_indices =
         build_start_order(graph, context, dual_solution, phase, options);
 
     for (int start_node_state_index : ordered_start_node_state_indices) {
         if (options.heuristic_pricing &&
-            total_negative_column_count >= search_max_total_columns) {
+            result.total_negative_column_count >= search_max_total_columns) {
+            result.hit_global_search_cap = true;
             break;
         }
 
@@ -1329,6 +1336,7 @@ ForwardPricingResult run_forward_pricing(
         std::vector<CGColumn> best_columns_for_start;
         std::vector<int> current_layer_indices{0};
         bool stop_current_start = false;
+        bool hit_start_search_cap = false;
 
         for (int depth = 0; depth <= context.p && !current_layer_indices.empty(); ++depth) {
             for (int label_index : current_layer_indices) {
@@ -1349,10 +1357,16 @@ ForwardPricingResult run_forward_pricing(
                     if (!column.edge_ids.empty()) {
                         result.best_reduced_cost = std::min(result.best_reduced_cost, column.reduced_cost);
                         best_columns_for_start.push_back(std::move(column));
-                        ++total_negative_column_count;
+                        ++result.total_negative_column_count;
                         if (options.heuristic_pricing &&
-                            (best_columns_for_start.size() >= search_max_columns_per_start ||
-                             total_negative_column_count >= search_max_total_columns)) {
+                            best_columns_for_start.size() >= search_max_columns_per_start) {
+                            hit_start_search_cap = true;
+                            stop_current_start = true;
+                            break;
+                        }
+                        if (options.heuristic_pricing &&
+                            result.total_negative_column_count >= search_max_total_columns) {
+                            result.hit_global_search_cap = true;
                             stop_current_start = true;
                             break;
                         }
@@ -1371,7 +1385,8 @@ ForwardPricingResult run_forward_pricing(
                     &context.outgoing_edges_by_node_state
                         [static_cast<std::size_t>(current_label.node_state_index)];
                 if (use_top_k_next) {
-                    top_k_pricing_edge_indices = collect_top_k_forward_labeling_edges(
+                    const TopKForwardEdgeSelection top_k_selection =
+                        collect_top_k_forward_labeling_edges(
                         graph,
                         context,
                         dual_solution,
@@ -1380,6 +1395,12 @@ ForwardPricingResult run_forward_pricing(
                         current_label,
                         options.labeling_top_k_next
                     );
+                    ++result.top_k_next_applied_label_count;
+                    result.top_k_next_feasible_edges_before +=
+                        top_k_selection.feasible_edge_count_before_top_k;
+                    result.top_k_next_feasible_edges_after +=
+                        top_k_selection.pricing_edge_indices.size();
+                    top_k_pricing_edge_indices = top_k_selection.pricing_edge_indices;
                     pricing_edge_indices = &top_k_pricing_edge_indices;
                 }
 
@@ -1531,6 +1552,10 @@ ForwardPricingResult run_forward_pricing(
             }
         }
 
+        if (hit_start_search_cap) {
+            ++result.per_start_search_cap_hit_count;
+        }
+
         result.surviving_label_count += count_surviving_labels(bucket_label_indices);
 
         if (!best_columns_for_start.empty()) {
@@ -1652,10 +1677,10 @@ ForwardPricingResult run_phase_two_shallow_search(
     std::vector<CGColumn> candidate_columns;
     std::vector<CGColumn> deferred_candidate_columns;
     candidate_columns.reserve(search_max_total_columns);
-    std::size_t total_negative_column_count = 0U;
 
     for (int start_node_state_index : ordered_starts) {
-        if (total_negative_column_count >= search_max_total_columns) {
+        if (result.total_negative_column_count >= search_max_total_columns) {
+            result.hit_global_search_cap = true;
             break;
         }
 
@@ -1735,8 +1760,12 @@ ForwardPricingResult run_phase_two_shallow_search(
                 stop_current_start = true;
             }
             if (stop_current_start ||
-                total_negative_column_count + accepted_columns_for_start.size() >=
+                result.total_negative_column_count + accepted_columns_for_start.size() >=
                     search_max_total_columns) {
+                if (result.total_negative_column_count + accepted_columns_for_start.size() >=
+                    search_max_total_columns) {
+                    result.hit_global_search_cap = true;
+                }
                 break;
             }
 
@@ -1777,8 +1806,12 @@ ForwardPricingResult run_phase_two_shallow_search(
                     stop_current_start = true;
                 }
                 if (stop_current_start ||
-                    total_negative_column_count + accepted_columns_for_start.size() >=
+                    result.total_negative_column_count + accepted_columns_for_start.size() >=
                         search_max_total_columns) {
+                    if (result.total_negative_column_count + accepted_columns_for_start.size() >=
+                        search_max_total_columns) {
+                        result.hit_global_search_cap = true;
+                    }
                     break;
                 }
 
@@ -1819,22 +1852,34 @@ ForwardPricingResult run_phase_two_shallow_search(
                         stop_current_start = true;
                     }
                     if (stop_current_start ||
-                        total_negative_column_count + accepted_columns_for_start.size() >=
+                        result.total_negative_column_count + accepted_columns_for_start.size() >=
                             search_max_total_columns) {
+                        if (result.total_negative_column_count + accepted_columns_for_start.size() >=
+                            search_max_total_columns) {
+                            result.hit_global_search_cap = true;
+                        }
                         break;
                     }
                 }
 
                 if (stop_current_start ||
-                    total_negative_column_count + accepted_columns_for_start.size() >=
+                    result.total_negative_column_count + accepted_columns_for_start.size() >=
                         search_max_total_columns) {
+                    if (result.total_negative_column_count + accepted_columns_for_start.size() >=
+                        search_max_total_columns) {
+                        result.hit_global_search_cap = true;
+                    }
                     break;
                 }
             }
 
             if (stop_current_start ||
-                total_negative_column_count + accepted_columns_for_start.size() >=
+                result.total_negative_column_count + accepted_columns_for_start.size() >=
                     search_max_total_columns) {
+                if (result.total_negative_column_count + accepted_columns_for_start.size() >=
+                    search_max_total_columns) {
+                    result.hit_global_search_cap = true;
+                }
                 break;
             }
         }
@@ -1843,7 +1888,7 @@ ForwardPricingResult run_phase_two_shallow_search(
             1U + (result.generated_label_count - generated_before_start);
 
         if (!accepted_columns_for_start.empty()) {
-            total_negative_column_count += accepted_columns_for_start.size();
+            result.total_negative_column_count += accepted_columns_for_start.size();
             std::sort(
                 accepted_columns_for_start.begin(),
                 accepted_columns_for_start.end(),
@@ -1865,6 +1910,9 @@ ForwardPricingResult run_phase_two_shallow_search(
                 accepted_columns_for_start.begin(),
                 accepted_columns_for_start.end()
             );
+        }
+        if (stop_current_start) {
+            ++result.per_start_search_cap_hit_count;
         }
     }
 

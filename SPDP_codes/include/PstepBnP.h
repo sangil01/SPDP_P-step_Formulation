@@ -130,6 +130,32 @@ struct NodeCGIterationLog {
     bool exact_pricing_fallback_used = false;
     std::size_t heuristic_explored_start_count = 0;
     std::size_t heuristic_found_column_count = 0;
+    std::size_t heuristic_available_start_count = 0;
+    NodeCGPhaseTwoHeuristicEngine heuristic_engine =
+        NodeCGPhaseTwoHeuristicEngine::ShallowSearch;
+    std::size_t heuristic_max_starts = 0;
+    double heuristic_start_ratio = 0.0;
+    std::size_t heuristic_ladder_levels = 0;
+    std::size_t heuristic_output_max_columns_per_start = 0;
+    std::size_t heuristic_output_max_columns_total = 0;
+    double heuristic_search_column_ratio = 1.0;
+    std::size_t heuristic_effective_search_max_columns_per_start = 0;
+    std::size_t heuristic_effective_search_max_columns_total = 0;
+    std::size_t heuristic_total_negative_column_count = 0;
+    std::size_t heuristic_per_start_search_cap_hit_count = 0;
+    bool heuristic_global_search_cap_hit = false;
+    std::size_t heuristic_labeling_top_k_next = 0;
+    std::size_t heuristic_shallow_k1 = 0;
+    std::size_t heuristic_shallow_k2 = 0;
+    std::size_t heuristic_top_k_applied_label_count = 0;
+    std::size_t heuristic_top_k_feasible_edges_before = 0;
+    std::size_t heuristic_top_k_feasible_edges_after = 0;
+    bool column_pool_enabled = false;
+    std::size_t column_pool_size_before_reprice = 0;
+    std::size_t column_pool_max_reprice = 0;
+    std::size_t column_pool_found_column_count = 0;
+    std::size_t column_pool_deferred_added_count = 0;
+    std::size_t column_pool_size_after_update = 0;
 };
 
 // B&P node column generation 종료 결과.

@@ -252,6 +252,24 @@ struct ForwardPricingResult {
     // 이번 pricing round에서 평가된 모든 complete candidate 중 가장 작은 reduced cost 값이다.
     double best_reduced_cost = 0.0;
 
+    // 이번 pricing round에서 찾은 improving(negative reduced-cost) column 총 개수이다.
+    std::size_t total_negative_column_count = 0;
+
+    // start별 heuristic search cap에 도달해 탐색을 조기 종료한 start 수이다.
+    std::size_t per_start_search_cap_hit_count = 0;
+
+    // round 전체 heuristic search cap에 도달해 탐색을 조기 종료했는지 여부이다.
+    bool hit_global_search_cap = false;
+
+    // heuristic labeling에서 top-k next filtering을 적용한 label 수이다.
+    std::size_t top_k_next_applied_label_count = 0;
+
+    // top-k filtering 전에 feasible했던 outgoing edge 수의 누적합이다.
+    std::size_t top_k_next_feasible_edges_before = 0;
+
+    // top-k filtering 후 실제 확장 대상으로 남은 outgoing edge 수의 누적합이다.
+    std::size_t top_k_next_feasible_edges_after = 0;
+
     // complete path 조건을 만족해 column 후보 평가까지 간 label 수.
     std::size_t complete_label_count = 0;
 

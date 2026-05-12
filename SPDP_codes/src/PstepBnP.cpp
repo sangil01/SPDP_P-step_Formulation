@@ -870,6 +870,21 @@ struct PhaseTwoColumnPoolEntry {
     double best_reduced_cost = std::numeric_limits<double>::infinity();
 };
 
+std::size_t compute_search_column_limit(
+    std::size_t output_limit,
+    double search_ratio
+) {
+    const double scaled_limit = std::ceil(search_ratio * static_cast<double>(output_limit));
+    const double capped_limit = std::min(
+        scaled_limit,
+        static_cast<double>(std::numeric_limits<std::size_t>::max())
+    );
+    return std::max<std::size_t>(
+        output_limit,
+        static_cast<std::size_t>(capped_limit)
+    );
+}
+
 std::vector<int> build_ladder_level_starts(
     const std::vector<int>& ordered_starts,
     std::size_t max_start_cap,
@@ -1096,8 +1111,35 @@ void write_iteration_log(
         << " dominated_labels=" << log.dominated_label_count
         << " heuristic_attempted=" << (log.heuristic_pricing_attempted ? 1 : 0)
         << " exact_fallback=" << (log.exact_pricing_fallback_used ? 1 : 0)
+        << " heuristic_available_starts=" << log.heuristic_available_start_count
         << " heuristic_pricing_starts=" << log.heuristic_explored_start_count
         << " heuristic_pricing_cols=" << log.heuristic_found_column_count
+        << " heuristic_engine=" << to_string(log.heuristic_engine)
+        << " heuristic_max_starts=" << log.heuristic_max_starts
+        << " heuristic_start_ratio=" << format_double(log.heuristic_start_ratio)
+        << " heuristic_ladder_levels=" << log.heuristic_ladder_levels
+        << " heuristic_output_cols_per_start=" << log.heuristic_output_max_columns_per_start
+        << " heuristic_output_cols_total=" << log.heuristic_output_max_columns_total
+        << " heuristic_search_col_ratio=" << format_double(log.heuristic_search_column_ratio)
+        << " heuristic_search_cols_per_start="
+        << log.heuristic_effective_search_max_columns_per_start
+        << " heuristic_search_cols_total="
+        << log.heuristic_effective_search_max_columns_total
+        << " heuristic_total_negative_cols=" << log.heuristic_total_negative_column_count
+        << " heuristic_per_start_cap_hits=" << log.heuristic_per_start_search_cap_hit_count
+        << " heuristic_global_cap_hit=" << (log.heuristic_global_search_cap_hit ? 1 : 0)
+        << " heuristic_labeling_top_k_next=" << log.heuristic_labeling_top_k_next
+        << " heuristic_shallow_k1=" << log.heuristic_shallow_k1
+        << " heuristic_shallow_k2=" << log.heuristic_shallow_k2
+        << " heuristic_top_k_applied_labels=" << log.heuristic_top_k_applied_label_count
+        << " heuristic_top_k_edges_before=" << log.heuristic_top_k_feasible_edges_before
+        << " heuristic_top_k_edges_after=" << log.heuristic_top_k_feasible_edges_after
+        << " column_pool_enabled=" << (log.column_pool_enabled ? 1 : 0)
+        << " column_pool_size_before_reprice=" << log.column_pool_size_before_reprice
+        << " column_pool_max_reprice=" << log.column_pool_max_reprice
+        << " column_pool_found_cols=" << log.column_pool_found_column_count
+        << " column_pool_deferred_added=" << log.column_pool_deferred_added_count
+        << " column_pool_size_after_update=" << log.column_pool_size_after_update
         << '\n';
 }
 
@@ -1178,6 +1220,34 @@ bool run_node_pricing_phase(
         iteration_log.iteration_index = iteration;
         iteration_log.lp_objective_value = snapshot.objective_value;
         iteration_log.artificial_sum = snapshot.artificial_sum;
+        iteration_log.heuristic_engine = options.phase_two_heuristic_engine;
+        iteration_log.heuristic_available_start_count =
+            pricing_context.start_node_state_indices.size();
+        iteration_log.heuristic_max_starts = options.phase_two_heuristic_max_starts;
+        iteration_log.heuristic_start_ratio = options.phase_two_heuristic_start_ratio;
+        iteration_log.heuristic_ladder_levels = options.phase_two_heuristic_ladder_levels;
+        iteration_log.heuristic_output_max_columns_per_start =
+            options.phase_two_heuristic_max_columns_per_start;
+        iteration_log.heuristic_output_max_columns_total =
+            options.phase_two_heuristic_max_total_columns;
+        iteration_log.heuristic_search_column_ratio =
+            options.phase_two_heuristic_search_column_ratio;
+        iteration_log.heuristic_effective_search_max_columns_per_start =
+            compute_search_column_limit(
+                options.phase_two_heuristic_max_columns_per_start,
+                options.phase_two_heuristic_search_column_ratio
+            );
+        iteration_log.heuristic_effective_search_max_columns_total =
+            compute_search_column_limit(
+                options.phase_two_heuristic_max_total_columns,
+                options.phase_two_heuristic_search_column_ratio
+            );
+        iteration_log.heuristic_labeling_top_k_next =
+            options.phase_two_labeling_top_k_next;
+        iteration_log.heuristic_shallow_k1 = options.phase_two_shallow_k1;
+        iteration_log.heuristic_shallow_k2 = options.phase_two_shallow_k2;
+        iteration_log.column_pool_enabled = options.phase_two_column_pool_enabled;
+        iteration_log.column_pool_max_reprice = options.phase_two_column_pool_max_reprice;
 
         if (log_stream != nullptr) {
             write_cg_master_snapshot(*log_stream, snapshot);
@@ -1225,6 +1295,7 @@ bool run_node_pricing_phase(
             bool heuristic_found = false;
 
             if (options.phase_two_column_pool_enabled) {
+                iteration_log.column_pool_size_before_reprice = phase_two_column_pool.size();
                 const ForwardPricingResult pool_result = reprice_phase_two_column_pool(
                     master_problem,
                     dual_solution,
@@ -1237,6 +1308,7 @@ bool run_node_pricing_phase(
                 );
                 heuristic_stats.best_reduced_cost =
                     std::min(heuristic_stats.best_reduced_cost, pool_result.best_reduced_cost);
+                iteration_log.column_pool_found_column_count = pool_result.columns.size();
                 if (!pool_result.columns.empty()) {
                     selected_heuristic_result = pool_result;
                     heuristic_found = true;
@@ -1300,6 +1372,19 @@ bool run_node_pricing_phase(
                     heuristic_stats.generated_label_count += level_result.generated_label_count;
                     heuristic_stats.surviving_label_count += level_result.surviving_label_count;
                     heuristic_stats.dominated_label_count += level_result.dominated_label_count;
+                    heuristic_stats.total_negative_column_count +=
+                        level_result.total_negative_column_count;
+                    heuristic_stats.per_start_search_cap_hit_count +=
+                        level_result.per_start_search_cap_hit_count;
+                    heuristic_stats.hit_global_search_cap =
+                        heuristic_stats.hit_global_search_cap ||
+                        level_result.hit_global_search_cap;
+                    heuristic_stats.top_k_next_applied_label_count +=
+                        level_result.top_k_next_applied_label_count;
+                    heuristic_stats.top_k_next_feasible_edges_before +=
+                        level_result.top_k_next_feasible_edges_before;
+                    heuristic_stats.top_k_next_feasible_edges_after +=
+                        level_result.top_k_next_feasible_edges_after;
 
                     if (!level_result.columns.empty()) {
                         selected_heuristic_result = level_result;
@@ -1313,6 +1398,18 @@ bool run_node_pricing_phase(
             iteration_log.heuristic_explored_start_count = heuristic_stats.start_label_count;
             iteration_log.heuristic_found_column_count =
                 heuristic_found ? selected_heuristic_result.columns.size() : 0U;
+            iteration_log.heuristic_total_negative_column_count =
+                heuristic_stats.total_negative_column_count;
+            iteration_log.heuristic_per_start_search_cap_hit_count =
+                heuristic_stats.per_start_search_cap_hit_count;
+            iteration_log.heuristic_global_search_cap_hit =
+                heuristic_stats.hit_global_search_cap;
+            iteration_log.heuristic_top_k_applied_label_count =
+                heuristic_stats.top_k_next_applied_label_count;
+            iteration_log.heuristic_top_k_feasible_edges_before =
+                heuristic_stats.top_k_next_feasible_edges_before;
+            iteration_log.heuristic_top_k_feasible_edges_after =
+                heuristic_stats.top_k_next_feasible_edges_after;
 
             if (heuristic_found) {
                 pricing_result = selected_heuristic_result;
@@ -1366,6 +1463,7 @@ bool run_node_pricing_phase(
         if (phase == CGPhase::PhaseII &&
             options.phase_two_column_pool_enabled &&
             !columns_to_add_to_pool.empty()) {
+            iteration_log.column_pool_deferred_added_count = columns_to_add_to_pool.size();
             add_columns_to_phase_two_pool(
                 columns_to_add_to_pool,
                 master_problem,
@@ -1373,6 +1471,9 @@ bool run_node_pricing_phase(
                 phase_two_column_pool,
                 phase_two_pool_index_by_key
             );
+        }
+        if (phase == CGPhase::PhaseII && options.phase_two_column_pool_enabled) {
+            iteration_log.column_pool_size_after_update = phase_two_column_pool.size();
         }
         iteration_log.added_column_count = added_columns;
         result.iteration_logs.push_back(iteration_log);
