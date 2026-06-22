@@ -15,12 +15,14 @@ namespace spdp {
 
 enum class NodeCGPhaseOneMode {
     ExactCG, // Phase I RMP를 CG로 풀어서 node-feasible한 solution을 찾는다.
-    HeuristicCG, // heuristic한 column generation 절차로 빠르게 node-feasible한 solution을 찾는다. 즉 exact Phase I RMP 대신 heuristic CG를 사용한다.
+    HeuristicCG, // SPDP pattern path를 현재 p-step window로 쪼개 seed column을 만든다.
+    HeuristicCG3Step, // 기존 3-step 전용 heuristic-cg seed generator.
 };
 
 enum class NodeCGPhaseTwoPricingMode {
     ExactPricing,
     HeuristicPricingThenExact,
+    FullEnumeration,
 };
 
 enum class NodeCGPhaseTwoHeuristicEngine {
@@ -65,6 +67,16 @@ struct NodeCGOptions {
 
     // Phase I에서 node-feasible RMP를 만드는 방식.
     NodeCGPhaseOneMode phase_one_mode = NodeCGPhaseOneMode::ExactCG;
+
+    // Phase I heuristic-cg seed incumbent construction parameters.
+    // max_attempts = 0이면 2 * |request| attempts를 사용한다.
+    std::size_t phase_one_heuristic_cg_max_attempts = 0;
+    std::size_t phase_one_heuristic_cg_max_incumbents = 20;
+    std::size_t phase_one_heuristic_cg_top_l = 3;
+    double phase_one_heuristic_cg_weight_cost = 1.0;
+    double phase_one_heuristic_cg_weight_time = 0.1;
+    double phase_one_heuristic_cg_weight_saving = 0.5;
+    unsigned int phase_one_heuristic_cg_random_seed = 1;
 
     // Phase II pricing 방식.
     NodeCGPhaseTwoPricingMode phase_two_pricing_mode =

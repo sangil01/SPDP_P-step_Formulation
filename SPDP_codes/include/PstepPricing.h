@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -289,6 +290,64 @@ struct ForwardPricingResult {
     //generated_labels + start_labels = surviving_labels + dominated_labels
 };
 
+struct FullEnumerationPoolBuildOptions {
+    int p = 2;
+    double time_limit = 0.0;
+    bool prune_pickup_symmetry_43 = true;
+    bool prune_delivery_symmetry_43 = true;
+};
+
+struct FullEnumerationPoolBuildStats {
+    std::size_t raw_path_count = 0;
+    std::size_t compact_pstep_count = 0;
+    std::size_t inactive_column_count = 0;
+    std::size_t inactive_path_count = 0;
+    std::size_t skipped_master_column_count = 0;
+    std::size_t skipped_duplicate_column_count = 0;
+    double runtime_seconds = 0.0;
+};
+
+struct FullEnumerationPricingPool {
+    struct TauVariant {
+        double tau = 0.0;
+        bool active = false;
+    };
+
+    struct Entry {
+        int q = 0;
+        NodeId start_node_id = 0;
+        NodeId last_node_id = 0;
+        State start_state{};
+        State last_state{};
+        double total_time = 0.0;
+        double total_cost = 0.0;
+        std::vector<int> edge_ids;
+        std::vector<NodeId> node_sequence;
+        std::vector<State> state_sequence;
+
+        std::vector<std::pair<NodeId, int>> visit_coefficients;
+        std::vector<std::pair<NodeStateKey, int>> state_coefficients;
+        std::vector<std::pair<int, int>> dense_visit_coefficients;
+        std::vector<std::pair<int, int>> dense_state_coefficients;
+        std::vector<int> edge_incidence;
+
+        int start_time_index = -1;
+        int last_time_index = -1;
+        NodeStateKey start_time_key{};
+        NodeStateKey last_time_key{};
+        std::vector<TauVariant> tau_variants;
+    };
+
+    std::vector<NodeId> visit_node_ids;
+    std::vector<NodeStateKey> node_state_keys;
+    std::map<NodeId, int> visit_index_by_node;
+    std::map<NodeStateKey, int> node_state_index_by_key;
+    std::vector<Entry> entries;
+    std::vector<std::size_t> inactive_entry_indices;
+    std::unordered_map<std::string, std::pair<std::size_t, std::size_t>> variant_index_by_key;
+    std::size_t inactive_column_count = 0;
+};
+
 // forward pricing에 필요한 graph / state-space 전처리 결과를 생성한다.
 ForwardPricingContext build_forward_pricing_context(
     const MultiDiGraph& graph,
@@ -313,6 +372,26 @@ ForwardPricingResult run_phase_two_shallow_search(
     const CGDualSolution& dual_solution,
     CGPhase phase,
     const ForwardPricingOptions& options
+);
+
+FullEnumerationPricingPool build_full_enumeration_pricing_pool(
+    const MultiDiGraph& graph,
+    const FullEnumerationPoolBuildOptions& options,
+    const std::map<std::string, int>& active_column_id_by_key,
+    FullEnumerationPoolBuildStats* stats = nullptr
+);
+
+ForwardPricingResult run_full_enumeration_pool_pricing(
+    const FullEnumerationPricingPool& pool,
+    const CGDualSolution& dual_solution,
+    CGPhase phase,
+    double reduced_cost_tolerance,
+    std::size_t max_total_columns
+);
+
+void mark_full_enumeration_pool_columns_active(
+    FullEnumerationPricingPool& pool,
+    const std::vector<CGColumn>& columns
 );
 
 // 현재 dual에서 heuristic start score 기준으로 start class를 정렬한다.

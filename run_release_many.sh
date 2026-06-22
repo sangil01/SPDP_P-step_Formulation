@@ -13,10 +13,10 @@ fi
 # ============================================
 # INPUT PARAMETERS
 # ============================================
-P=3
+P=2
 SOLVER_MODE=root-cg # Options: enumeration, root-cg
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg
-NODE_CG_PHASE2_PRICING_MODE=heuristic-pricing-then-exact # Options: exact-pricing, heuristic-pricing-then-exact
+NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
 SOLVER_TIME_LIMIT=120
 GUROBI_THREADS=0
 VI_FORMULATION=theta # Options: theta, x
@@ -36,18 +36,25 @@ CG_MAX_ITERATIONS_PER_PHASE=1000
 EXACT_PRICING_MAX_COLUMNS_PER_START=64
 EXACT_PRICING_MAX_TOTAL_COLUMNS_PER_ROUND=4096
 CG_REDUCED_COST_TOLERANCE=-1e-6
-PHASE2_HEURISTIC_MAX_STARTS=512  #1024면 모든 인스턴스에서 |x,\sigma(s)|보다 큼 (A11에서 701개임)
-PHASE2_HEURISTIC_START_RATIO=0.25
-PHASE2_HEURISTIC_LADDER_LEVELS=3 #0이면 모든 starte (node,state) 조합을 탐색. (위에 MAX_STARTS와 상관없이)
+PHASE1_HEURISTIC_CG_MAX_ATTEMPTS=0 # 0이면 2 * request_count
+PHASE1_HEURISTIC_CG_MAX_INCUMBENTS=20
+PHASE1_HEURISTIC_CG_TOP_L=3
+PHASE1_HEURISTIC_CG_WEIGHT_COST=1.0
+PHASE1_HEURISTIC_CG_WEIGHT_TIME=0.1
+PHASE1_HEURISTIC_CG_WEIGHT_SAVING=0.5
+PHASE1_HEURISTIC_CG_RANDOM_SEED=1
+PHASE2_HEURISTIC_MAX_STARTS=4096  #1024면 모든 인스턴스에서 |x,\sigma(s)|보다 큼 (A11에서 701개임)
+PHASE2_HEURISTIC_START_RATIO=1
+PHASE2_HEURISTIC_LADDER_LEVELS=0 #0이면 모든 starte (node,state) 조합을 탐색. (위에 MAX_STARTS와 상관없이)
 PHASE2_HEURISTIC_MAX_COLUMNS_PER_START=8
 PHASE2_HEURISTIC_MAX_COLUMNS_TOTAL=512
-PHASE2_HEURISTIC_SEARCH_COLUMN_RATIO=2.0
+PHASE2_HEURISTIC_SEARCH_COLUMN_RATIO=1.0
 PHASE2_HEURISTIC_START_SCORE_MODE=one-step-min # Options: one-step-min
 PHASE2_HEURISTIC_ENGINE=labeling # Options: labeling, shallow-search
 PHASE2_LABELING_TOP_K_NEXT=4 #0이면 기존 exact/full forward labeling처럼 모든 outgoing transition을 확장한다. 4면 상위 4개만 확장한다.
 PHASE2_SHALLOW_K1=4
 PHASE2_SHALLOW_K2=2
-PHASE2_COLUMN_POOL_ENABLE=1
+PHASE2_COLUMN_POOL_ENABLE=0
 PHASE2_COLUMN_POOL_MAX_SIZE=100000
 PHASE2_COLUMN_POOL_MAX_REPRICE=10000
 DATA_LIST=(
@@ -117,6 +124,13 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "exact-pricing-max-columns-per-start: $EXACT_PRICING_MAX_COLUMNS_PER_START"
         echo "exact-pricing-max-total-columns-per-round: $EXACT_PRICING_MAX_TOTAL_COLUMNS_PER_ROUND"
         echo "cg-reduced-cost-tolerance: $CG_REDUCED_COST_TOLERANCE"
+        echo "phase1-heuristic-cg-max-attempts: $PHASE1_HEURISTIC_CG_MAX_ATTEMPTS"
+        echo "phase1-heuristic-cg-max-incumbents: $PHASE1_HEURISTIC_CG_MAX_INCUMBENTS"
+        echo "phase1-heuristic-cg-top-l: $PHASE1_HEURISTIC_CG_TOP_L"
+        echo "phase1-heuristic-cg-weight-cost: $PHASE1_HEURISTIC_CG_WEIGHT_COST"
+        echo "phase1-heuristic-cg-weight-time: $PHASE1_HEURISTIC_CG_WEIGHT_TIME"
+        echo "phase1-heuristic-cg-weight-saving: $PHASE1_HEURISTIC_CG_WEIGHT_SAVING"
+        echo "phase1-heuristic-cg-random-seed: $PHASE1_HEURISTIC_CG_RANDOM_SEED"
         echo "phase2-heuristic-max-starts: $PHASE2_HEURISTIC_MAX_STARTS"
         echo "phase2-heuristic-start-ratio: $PHASE2_HEURISTIC_START_RATIO"
         echo "phase2-heuristic-ladder-levels: $PHASE2_HEURISTIC_LADDER_LEVELS"
@@ -160,6 +174,13 @@ for data_name in "${DATA_LIST[@]}"; do
         --exact-pricing-max-columns-per-start "$EXACT_PRICING_MAX_COLUMNS_PER_START" \
         --exact-pricing-max-total-columns-per-round "$EXACT_PRICING_MAX_TOTAL_COLUMNS_PER_ROUND" \
         --cg-reduced-cost-tolerance "$CG_REDUCED_COST_TOLERANCE" \
+        --phase1-heuristic-cg-max-attempts "$PHASE1_HEURISTIC_CG_MAX_ATTEMPTS" \
+        --phase1-heuristic-cg-max-incumbents "$PHASE1_HEURISTIC_CG_MAX_INCUMBENTS" \
+        --phase1-heuristic-cg-top-l "$PHASE1_HEURISTIC_CG_TOP_L" \
+        --phase1-heuristic-cg-weight-cost "$PHASE1_HEURISTIC_CG_WEIGHT_COST" \
+        --phase1-heuristic-cg-weight-time "$PHASE1_HEURISTIC_CG_WEIGHT_TIME" \
+        --phase1-heuristic-cg-weight-saving "$PHASE1_HEURISTIC_CG_WEIGHT_SAVING" \
+        --phase1-heuristic-cg-random-seed "$PHASE1_HEURISTIC_CG_RANDOM_SEED" \
         --phase2-heuristic-max-starts "$PHASE2_HEURISTIC_MAX_STARTS" \
         --phase2-heuristic-start-ratio "$PHASE2_HEURISTIC_START_RATIO" \
         --phase2-heuristic-ladder-levels "$PHASE2_HEURISTIC_LADDER_LEVELS" \

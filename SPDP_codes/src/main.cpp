@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <ostream>
 #include <set>
 #include <sstream>
@@ -44,6 +45,13 @@ struct CliOptions {
     int exact_pricing_max_columns_per_start = 16;
     int exact_pricing_max_total_columns_per_round = 1024;
     double cg_reduced_cost_tolerance = -1e-6;
+    int phase_one_heuristic_cg_max_attempts = 0;
+    int phase_one_heuristic_cg_max_incumbents = 20;
+    int phase_one_heuristic_cg_top_l = 3;
+    double phase_one_heuristic_cg_weight_cost = 1.0;
+    double phase_one_heuristic_cg_weight_time = 0.1;
+    double phase_one_heuristic_cg_weight_saving = 0.5;
+    int phase_one_heuristic_cg_random_seed = 1;
     int phase_two_heuristic_max_starts = 128;
     double phase_two_heuristic_start_ratio = 0.25;
     int phase_two_heuristic_ladder_levels = 3;
@@ -64,8 +72,8 @@ void print_usage(const char* executable) {
     std::cerr << "Usage: " << executable
               << " [instance] [--p N] [--solver-time-limit T] [--gurobi-threads N]"
               << " [--solver-mode enumeration|root-cg]"
-              << " [--node-cg-phase1-mode exact-cg|heuristic-cg]"
-              << " [--node-cg-phase2-pricing-mode exact-pricing|heuristic-pricing-then-exact]"
+              << " [--node-cg-phase1-mode exact-cg|heuristic-cg|heuristic-cg-3-step]"
+              << " [--node-cg-phase2-pricing-mode exact-pricing|heuristic-pricing-then-exact|full-enumeration]"
               << " [--vi-formulation theta|x] [--dump-psteps N] [--validate-psteps 0|1] [--solve 0|1]"
               << " [--prune-infeasible-edges 0|1] [--prune-dominated-edges 0|1]"
               << " [--prune-symmetry-40 0|1] [--prune-symmetry-41 0|1]"
@@ -77,6 +85,13 @@ void print_usage(const char* executable) {
               << " [--exact-pricing-max-columns-per-start N]"
               << " [--exact-pricing-max-total-columns-per-round N]"
               << " [--cg-reduced-cost-tolerance T]"
+              << " [--phase1-heuristic-cg-max-attempts N]"
+              << " [--phase1-heuristic-cg-max-incumbents N]"
+              << " [--phase1-heuristic-cg-top-l N]"
+              << " [--phase1-heuristic-cg-weight-cost W]"
+              << " [--phase1-heuristic-cg-weight-time W]"
+              << " [--phase1-heuristic-cg-weight-saving W]"
+              << " [--phase1-heuristic-cg-random-seed N]"
               << " [--phase2-heuristic-max-starts N]"
               << " [--phase2-heuristic-start-ratio R]"
               << " [--phase2-heuristic-ladder-levels L]"
@@ -136,22 +151,24 @@ std::string parse_solver_mode(const std::string& value) {
 }
 
 std::string parse_node_cg_phase_one_mode(const std::string& value) {
-    if (value == "exact-cg" || value == "heuristic-cg") {
+    if (value == "exact-cg" || value == "heuristic-cg" ||
+        value == "heuristic-cg-3-step") {
         return value;
     }
     throw std::runtime_error(
         "Invalid value for node CG phase-one mode: " + value +
-        " (expected exact-cg or heuristic-cg)"
+        " (expected exact-cg, heuristic-cg, or heuristic-cg-3-step)"
     );
 }
 
 std::string parse_node_cg_phase_two_pricing_mode(const std::string& value) {
-    if (value == "exact-pricing" || value == "heuristic-pricing-then-exact") {
+    if (value == "exact-pricing" || value == "heuristic-pricing-then-exact" ||
+        value == "full-enumeration") {
         return value;
     }
     throw std::runtime_error(
         "Invalid value for node CG phase-two pricing mode: " + value +
-        " (expected exact-pricing or heuristic-pricing-then-exact)"
+        " (expected exact-pricing, heuristic-pricing-then-exact, or full-enumeration)"
     );
 }
 
@@ -309,6 +326,74 @@ CliOptions parse_cli(int argc, char** argv) {
                 parse_double(argv[++idx], "--cg-reduced-cost-tolerance");
             if (options.cg_reduced_cost_tolerance > 0.0) {
                 throw std::runtime_error("--cg-reduced-cost-tolerance must be nonpositive.");
+            }
+            continue;
+        }
+
+        if (arg == "--phase1-heuristic-cg-max-attempts") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.phase_one_heuristic_cg_max_attempts = parse_int(argv[++idx], arg);
+            if (options.phase_one_heuristic_cg_max_attempts < 0) {
+                throw std::runtime_error(arg + " must be nonnegative.");
+            }
+            continue;
+        }
+
+        if (arg == "--phase1-heuristic-cg-max-incumbents") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.phase_one_heuristic_cg_max_incumbents = parse_int(argv[++idx], arg);
+            if (options.phase_one_heuristic_cg_max_incumbents <= 0) {
+                throw std::runtime_error(arg + " must be positive.");
+            }
+            continue;
+        }
+
+        if (arg == "--phase1-heuristic-cg-top-l") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.phase_one_heuristic_cg_top_l = parse_int(argv[++idx], arg);
+            if (options.phase_one_heuristic_cg_top_l <= 0) {
+                throw std::runtime_error(arg + " must be positive.");
+            }
+            continue;
+        }
+
+        if (arg == "--phase1-heuristic-cg-weight-cost") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.phase_one_heuristic_cg_weight_cost = parse_double(argv[++idx], arg);
+            continue;
+        }
+
+        if (arg == "--phase1-heuristic-cg-weight-time") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.phase_one_heuristic_cg_weight_time = parse_double(argv[++idx], arg);
+            continue;
+        }
+
+        if (arg == "--phase1-heuristic-cg-weight-saving") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.phase_one_heuristic_cg_weight_saving = parse_double(argv[++idx], arg);
+            continue;
+        }
+
+        if (arg == "--phase1-heuristic-cg-random-seed") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.phase_one_heuristic_cg_random_seed = parse_int(argv[++idx], arg);
+            if (options.phase_one_heuristic_cg_random_seed < 0) {
+                throw std::runtime_error(arg + " must be nonnegative.");
             }
             continue;
         }
@@ -736,6 +821,20 @@ void print_instance_summary(
         << args.exact_pricing_max_columns_per_start << '\n';
     out << "[main] exact_pricing_max_total_columns_per_round: "
         << args.exact_pricing_max_total_columns_per_round << '\n';
+    out << "[main] phase1_heuristic_cg_max_attempts: "
+        << args.phase_one_heuristic_cg_max_attempts << '\n';
+    out << "[main] phase1_heuristic_cg_max_incumbents: "
+        << args.phase_one_heuristic_cg_max_incumbents << '\n';
+    out << "[main] phase1_heuristic_cg_top_l: "
+        << args.phase_one_heuristic_cg_top_l << '\n';
+    out << "[main] phase1_heuristic_cg_weight_cost: "
+        << format_double(args.phase_one_heuristic_cg_weight_cost) << '\n';
+    out << "[main] phase1_heuristic_cg_weight_time: "
+        << format_double(args.phase_one_heuristic_cg_weight_time) << '\n';
+    out << "[main] phase1_heuristic_cg_weight_saving: "
+        << format_double(args.phase_one_heuristic_cg_weight_saving) << '\n';
+    out << "[main] phase1_heuristic_cg_random_seed: "
+        << args.phase_one_heuristic_cg_random_seed << '\n';
     out << "[main] phase2_heuristic_max_starts: " << args.phase_two_heuristic_max_starts << '\n';
     out << "[main] phase2_heuristic_start_ratio: "
         << format_double(args.phase_two_heuristic_start_ratio) << '\n';
@@ -928,17 +1027,40 @@ int main(int argc, char** argv) {
                 cg_options.exact_pricing_max_total_columns_per_round =
                     static_cast<std::size_t>(args.exact_pricing_max_total_columns_per_round);
                 cg_options.reduced_cost_tolerance = args.cg_reduced_cost_tolerance;
+                cg_options.phase_one_heuristic_cg_max_attempts =
+                    static_cast<std::size_t>(args.phase_one_heuristic_cg_max_attempts);
+                cg_options.phase_one_heuristic_cg_max_incumbents =
+                    static_cast<std::size_t>(args.phase_one_heuristic_cg_max_incumbents);
+                cg_options.phase_one_heuristic_cg_top_l =
+                    static_cast<std::size_t>(args.phase_one_heuristic_cg_top_l);
+                cg_options.phase_one_heuristic_cg_weight_cost =
+                    args.phase_one_heuristic_cg_weight_cost;
+                cg_options.phase_one_heuristic_cg_weight_time =
+                    args.phase_one_heuristic_cg_weight_time;
+                cg_options.phase_one_heuristic_cg_weight_saving =
+                    args.phase_one_heuristic_cg_weight_saving;
+                cg_options.phase_one_heuristic_cg_random_seed =
+                    static_cast<unsigned int>(args.phase_one_heuristic_cg_random_seed);
                 cg_options.prune_pickup_symmetry_43 = args.prune_pickup_symmetry_43 == 1;
                 cg_options.prune_delivery_symmetry_43 = args.prune_delivery_symmetry_43 == 1;
                 cg_options.gurobi_log_path = gurobi_log_path.string();
-                cg_options.phase_one_mode =
-                    args.node_cg_phase_one_mode == "exact-cg"
-                        ? spdp::NodeCGPhaseOneMode::ExactCG
-                        : spdp::NodeCGPhaseOneMode::HeuristicCG;
-                cg_options.phase_two_pricing_mode =
-                    args.node_cg_phase_two_pricing_mode == "exact-pricing"
-                        ? spdp::NodeCGPhaseTwoPricingMode::ExactPricing
-                        : spdp::NodeCGPhaseTwoPricingMode::HeuristicPricingThenExact;
+                if (args.node_cg_phase_one_mode == "exact-cg") {
+                    cg_options.phase_one_mode = spdp::NodeCGPhaseOneMode::ExactCG;
+                } else if (args.node_cg_phase_one_mode == "heuristic-cg-3-step") {
+                    cg_options.phase_one_mode = spdp::NodeCGPhaseOneMode::HeuristicCG3Step;
+                } else {
+                    cg_options.phase_one_mode = spdp::NodeCGPhaseOneMode::HeuristicCG;
+                }
+                if (args.node_cg_phase_two_pricing_mode == "exact-pricing") {
+                    cg_options.phase_two_pricing_mode =
+                        spdp::NodeCGPhaseTwoPricingMode::ExactPricing;
+                } else if (args.node_cg_phase_two_pricing_mode == "full-enumeration") {
+                    cg_options.phase_two_pricing_mode =
+                        spdp::NodeCGPhaseTwoPricingMode::FullEnumeration;
+                } else {
+                    cg_options.phase_two_pricing_mode =
+                        spdp::NodeCGPhaseTwoPricingMode::HeuristicPricingThenExact;
+                }
                 cg_options.phase_two_heuristic_max_starts =
                     static_cast<std::size_t>(args.phase_two_heuristic_max_starts);
                 cg_options.phase_two_heuristic_start_ratio =

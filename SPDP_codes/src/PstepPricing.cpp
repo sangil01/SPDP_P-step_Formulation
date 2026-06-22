@@ -1,6 +1,7 @@
 #include "PstepPricing.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cmath>
 #include <iomanip>
@@ -9,6 +10,7 @@
 #include <map>
 #include <optional>
 #include <ostream>
+#include <queue>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -1965,6 +1967,362 @@ ForwardPricingResult run_phase_two_shallow_search(
     }
 
     return result;
+}
+
+namespace {
+
+int ensure_visit_index(
+    FullEnumerationPricingPool& pool,
+    NodeId node_id
+) {
+    const auto found = pool.visit_index_by_node.find(node_id);
+    if (found != pool.visit_index_by_node.end()) {
+        return found->second;
+    }
+    const int index = static_cast<int>(pool.visit_node_ids.size());
+    pool.visit_index_by_node.emplace(node_id, index);
+    pool.visit_node_ids.push_back(node_id);
+    return index;
+}
+
+int ensure_node_state_index(
+    FullEnumerationPricingPool& pool,
+    const NodeStateKey& key
+) {
+    const NodeStateKey canonical_key{key.node_id, canonicalize_state(key.state)};
+    const auto found = pool.node_state_index_by_key.find(canonical_key);
+    if (found != pool.node_state_index_by_key.end()) {
+        return found->second;
+    }
+    const int index = static_cast<int>(pool.node_state_keys.size());
+    pool.node_state_index_by_key.emplace(canonical_key, index);
+    pool.node_state_keys.push_back(canonical_key);
+    return index;
+}
+
+FullEnumerationPricingPool::Entry build_full_pool_entry_from_pstep(
+    FullEnumerationPricingPool& pool,
+    const MultiDiGraph& graph,
+    const CompactPStep& pstep,
+    const CompactPStepCoefficients& coefficients
+) {
+    FullEnumerationPricingPool::Entry entry;
+    entry.q = pstep.q;
+    entry.start_node_id = pstep.start_node_id;
+    entry.last_node_id = pstep.last_node_id;
+    entry.start_state = canonicalize_state(pstep.start_state);
+    entry.last_state = canonicalize_state(pstep.last_state);
+    entry.total_time = pstep.total_time;
+    entry.total_cost = pstep.total_cost;
+    entry.edge_ids = pstep.edge_ids;
+    entry.node_sequence = pstep.node_sequence;
+    entry.state_sequence = pstep.state_sequence;
+    entry.edge_incidence = coefficients.edge_incidence_by_pstep.at(static_cast<std::size_t>(pstep.id));
+
+    const auto& visit_coefficients =
+        coefficients.visit_coefficients_by_pstep.at(static_cast<std::size_t>(pstep.id));
+    for (const auto& term : visit_coefficients) {
+        entry.visit_coefficients.push_back(term);
+        entry.dense_visit_coefficients.push_back({ensure_visit_index(pool, term.first), term.second});
+    }
+
+    const auto& state_coefficients =
+        coefficients.state_coefficients_by_pstep.at(static_cast<std::size_t>(pstep.id));
+    for (const auto& term : state_coefficients) {
+        const NodeStateKey key{term.first.node_id, canonicalize_state(term.first.state)};
+        entry.state_coefficients.push_back({key, term.second});
+        entry.dense_state_coefficients.push_back({ensure_node_state_index(pool, key), term.second});
+    }
+
+    if (graph.is_physical_service_node(entry.start_node_id)) {
+        entry.start_time_key = NodeStateKey{entry.start_node_id, canonicalize_state(entry.start_state)};
+        entry.start_time_index = ensure_node_state_index(pool, entry.start_time_key);
+    }
+    if (graph.is_physical_service_node(entry.last_node_id)) {
+        entry.last_time_key = NodeStateKey{entry.last_node_id, canonicalize_state(entry.last_state)};
+        entry.last_time_index = ensure_node_state_index(pool, entry.last_time_key);
+    }
+
+    return entry;
+}
+
+bool has_inactive_tau_variant(const FullEnumerationPricingPool::Entry& entry) {
+    return std::any_of(
+        entry.tau_variants.begin(),
+        entry.tau_variants.end(),
+        [](const FullEnumerationPricingPool::TauVariant& variant) {
+            return !variant.active;
+        }
+    );
+}
+
+CGColumn build_column_from_full_pool_selection(
+    const FullEnumerationPricingPool::Entry& entry,
+    const FullEnumerationPricingPool::TauVariant& variant,
+    double reduced_cost
+) {
+    CGColumn column;
+    column.q = entry.q;
+    column.start_node_id = entry.start_node_id;
+    column.last_node_id = entry.last_node_id;
+    column.start_state = canonicalize_state(entry.start_state);
+    column.last_state = canonicalize_state(entry.last_state);
+    column.total_time = entry.total_time;
+    column.total_cost = entry.total_cost;
+    column.tau = variant.tau;
+    column.reduced_cost = reduced_cost;
+    column.edge_ids = entry.edge_ids;
+    column.node_sequence = entry.node_sequence;
+    column.state_sequence = entry.state_sequence;
+    column.visit_coefficients = entry.visit_coefficients;
+    column.state_coefficients = entry.state_coefficients;
+    column.edge_incidence = entry.edge_incidence;
+
+    if (entry.start_time_index >= 0) {
+        column.time_coefficients.push_back({entry.start_time_key, variant.tau});
+    }
+    if (entry.last_time_index >= 0) {
+        column.time_coefficients.push_back(
+            {entry.last_time_key, -(variant.tau + entry.total_time)}
+        );
+    }
+    return column;
+}
+
+struct FullPoolSelection {
+    double reduced_cost = 0.0;
+    std::size_t entry_index = 0;
+    std::size_t tau_index = 0;
+};
+
+struct FullPoolWorstReducedCostFirst {
+    bool operator()(const FullPoolSelection& lhs, const FullPoolSelection& rhs) const {
+        return lhs.reduced_cost < rhs.reduced_cost;
+    }
+};
+
+void compact_inactive_full_pool_entries(FullEnumerationPricingPool& pool) {
+    pool.inactive_entry_indices.erase(
+        std::remove_if(
+            pool.inactive_entry_indices.begin(),
+            pool.inactive_entry_indices.end(),
+            [&](std::size_t entry_index) {
+                return !has_inactive_tau_variant(pool.entries[entry_index]);
+            }
+        ),
+        pool.inactive_entry_indices.end()
+    );
+}
+
+}  // namespace
+
+FullEnumerationPricingPool build_full_enumeration_pricing_pool(
+    const MultiDiGraph& graph,
+    const FullEnumerationPoolBuildOptions& options,
+    const std::map<std::string, int>& active_column_id_by_key,
+    FullEnumerationPoolBuildStats* stats
+) {
+    const auto start_time = std::chrono::steady_clock::now();
+
+    CompactPStepOptions compact_options;
+    compact_options.p = options.p;
+    compact_options.time_limit = options.time_limit;
+    compact_options.validate = false;
+    compact_options.prune_pickup_symmetry_43 = options.prune_pickup_symmetry_43;
+    compact_options.prune_delivery_symmetry_43 = options.prune_delivery_symmetry_43;
+
+    const CompactPStepArtifacts artifacts =
+        build_compact_pstep_artifacts(graph, compact_options, nullptr);
+
+    FullEnumerationPricingPool pool;
+    std::map<int, std::size_t> entry_index_by_raw_path_id;
+    std::size_t skipped_master_columns = 0;
+    std::size_t skipped_duplicate_columns = 0;
+
+    pool.entries.reserve(artifacts.raw_paths.size());
+    for (const CompactPStep& pstep : artifacts.compact_psteps) {
+        const std::string key = build_column_key(pstep.edge_ids, pstep.tau);
+        if (active_column_id_by_key.find(key) != active_column_id_by_key.end()) {
+            ++skipped_master_columns;
+            continue;
+        }
+        if (pool.variant_index_by_key.find(key) != pool.variant_index_by_key.end()) {
+            ++skipped_duplicate_columns;
+            continue;
+        }
+
+        std::size_t entry_index = 0;
+        const auto found_entry = entry_index_by_raw_path_id.find(pstep.raw_path_id);
+        if (found_entry == entry_index_by_raw_path_id.end()) {
+            entry_index = pool.entries.size();
+            pool.entries.push_back(
+                build_full_pool_entry_from_pstep(pool, graph, pstep, artifacts.coefficients)
+            );
+            entry_index_by_raw_path_id.emplace(pstep.raw_path_id, entry_index);
+        } else {
+            entry_index = found_entry->second;
+        }
+
+        FullEnumerationPricingPool::TauVariant variant;
+        variant.tau = pstep.tau;
+        const std::size_t tau_index = pool.entries[entry_index].tau_variants.size();
+        pool.entries[entry_index].tau_variants.push_back(variant);
+        pool.variant_index_by_key.emplace(key, std::make_pair(entry_index, tau_index));
+        ++pool.inactive_column_count;
+    }
+
+    for (std::size_t entry_index = 0; entry_index < pool.entries.size(); ++entry_index) {
+        if (has_inactive_tau_variant(pool.entries[entry_index])) {
+            pool.inactive_entry_indices.push_back(entry_index);
+        }
+    }
+
+    if (stats != nullptr) {
+        stats->raw_path_count = artifacts.raw_paths.size();
+        stats->compact_pstep_count = artifacts.compact_psteps.size();
+        stats->inactive_column_count = pool.inactive_column_count;
+        stats->inactive_path_count = pool.inactive_entry_indices.size();
+        stats->skipped_master_column_count = skipped_master_columns;
+        stats->skipped_duplicate_column_count = skipped_duplicate_columns;
+        stats->runtime_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+    }
+
+    return pool;
+}
+
+ForwardPricingResult run_full_enumeration_pool_pricing(
+    const FullEnumerationPricingPool& pool,
+    const CGDualSolution& dual_solution,
+    CGPhase phase,
+    double reduced_cost_tolerance,
+    std::size_t max_total_columns
+) {
+    ForwardPricingResult result;
+    result.status = ForwardPricingStatus::NoNegativeColumn;
+    result.best_reduced_cost = std::numeric_limits<double>::infinity();
+
+    std::vector<double> dense_visit_duals(pool.visit_node_ids.size(), 0.0);
+    for (std::size_t idx = 0; idx < pool.visit_node_ids.size(); ++idx) {
+        dense_visit_duals[idx] = lookup_dual(dual_solution.visit_duals, pool.visit_node_ids[idx]);
+    }
+
+    std::vector<double> dense_state_duals(pool.node_state_keys.size(), 0.0);
+    std::vector<double> dense_time_duals(pool.node_state_keys.size(), 0.0);
+    for (std::size_t idx = 0; idx < pool.node_state_keys.size(); ++idx) {
+        dense_state_duals[idx] = lookup_dual(dual_solution.state_duals, pool.node_state_keys[idx]);
+        dense_time_duals[idx] = lookup_dual(dual_solution.time_duals, pool.node_state_keys[idx]);
+    }
+
+    std::priority_queue<
+        FullPoolSelection,
+        std::vector<FullPoolSelection>,
+        FullPoolWorstReducedCostFirst>
+        top_negative_columns;
+
+    for (std::size_t entry_index : pool.inactive_entry_indices) {
+        const FullEnumerationPricingPool::Entry& entry = pool.entries[entry_index];
+        double base_reduced_cost = (phase == CGPhase::PhaseII) ? entry.total_cost : 0.0;
+        for (const auto& term : entry.dense_visit_coefficients) {
+            base_reduced_cost -=
+                static_cast<double>(term.second) *
+                dense_visit_duals[static_cast<std::size_t>(term.first)];
+        }
+        for (const auto& term : entry.dense_state_coefficients) {
+            base_reduced_cost -=
+                static_cast<double>(term.second) *
+                dense_state_duals[static_cast<std::size_t>(term.first)];
+        }
+        for (int edge_id : entry.edge_incidence) {
+            if (edge_id >= 0 && static_cast<std::size_t>(edge_id) < dual_solution.edge_duals.size()) {
+                base_reduced_cost -= dual_solution.edge_duals[static_cast<std::size_t>(edge_id)];
+            }
+        }
+
+        for (std::size_t tau_index = 0; tau_index < entry.tau_variants.size(); ++tau_index) {
+            const FullEnumerationPricingPool::TauVariant& variant = entry.tau_variants[tau_index];
+            if (variant.active) {
+                continue;
+            }
+            double reduced_cost = base_reduced_cost;
+            if (entry.start_time_index >= 0) {
+                reduced_cost -=
+                    variant.tau *
+                    dense_time_duals[static_cast<std::size_t>(entry.start_time_index)];
+            }
+            if (entry.last_time_index >= 0) {
+                reduced_cost +=
+                    (variant.tau + entry.total_time) *
+                    dense_time_duals[static_cast<std::size_t>(entry.last_time_index)];
+            }
+
+            result.best_reduced_cost = std::min(result.best_reduced_cost, reduced_cost);
+            if (reduced_cost < reduced_cost_tolerance) {
+                ++result.total_negative_column_count;
+                FullPoolSelection selection{reduced_cost, entry_index, tau_index};
+                if (top_negative_columns.size() < max_total_columns) {
+                    top_negative_columns.push(selection);
+                } else if (max_total_columns > 0U &&
+                           reduced_cost < top_negative_columns.top().reduced_cost) {
+                    top_negative_columns.pop();
+                    top_negative_columns.push(selection);
+                }
+            }
+        }
+    }
+
+    std::vector<FullPoolSelection> selected;
+    selected.reserve(top_negative_columns.size());
+    while (!top_negative_columns.empty()) {
+        selected.push_back(top_negative_columns.top());
+        top_negative_columns.pop();
+    }
+    std::sort(
+        selected.begin(),
+        selected.end(),
+        [](const FullPoolSelection& lhs, const FullPoolSelection& rhs) {
+            return lhs.reduced_cost < rhs.reduced_cost;
+        }
+    );
+
+    for (const FullPoolSelection& selection : selected) {
+        const auto& entry = pool.entries[selection.entry_index];
+        const auto& variant = entry.tau_variants[selection.tau_index];
+        result.columns.push_back(
+            build_column_from_full_pool_selection(entry, variant, selection.reduced_cost)
+        );
+    }
+
+    if (!std::isfinite(result.best_reduced_cost)) {
+        result.best_reduced_cost = 0.0;
+    }
+    result.status = result.columns.empty()
+                        ? ForwardPricingStatus::NoNegativeColumn
+                        : ForwardPricingStatus::ColumnsFound;
+    return result;
+}
+
+void mark_full_enumeration_pool_columns_active(
+    FullEnumerationPricingPool& pool,
+    const std::vector<CGColumn>& columns
+) {
+    for (const CGColumn& column : columns) {
+        const std::string key = build_column_key(column.edge_ids, column.tau);
+        const auto found = pool.variant_index_by_key.find(key);
+        if (found == pool.variant_index_by_key.end()) {
+            continue;
+        }
+        const std::size_t entry_index = found->second.first;
+        const std::size_t tau_index = found->second.second;
+        auto& variant = pool.entries[entry_index].tau_variants[tau_index];
+        if (!variant.active) {
+            variant.active = true;
+            if (pool.inactive_column_count > 0U) {
+                --pool.inactive_column_count;
+            }
+        }
+    }
+    compact_inactive_full_pool_entries(pool);
 }
 
 void write_generated_columns(
