@@ -15,9 +15,15 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#ifdef SPDP_HAVE_ONEMKL
+#include <mkl.h>
+#include <mkl_spblas.h>
+#endif
 
 namespace spdp {
 namespace {
@@ -1971,8 +1977,14 @@ ForwardPricingResult run_phase_two_shallow_search(
 
 namespace {
 
+struct FullEnumerationEntryMatrixBuildData {
+    std::vector<std::pair<int, int>> visit_terms;
+    std::vector<std::pair<int, int>> state_terms;
+    std::vector<int> edge_terms;
+};
+
 int ensure_visit_index(
-    FullEnumerationPricingPool& pool,
+    FullEnumerationStaticPool& pool,
     NodeId node_id
 ) {
     const auto found = pool.visit_index_by_node.find(node_id);
@@ -1986,7 +1998,7 @@ int ensure_visit_index(
 }
 
 int ensure_node_state_index(
-    FullEnumerationPricingPool& pool,
+    FullEnumerationStaticPool& pool,
     const NodeStateKey& key
 ) {
     const NodeStateKey canonical_key{key.node_id, canonicalize_state(key.state)};
@@ -2000,97 +2012,307 @@ int ensure_node_state_index(
     return index;
 }
 
-FullEnumerationPricingPool::Entry build_full_pool_entry_from_pstep(
-    FullEnumerationPricingPool& pool,
+std::size_t full_enumeration_entry_count(
+    const FullEnumerationStaticPool& pool
+) {
+    return pool.entry_total_cost.size();
+}
+
+std::size_t full_enumeration_variant_count(
+    const FullEnumerationStaticPool& pool
+) {
+    return pool.variant_tau.size();
+}
+
+std::size_t full_enumeration_variant_entry_index(
+    std::size_t variant_index
+) {
+    return variant_index / 2U;
+}
+
+std::size_t full_enumeration_variant_tau_index(
+    std::size_t variant_index
+) {
+    return variant_index % 2U;
+}
+
+std::size_t full_enumeration_variant_index(
+    std::size_t entry_index,
+    std::size_t tau_index
+) {
+    return 2U * entry_index + tau_index;
+}
+
+bool full_enumeration_variant_is_valid(
+    const FullEnumerationStaticPool& pool,
+    std::size_t variant_index
+) {
+    return pool.variant_valid[variant_index] != 0U;
+}
+
+bool full_enumeration_variant_is_active(
+    const FullEnumerationPoolNodeState& node_state,
+    std::size_t variant_index
+) {
+    return node_state.variant_active[variant_index] != 0U;
+}
+
+bool full_enumeration_entry_is_forbidden(
+    const FullEnumerationPoolNodeState& node_state,
+    std::size_t entry_index
+) {
+    return !node_state.forbidden_entry.empty() &&
+           node_state.forbidden_entry[entry_index] != 0U;
+}
+
+bool full_enumeration_variant_is_available(
+    const FullEnumerationStaticPool& static_pool,
+    const FullEnumerationPoolNodeState& node_state,
+    std::size_t variant_index
+) {
+    if (!full_enumeration_variant_is_valid(static_pool, variant_index) ||
+        full_enumeration_variant_is_active(node_state, variant_index)) {
+        return false;
+    }
+    return !full_enumeration_entry_is_forbidden(
+        node_state,
+        full_enumeration_variant_entry_index(variant_index)
+    );
+}
+
+double full_enumeration_entry_latest_start(
+    const FullEnumerationStaticPool& pool,
+    std::size_t entry_index
+) {
+    return std::max(0.0, pool.time_limit - pool.entry_total_time[entry_index]);
+}
+
+std::size_t full_enumeration_selected_variant_index(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationPoolNodeState& node_state,
+    const std::vector<double>& time_duals,
+    std::size_t entry_index
+) {
+    if (full_enumeration_entry_is_forbidden(node_state, entry_index)) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    const std::size_t slot0 = full_enumeration_variant_index(entry_index, 0U);
+    const std::size_t slot1 = full_enumeration_variant_index(entry_index, 1U);
+    const bool valid0 = full_enumeration_variant_is_available(pool, node_state, slot0);
+    const bool valid1 = full_enumeration_variant_is_available(pool, node_state, slot1);
+
+    if (!valid0 && !valid1) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    if (valid0 && !valid1) {
+        return slot0;
+    }
+    if (!valid0 && valid1) {
+        return slot1;
+    }
+
+    const int start_row_index = pool.entry_start_time_row_index[entry_index];
+    const int last_row_index = pool.entry_last_time_row_index[entry_index];
+    const double gamma_start =
+        start_row_index >= 0
+            ? time_duals[static_cast<std::size_t>(start_row_index)]
+            : 0.0;
+    const double gamma_end =
+        last_row_index >= 0
+            ? time_duals[static_cast<std::size_t>(last_row_index)]
+            : 0.0;
+
+    return (gamma_end - gamma_start < 0.0) ? slot1 : slot0;
+}
+
+void append_full_enumeration_entry(
+    FullEnumerationStaticPool& pool,
+    std::vector<FullEnumerationEntryMatrixBuildData>& entry_matrix_build_data,
     const MultiDiGraph& graph,
     const CompactPStep& pstep,
     const CompactPStepCoefficients& coefficients
 ) {
-    FullEnumerationPricingPool::Entry entry;
-    entry.q = pstep.q;
-    entry.start_node_id = pstep.start_node_id;
-    entry.last_node_id = pstep.last_node_id;
-    entry.start_state = canonicalize_state(pstep.start_state);
-    entry.last_state = canonicalize_state(pstep.last_state);
-    entry.total_time = pstep.total_time;
-    entry.total_cost = pstep.total_cost;
-    entry.edge_ids = pstep.edge_ids;
-    entry.node_sequence = pstep.node_sequence;
-    entry.state_sequence = pstep.state_sequence;
-    entry.edge_incidence = coefficients.edge_incidence_by_pstep.at(static_cast<std::size_t>(pstep.id));
+    const State canonical_start_state = canonicalize_state(pstep.start_state);
+    const State canonical_last_state = canonicalize_state(pstep.last_state);
+    int start_time_row_index = -1;
+    int last_time_row_index = -1;
+    if (graph.is_physical_service_node(pstep.start_node_id)) {
+        start_time_row_index = ensure_node_state_index(
+            pool,
+            NodeStateKey{pstep.start_node_id, canonical_start_state}
+        );
+    }
+    if (graph.is_physical_service_node(pstep.last_node_id)) {
+        last_time_row_index = ensure_node_state_index(
+            pool,
+            NodeStateKey{pstep.last_node_id, canonical_last_state}
+        );
+    }
+
+    pool.entry_q.push_back(pstep.q);
+    pool.entry_start_node_id.push_back(pstep.start_node_id);
+    pool.entry_last_node_id.push_back(pstep.last_node_id);
+    pool.entry_start_state.push_back(canonical_start_state);
+    pool.entry_last_state.push_back(canonical_last_state);
+    pool.entry_total_time.push_back(pstep.total_time);
+    pool.entry_total_cost.push_back(pstep.total_cost);
+    pool.entry_start_time_row_index.push_back(start_time_row_index);
+    pool.entry_last_time_row_index.push_back(last_time_row_index);
+
+    pool.entry_edge_ids.insert(
+        pool.entry_edge_ids.end(),
+        pstep.edge_ids.begin(),
+        pstep.edge_ids.end()
+    );
+    pool.entry_edge_ids_row_ptr.push_back(pool.entry_edge_ids.size());
+
+    pool.entry_node_sequence.insert(
+        pool.entry_node_sequence.end(),
+        pstep.node_sequence.begin(),
+        pstep.node_sequence.end()
+    );
+    pool.entry_node_sequence_row_ptr.push_back(pool.entry_node_sequence.size());
+
+    pool.entry_state_sequence.insert(
+        pool.entry_state_sequence.end(),
+        pstep.state_sequence.begin(),
+        pstep.state_sequence.end()
+    );
+    pool.entry_state_sequence_row_ptr.push_back(pool.entry_state_sequence.size());
+
+    pool.variant_tau.push_back(0.0);
+    pool.variant_tau.push_back(0.0);
+    pool.variant_valid.push_back(0U);
+    pool.variant_valid.push_back(0U);
+
+    FullEnumerationEntryMatrixBuildData entry_terms;
+    entry_terms.edge_terms =
+        coefficients.edge_incidence_by_pstep.at(static_cast<std::size_t>(pstep.id));
 
     const auto& visit_coefficients =
         coefficients.visit_coefficients_by_pstep.at(static_cast<std::size_t>(pstep.id));
     for (const auto& term : visit_coefficients) {
-        entry.visit_coefficients.push_back(term);
-        entry.dense_visit_coefficients.push_back({ensure_visit_index(pool, term.first), term.second});
+        entry_terms.visit_terms.push_back({ensure_visit_index(pool, term.first), term.second});
     }
 
     const auto& state_coefficients =
         coefficients.state_coefficients_by_pstep.at(static_cast<std::size_t>(pstep.id));
     for (const auto& term : state_coefficients) {
         const NodeStateKey key{term.first.node_id, canonicalize_state(term.first.state)};
-        entry.state_coefficients.push_back({key, term.second});
-        entry.dense_state_coefficients.push_back({ensure_node_state_index(pool, key), term.second});
+        entry_terms.state_terms.push_back({ensure_node_state_index(pool, key), term.second});
     }
 
-    if (graph.is_physical_service_node(entry.start_node_id)) {
-        entry.start_time_key = NodeStateKey{entry.start_node_id, canonicalize_state(entry.start_state)};
-        entry.start_time_index = ensure_node_state_index(pool, entry.start_time_key);
-    }
-    if (graph.is_physical_service_node(entry.last_node_id)) {
-        entry.last_time_key = NodeStateKey{entry.last_node_id, canonicalize_state(entry.last_state)};
-        entry.last_time_index = ensure_node_state_index(pool, entry.last_time_key);
-    }
-
-    return entry;
+    entry_matrix_build_data.push_back(std::move(entry_terms));
 }
 
-bool has_inactive_tau_variant(const FullEnumerationPricingPool::Entry& entry) {
-    return std::any_of(
-        entry.tau_variants.begin(),
-        entry.tau_variants.end(),
-        [](const FullEnumerationPricingPool::TauVariant& variant) {
-            return !variant.active;
-        }
-    );
-}
-
-CGColumn build_column_from_full_pool_selection(
-    const FullEnumerationPricingPool::Entry& entry,
-    const FullEnumerationPricingPool::TauVariant& variant,
-    double reduced_cost
+void finalize_full_enumeration_stage1_matrix(
+    FullEnumerationStaticPool& pool,
+    const std::vector<FullEnumerationEntryMatrixBuildData>& entry_matrix_build_data,
+    std::size_t edge_column_count
 ) {
-    CGColumn column;
-    column.q = entry.q;
-    column.start_node_id = entry.start_node_id;
-    column.last_node_id = entry.last_node_id;
-    column.start_state = canonicalize_state(entry.start_state);
-    column.last_state = canonicalize_state(entry.last_state);
-    column.total_time = entry.total_time;
-    column.total_cost = entry.total_cost;
-    column.tau = variant.tau;
-    column.reduced_cost = reduced_cost;
-    column.edge_ids = entry.edge_ids;
-    column.node_sequence = entry.node_sequence;
-    column.state_sequence = entry.state_sequence;
-    column.visit_coefficients = entry.visit_coefficients;
-    column.state_coefficients = entry.state_coefficients;
-    column.edge_incidence = entry.edge_incidence;
+    pool.stage1_visit_column_count = pool.visit_node_ids.size();
+    pool.stage1_state_column_count = pool.node_state_keys.size();
+    pool.stage1_edge_column_count = edge_column_count;
+    pool.stage1_matrix.column_count =
+        pool.stage1_visit_column_count +
+        pool.stage1_state_column_count +
+        pool.stage1_edge_column_count;
+    pool.stage1_matrix.row_ptr.clear();
+    pool.stage1_matrix.column_index.clear();
+    pool.stage1_matrix.value.clear();
+    pool.stage1_matrix.row_ptr.reserve(entry_matrix_build_data.size() + 1U);
+    pool.stage1_matrix.row_ptr.push_back(0U);
 
-    if (entry.start_time_index >= 0) {
-        column.time_coefficients.push_back({entry.start_time_key, variant.tau});
+    const int state_column_offset = static_cast<int>(pool.stage1_visit_column_count);
+    const int edge_column_offset = static_cast<int>(
+        pool.stage1_visit_column_count + pool.stage1_state_column_count
+    );
+    for (const FullEnumerationEntryMatrixBuildData& entry_terms : entry_matrix_build_data) {
+        for (const auto& term : entry_terms.visit_terms) {
+            pool.stage1_matrix.column_index.push_back(term.first);
+            pool.stage1_matrix.value.push_back(static_cast<double>(term.second));
+        }
+        for (const auto& term : entry_terms.state_terms) {
+            pool.stage1_matrix.column_index.push_back(state_column_offset + term.first);
+            pool.stage1_matrix.value.push_back(static_cast<double>(term.second));
+        }
+        for (int edge_id : entry_terms.edge_terms) {
+            pool.stage1_matrix.column_index.push_back(edge_column_offset + edge_id);
+            pool.stage1_matrix.value.push_back(1.0);
+        }
+        pool.stage1_matrix.row_ptr.push_back(pool.stage1_matrix.column_index.size());
     }
-    if (entry.last_time_index >= 0) {
-        column.time_coefficients.push_back(
-            {entry.last_time_key, -(variant.tau + entry.total_time)}
-        );
+}
+
+void finalize_full_enumeration_stage2_matrix(FullEnumerationStaticPool& pool) {
+    const std::size_t entry_count = full_enumeration_entry_count(pool);
+    pool.stage2_matrix.column_count = entry_count + pool.node_state_keys.size();
+    pool.stage2_matrix.row_ptr.clear();
+    pool.stage2_matrix.column_index.clear();
+    pool.stage2_matrix.value.clear();
+    pool.stage2_matrix.row_ptr.reserve(full_enumeration_variant_count(pool) + 1U);
+    pool.stage2_matrix.row_ptr.push_back(0U);
+
+    for (std::size_t variant_index = 0; variant_index < full_enumeration_variant_count(pool);
+         ++variant_index) {
+        if (!full_enumeration_variant_is_valid(pool, variant_index)) {
+            pool.stage2_matrix.row_ptr.push_back(pool.stage2_matrix.column_index.size());
+            continue;
+        }
+
+        const std::size_t entry_index = full_enumeration_variant_entry_index(variant_index);
+        pool.stage2_matrix.column_index.push_back(static_cast<int>(entry_index));
+        pool.stage2_matrix.value.push_back(1.0);
+
+        const int start_time_row_index = pool.entry_start_time_row_index[entry_index];
+        if (start_time_row_index >= 0) {
+            pool.stage2_matrix.column_index.push_back(
+                static_cast<int>(entry_count + static_cast<std::size_t>(start_time_row_index))
+            );
+            pool.stage2_matrix.value.push_back(-pool.variant_tau[variant_index]);
+        }
+
+        const int last_time_row_index = pool.entry_last_time_row_index[entry_index];
+        if (last_time_row_index >= 0) {
+            pool.stage2_matrix.column_index.push_back(
+                static_cast<int>(entry_count + static_cast<std::size_t>(last_time_row_index))
+            );
+            pool.stage2_matrix.value.push_back(
+                pool.variant_tau[variant_index] + pool.entry_total_time[entry_index]
+            );
+        }
+
+        pool.stage2_matrix.row_ptr.push_back(pool.stage2_matrix.column_index.size());
     }
-    return column;
+}
+
+void finalize_full_enumeration_direct_visit_lookup(FullEnumerationStaticPool& pool) {
+    NodeId max_node_id = -1;
+    for (NodeId node_id : pool.visit_node_ids) {
+        max_node_id = std::max(max_node_id, node_id);
+    }
+
+    if (max_node_id < 0) {
+        pool.dense_visit_row_index_by_node_id.clear();
+        return;
+    }
+
+    pool.dense_visit_row_index_by_node_id.assign(
+        static_cast<std::size_t>(max_node_id) + 1U,
+        -1
+    );
+    for (std::size_t visit_index = 0; visit_index < pool.visit_node_ids.size(); ++visit_index) {
+        const NodeId node_id = pool.visit_node_ids[visit_index];
+        if (node_id >= 0) {
+            pool.dense_visit_row_index_by_node_id[static_cast<std::size_t>(node_id)] =
+                static_cast<int>(visit_index);
+        }
+    }
 }
 
 struct FullPoolSelection {
     double reduced_cost = 0.0;
+    std::size_t variant_index = 0;
     std::size_t entry_index = 0;
     std::size_t tau_index = 0;
 };
@@ -2101,25 +2323,1038 @@ struct FullPoolWorstReducedCostFirst {
     }
 };
 
-void compact_inactive_full_pool_entries(FullEnumerationPricingPool& pool) {
-    pool.inactive_entry_indices.erase(
-        std::remove_if(
-            pool.inactive_entry_indices.begin(),
-            pool.inactive_entry_indices.end(),
-            [&](std::size_t entry_index) {
-                return !has_inactive_tau_variant(pool.entries[entry_index]);
+using FullPoolTopKQueue =
+    std::priority_queue<
+        FullPoolSelection,
+        std::vector<FullPoolSelection>,
+        FullPoolWorstReducedCostFirst>;
+
+CGColumn build_column_from_full_pool_selection(
+    const FullEnumerationStaticPool& pool,
+    const FullPoolSelection& selection
+) {
+    const std::size_t entry_index = selection.entry_index;
+    const std::size_t variant_index = selection.variant_index;
+
+    CGColumn column;
+    column.q = pool.entry_q[entry_index];
+    column.start_node_id = pool.entry_start_node_id[entry_index];
+    column.last_node_id = pool.entry_last_node_id[entry_index];
+    column.start_state = pool.entry_start_state[entry_index];
+    column.last_state = pool.entry_last_state[entry_index];
+    column.total_time = pool.entry_total_time[entry_index];
+    column.total_cost = pool.entry_total_cost[entry_index];
+    column.tau = pool.variant_tau[variant_index];
+    column.reduced_cost = selection.reduced_cost;
+    column.pool_variant_index = static_cast<int>(variant_index);
+
+    for (std::size_t k = pool.entry_edge_ids_row_ptr[entry_index];
+         k < pool.entry_edge_ids_row_ptr[entry_index + 1U];
+         ++k) {
+        column.edge_ids.push_back(pool.entry_edge_ids[k]);
+    }
+    for (std::size_t k = pool.entry_node_sequence_row_ptr[entry_index];
+         k < pool.entry_node_sequence_row_ptr[entry_index + 1U];
+         ++k) {
+        column.node_sequence.push_back(pool.entry_node_sequence[k]);
+    }
+    for (std::size_t k = pool.entry_state_sequence_row_ptr[entry_index];
+         k < pool.entry_state_sequence_row_ptr[entry_index + 1U];
+         ++k) {
+        column.state_sequence.push_back(pool.entry_state_sequence[k]);
+    }
+
+    const std::size_t visit_limit = pool.stage1_visit_column_count;
+    const std::size_t state_limit =
+        pool.stage1_visit_column_count + pool.stage1_state_column_count;
+    for (std::size_t k = pool.stage1_matrix.row_ptr[entry_index];
+         k < pool.stage1_matrix.row_ptr[entry_index + 1U];
+         ++k) {
+        const std::size_t column_index =
+            static_cast<std::size_t>(pool.stage1_matrix.column_index[k]);
+        const int coefficient = static_cast<int>(std::llround(pool.stage1_matrix.value[k]));
+        if (column_index < visit_limit) {
+            column.visit_coefficients.push_back({
+                pool.visit_node_ids[column_index],
+                coefficient,
+            });
+        } else if (column_index < state_limit) {
+            const std::size_t state_index = column_index - visit_limit;
+            column.state_coefficients.push_back({
+                pool.node_state_keys[state_index],
+                coefficient,
+            });
+        } else {
+            column.edge_incidence.push_back(static_cast<int>(column_index - state_limit));
+        }
+    }
+
+    const int start_time_row_index = pool.entry_start_time_row_index[entry_index];
+    if (start_time_row_index >= 0) {
+        column.time_coefficients.push_back({
+            pool.node_state_keys[static_cast<std::size_t>(start_time_row_index)],
+            pool.variant_tau[variant_index],
+        });
+    }
+    const int last_time_row_index = pool.entry_last_time_row_index[entry_index];
+    if (last_time_row_index >= 0) {
+        column.time_coefficients.push_back(
+            {
+                pool.node_state_keys[static_cast<std::size_t>(last_time_row_index)],
+                -(pool.variant_tau[variant_index] + pool.entry_total_time[entry_index]),
             }
+        );
+    }
+    return column;
+}
+
+struct FullEnumerationDenseDualVectors {
+    std::vector<double> stage1_input;
+    std::vector<double> time;
+};
+
+FullEnumerationDenseDualVectors build_full_enumeration_dense_duals(
+    const FullEnumerationStaticPool& pool,
+    const CGDualSolution& dual_solution
+) {
+    FullEnumerationDenseDualVectors dense_duals;
+    dense_duals.stage1_input.assign(pool.stage1_matrix.column_count, 0.0);
+    for (std::size_t idx = 0; idx < pool.visit_node_ids.size(); ++idx) {
+        dense_duals.stage1_input[idx] =
+            lookup_dual(dual_solution.visit_duals, pool.visit_node_ids[idx]);
+    }
+    dense_duals.time.assign(pool.node_state_keys.size(), 0.0);
+    for (std::size_t idx = 0; idx < pool.node_state_keys.size(); ++idx) {
+        dense_duals.stage1_input[pool.stage1_visit_column_count + idx] =
+            lookup_dual(dual_solution.state_duals, pool.node_state_keys[idx]);
+        dense_duals.time[idx] = lookup_dual(dual_solution.time_duals, pool.node_state_keys[idx]);
+    }
+    const std::size_t edge_offset =
+        pool.stage1_visit_column_count + pool.stage1_state_column_count;
+    const std::size_t edge_count = std::min(
+        pool.stage1_edge_column_count,
+        dual_solution.edge_duals.size()
+    );
+    for (std::size_t idx = 0; idx < edge_count; ++idx) {
+        dense_duals.stage1_input[edge_offset + idx] = dual_solution.edge_duals[idx];
+    }
+    return dense_duals;
+}
+
+struct FullEnumerationBaseRCBreakdown {
+    double entry_cost_term = 0.0;
+    double visit_contribution = 0.0;
+    double state_contribution = 0.0;
+    double edge_contribution = 0.0;
+    double base_reduced_cost = 0.0;
+};
+
+double compute_full_enumeration_entry_base_reduced_cost_direct(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationDenseDualVectors& dense_duals,
+    CGPhase phase,
+    std::size_t entry_index
+) {
+    const double entry_cost_term =
+        (phase == CGPhase::PhaseII) ? pool.entry_total_cost[entry_index] : 0.0;
+    double row_sum = 0.0;
+
+    const std::size_t node_begin = pool.entry_node_sequence_row_ptr[entry_index];
+    const std::size_t node_end = pool.entry_node_sequence_row_ptr[entry_index + 1U];
+    for (std::size_t pos = node_begin; pos < node_end; ++pos) {
+        const NodeId node_id = pool.entry_node_sequence[pos];
+        if (node_id < 0 ||
+            static_cast<std::size_t>(node_id) >= pool.dense_visit_row_index_by_node_id.size()) {
+            continue;
+        }
+        const int visit_row_index =
+            pool.dense_visit_row_index_by_node_id[static_cast<std::size_t>(node_id)];
+        if (visit_row_index < 0) {
+            continue;
+        }
+        const double coefficient =
+            (pos == node_begin || pos + 1U == node_end) ? 1.0 : 2.0;
+        row_sum += coefficient * dense_duals.stage1_input[static_cast<std::size_t>(visit_row_index)];
+    }
+
+    const std::size_t state_offset = pool.stage1_visit_column_count;
+    const int start_state_row_index = pool.entry_start_time_row_index[entry_index];
+    if (start_state_row_index >= 0) {
+        row_sum += dense_duals.stage1_input[
+            state_offset + static_cast<std::size_t>(start_state_row_index)
+        ];
+    }
+    const int last_state_row_index = pool.entry_last_time_row_index[entry_index];
+    if (last_state_row_index >= 0) {
+        row_sum -= dense_duals.stage1_input[
+            state_offset + static_cast<std::size_t>(last_state_row_index)
+        ];
+    }
+
+    const std::size_t edge_offset =
+        pool.stage1_visit_column_count + pool.stage1_state_column_count;
+    for (std::size_t k = pool.entry_edge_ids_row_ptr[entry_index];
+         k < pool.entry_edge_ids_row_ptr[entry_index + 1U];
+         ++k) {
+        const int edge_id = pool.entry_edge_ids[k];
+        if (edge_id < 0 ||
+            static_cast<std::size_t>(edge_id) >= pool.stage1_edge_column_count) {
+            continue;
+        }
+        row_sum += dense_duals.stage1_input[edge_offset + static_cast<std::size_t>(edge_id)];
+    }
+
+    return entry_cost_term - row_sum;
+}
+
+FullEnumerationBaseRCBreakdown compute_full_enumeration_entry_base_reduced_cost_direct_breakdown(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationDenseDualVectors& dense_duals,
+    CGPhase phase,
+    std::size_t entry_index
+) {
+    FullEnumerationBaseRCBreakdown breakdown;
+    breakdown.entry_cost_term =
+        (phase == CGPhase::PhaseII) ? pool.entry_total_cost[entry_index] : 0.0;
+
+    const std::size_t node_begin = pool.entry_node_sequence_row_ptr[entry_index];
+    const std::size_t node_end = pool.entry_node_sequence_row_ptr[entry_index + 1U];
+    for (std::size_t pos = node_begin; pos < node_end; ++pos) {
+        const NodeId node_id = pool.entry_node_sequence[pos];
+        if (node_id < 0 ||
+            static_cast<std::size_t>(node_id) >= pool.dense_visit_row_index_by_node_id.size()) {
+            continue;
+        }
+        const int visit_row_index =
+            pool.dense_visit_row_index_by_node_id[static_cast<std::size_t>(node_id)];
+        if (visit_row_index < 0) {
+            continue;
+        }
+        const double coefficient =
+            (pos == node_begin || pos + 1U == node_end) ? 1.0 : 2.0;
+        breakdown.visit_contribution +=
+            coefficient * dense_duals.stage1_input[static_cast<std::size_t>(visit_row_index)];
+    }
+
+    const std::size_t state_offset = pool.stage1_visit_column_count;
+    const int start_state_row_index = pool.entry_start_time_row_index[entry_index];
+    if (start_state_row_index >= 0) {
+        breakdown.state_contribution += dense_duals.stage1_input[
+            state_offset + static_cast<std::size_t>(start_state_row_index)
+        ];
+    }
+    const int last_state_row_index = pool.entry_last_time_row_index[entry_index];
+    if (last_state_row_index >= 0) {
+        breakdown.state_contribution -= dense_duals.stage1_input[
+            state_offset + static_cast<std::size_t>(last_state_row_index)
+        ];
+    }
+
+    const std::size_t edge_offset =
+        pool.stage1_visit_column_count + pool.stage1_state_column_count;
+    for (std::size_t k = pool.entry_edge_ids_row_ptr[entry_index];
+         k < pool.entry_edge_ids_row_ptr[entry_index + 1U];
+         ++k) {
+        const int edge_id = pool.entry_edge_ids[k];
+        if (edge_id < 0 ||
+            static_cast<std::size_t>(edge_id) >= pool.stage1_edge_column_count) {
+            continue;
+        }
+        breakdown.edge_contribution +=
+            dense_duals.stage1_input[edge_offset + static_cast<std::size_t>(edge_id)];
+    }
+
+    breakdown.base_reduced_cost =
+        breakdown.entry_cost_term - breakdown.visit_contribution -
+        breakdown.state_contribution - breakdown.edge_contribution;
+    return breakdown;
+}
+
+FullEnumerationBaseRCBreakdown compute_full_enumeration_entry_base_reduced_cost(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationDenseDualVectors& dense_duals,
+    CGPhase phase,
+    std::size_t entry_index
+) {
+    FullEnumerationBaseRCBreakdown breakdown;
+    breakdown.entry_cost_term =
+        (phase == CGPhase::PhaseII) ? pool.entry_total_cost[entry_index] : 0.0;
+
+    const std::size_t visit_limit = pool.stage1_visit_column_count;
+    const std::size_t state_limit =
+        pool.stage1_visit_column_count + pool.stage1_state_column_count;
+    for (std::size_t k = pool.stage1_matrix.row_ptr[entry_index];
+         k < pool.stage1_matrix.row_ptr[entry_index + 1U];
+         ++k) {
+        const std::size_t column_index =
+            static_cast<std::size_t>(pool.stage1_matrix.column_index[k]);
+        const double contribution =
+            pool.stage1_matrix.value[k] * dense_duals.stage1_input[column_index];
+        if (column_index < visit_limit) {
+            breakdown.visit_contribution += contribution;
+        } else if (column_index < state_limit) {
+            breakdown.state_contribution += contribution;
+        } else {
+            breakdown.edge_contribution += contribution;
+        }
+    }
+
+    breakdown.base_reduced_cost =
+        breakdown.entry_cost_term - breakdown.visit_contribution -
+        breakdown.state_contribution - breakdown.edge_contribution;
+    return breakdown;
+}
+
+struct FullEnumerationVariantRCBreakdown {
+    double base_reduced_cost = 0.0;
+    double start_time_contribution = 0.0;
+    double end_time_contribution = 0.0;
+    double reduced_cost = 0.0;
+};
+
+FullEnumerationVariantRCBreakdown compute_full_enumeration_variant_reduced_cost(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationDenseDualVectors& dense_duals,
+    const std::vector<double>& base_reduced_costs,
+    std::size_t variant_index
+) {
+    const std::size_t entry_index = full_enumeration_variant_entry_index(variant_index);
+    const double tau = pool.variant_tau[variant_index];
+
+    FullEnumerationVariantRCBreakdown breakdown;
+    breakdown.base_reduced_cost = base_reduced_costs[entry_index];
+
+    const int start_row_index = pool.entry_start_time_row_index[entry_index];
+    if (start_row_index >= 0) {
+        breakdown.start_time_contribution =
+            -tau * dense_duals.time[static_cast<std::size_t>(start_row_index)];
+    }
+
+    const int last_row_index = pool.entry_last_time_row_index[entry_index];
+    if (last_row_index >= 0) {
+        breakdown.end_time_contribution =
+            (tau + pool.entry_total_time[entry_index]) *
+            dense_duals.time[static_cast<std::size_t>(last_row_index)];
+    }
+
+    breakdown.reduced_cost =
+        breakdown.base_reduced_cost + breakdown.start_time_contribution +
+        breakdown.end_time_contribution;
+    return breakdown;
+}
+
+std::size_t resolve_full_enumeration_thread_count(
+    std::size_t requested_thread_count,
+    std::size_t item_count
+) {
+    if (item_count == 0U) {
+        return 1U;
+    }
+
+    const std::size_t hardware_thread_count = std::max<std::size_t>(
+        1U,
+        static_cast<std::size_t>(std::thread::hardware_concurrency())
+    );
+    const std::size_t target =
+        requested_thread_count == 0U ? hardware_thread_count : requested_thread_count;
+    return std::max<std::size_t>(1U, std::min(target, item_count));
+}
+
+std::pair<std::size_t, std::size_t> balanced_work_range(
+    std::size_t item_count,
+    std::size_t worker_count,
+    std::size_t worker_index
+) {
+    const std::size_t begin = (item_count * worker_index) / worker_count;
+    const std::size_t end = (item_count * (worker_index + 1U)) / worker_count;
+    return {begin, end};
+}
+
+bool full_pool_selection_less(
+    const FullPoolSelection& lhs,
+    const FullPoolSelection& rhs
+) {
+    if (!double_equal(lhs.reduced_cost, rhs.reduced_cost)) {
+        return lhs.reduced_cost < rhs.reduced_cost;
+    }
+    if (lhs.entry_index != rhs.entry_index) {
+        return lhs.entry_index < rhs.entry_index;
+    }
+    return lhs.tau_index < rhs.tau_index;
+}
+
+void maybe_push_full_pool_top_k(
+    FullPoolTopKQueue& top_k_queue,
+    const FullPoolSelection& selection,
+    std::size_t max_total_columns
+) {
+    if (max_total_columns == 0U) {
+        return;
+    }
+    if (top_k_queue.size() < max_total_columns) {
+        top_k_queue.push(selection);
+        return;
+    }
+    if (full_pool_selection_less(selection, top_k_queue.top())) {
+        top_k_queue.pop();
+        top_k_queue.push(selection);
+    }
+}
+
+std::vector<FullPoolSelection> extract_full_pool_top_k(FullPoolTopKQueue& top_k_queue) {
+    std::vector<FullPoolSelection> selected;
+    selected.reserve(top_k_queue.size());
+    while (!top_k_queue.empty()) {
+        selected.push_back(top_k_queue.top());
+        top_k_queue.pop();
+    }
+    return selected;
+}
+
+void log_full_enumeration_pool_selection_summary(
+    std::ostream& out,
+    const char* mode_name,
+    std::size_t negative_column_count,
+    std::size_t selected_column_count,
+    double best_reduced_cost
+) {
+    out << "[full-enum-rc] mode=" << mode_name
+        << " negative_columns=" << negative_column_count
+        << " selected_columns=" << selected_column_count
+        << " best_rc=" << format_double(best_reduced_cost)
+        << '\n';
+}
+
+struct FullEnumerationParallelStage2ScanResult {
+    std::vector<FullPoolSelection> negative_selections;
+    std::size_t total_negative_column_count = 0;
+    double best_reduced_cost = std::numeric_limits<double>::infinity();
+};
+
+void compute_full_enumeration_stage1_custom(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationPoolNodeState& node_state,
+    const FullEnumerationDenseDualVectors& dense_duals,
+    CGPhase phase,
+    std::size_t requested_thread_count,
+    std::vector<double>& base_reduced_costs,
+    bool rc_detail_log_enabled,
+    std::ostream* log_stream
+) {
+    const std::size_t entry_thread_count =
+        resolve_full_enumeration_thread_count(
+            requested_thread_count,
+            full_enumeration_entry_count(pool)
+        );
+
+    std::vector<std::thread> entry_threads;
+    std::vector<std::ostringstream> entry_thread_logs(
+        rc_detail_log_enabled ? entry_thread_count : 0U
+    );
+    entry_threads.reserve(entry_thread_count);
+    for (std::size_t thread_index = 0; thread_index < entry_thread_count; ++thread_index) {
+        entry_threads.emplace_back(
+            [&, thread_index]() {
+                const auto [begin, end] = balanced_work_range(
+                    full_enumeration_entry_count(pool),
+                    entry_thread_count,
+                    thread_index
+                );
+                std::ostringstream* thread_log =
+                    rc_detail_log_enabled ? &entry_thread_logs[thread_index] : nullptr;
+                if (thread_log != nullptr) {
+                    *thread_log
+                        << "[full-enum-rc] mode=parallel stage=entry backend=custom thread="
+                        << thread_index
+                        << " assigned_entries=[" << begin << "," << end << ")\n";
+                }
+
+                for (std::size_t entry_index = begin; entry_index < end; ++entry_index) {
+                    if (full_enumeration_entry_is_forbidden(node_state, entry_index) ||
+                        node_state.entry_available_variant_count[entry_index] == 0U) {
+                        base_reduced_costs[entry_index] = 0.0;
+                        continue;
+                    }
+                    if (thread_log == nullptr) {
+                        base_reduced_costs[entry_index] =
+                            compute_full_enumeration_entry_base_reduced_cost_direct(
+                                pool,
+                                dense_duals,
+                                phase,
+                                entry_index
+                            );
+                        continue;
+                    }
+
+                    const FullEnumerationBaseRCBreakdown breakdown =
+                        compute_full_enumeration_entry_base_reduced_cost_direct_breakdown(
+                            pool,
+                            dense_duals,
+                            phase,
+                            entry_index
+                        );
+                    base_reduced_costs[entry_index] = breakdown.base_reduced_cost;
+                    if (node_state.entry_available_variant_count[entry_index] > 0U) {
+                        *thread_log
+                            << "[full-enum-rc] mode=parallel stage=entry backend=custom thread="
+                            << thread_index
+                            << " entry=" << entry_index
+                            << " cost_term=" << format_double(breakdown.entry_cost_term)
+                            << " visit_part=" << format_double(breakdown.visit_contribution)
+                            << " state_part=" << format_double(breakdown.state_contribution)
+                            << " edge_part=" << format_double(breakdown.edge_contribution)
+                            << " base_rc=" << format_double(breakdown.base_reduced_cost)
+                            << '\n';
+                    }
+                }
+            }
+        );
+    }
+    for (std::thread& worker : entry_threads) {
+        worker.join();
+    }
+    if (rc_detail_log_enabled && log_stream != nullptr) {
+        for (const std::ostringstream& thread_log : entry_thread_logs) {
+            *log_stream << thread_log.str();
+        }
+    }
+}
+
+FullEnumerationParallelStage2ScanResult compute_full_enumeration_stage2_custom(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationPoolNodeState& node_state,
+    const FullEnumerationDenseDualVectors& dense_duals,
+    const std::vector<double>& base_reduced_costs,
+    double reduced_cost_tolerance,
+    std::size_t max_total_columns,
+    std::size_t requested_thread_count,
+    bool rc_detail_log_enabled,
+    std::ostream* log_stream
+) {
+    FullEnumerationParallelStage2ScanResult result;
+    const std::size_t variant_thread_count =
+        resolve_full_enumeration_thread_count(
+            requested_thread_count,
+            full_enumeration_variant_count(pool)
+        );
+
+    std::vector<std::thread> variant_threads;
+    std::vector<std::ostringstream> variant_thread_logs(
+        rc_detail_log_enabled ? variant_thread_count : 0U
+    );
+    std::vector<std::vector<FullPoolSelection>> thread_top_negative_selections(
+        variant_thread_count
+    );
+    std::vector<std::size_t> thread_negative_counts(variant_thread_count, 0U);
+    std::vector<double> thread_best_reduced_costs(
+        variant_thread_count,
+        std::numeric_limits<double>::infinity()
+    );
+    variant_threads.reserve(variant_thread_count);
+    for (std::size_t thread_index = 0; thread_index < variant_thread_count; ++thread_index) {
+        variant_threads.emplace_back(
+            [&, thread_index]() {
+                const auto [begin, end] = balanced_work_range(
+                    full_enumeration_variant_count(pool),
+                    variant_thread_count,
+                    thread_index
+                );
+                std::ostringstream* thread_log =
+                    rc_detail_log_enabled ? &variant_thread_logs[thread_index] : nullptr;
+                if (thread_log != nullptr) {
+                    *thread_log
+                        << "[full-enum-rc] mode=parallel stage=variant backend=custom thread="
+                        << thread_index
+                        << " assigned_variants=[" << begin << "," << end << ")\n";
+                }
+
+                FullPoolTopKQueue local_top_negative_columns;
+                for (std::size_t variant_index = begin; variant_index < end; ++variant_index) {
+                    if (!full_enumeration_variant_is_available(pool, node_state, variant_index)) {
+                        continue;
+                    }
+                    const std::size_t entry_index =
+                        full_enumeration_variant_entry_index(variant_index);
+                    const FullEnumerationVariantRCBreakdown breakdown =
+                        compute_full_enumeration_variant_reduced_cost(
+                            pool,
+                            dense_duals,
+                            base_reduced_costs,
+                            variant_index
+                        );
+                    thread_best_reduced_costs[thread_index] = std::min(
+                        thread_best_reduced_costs[thread_index],
+                        breakdown.reduced_cost
+                    );
+                    if (thread_log != nullptr) {
+                        *thread_log
+                            << "[full-enum-rc] mode=parallel stage=variant backend=custom thread="
+                            << thread_index
+                            << " entry=" << entry_index
+                            << " tau_index="
+                            << full_enumeration_variant_tau_index(variant_index)
+                            << " tau=" << format_double(pool.variant_tau[variant_index])
+                            << " base_rc=" << format_double(breakdown.base_reduced_cost)
+                            << " start_time_part="
+                            << format_double(breakdown.start_time_contribution)
+                            << " end_time_part="
+                            << format_double(breakdown.end_time_contribution)
+                            << " rc=" << format_double(breakdown.reduced_cost)
+                            << " negative="
+                            << (breakdown.reduced_cost < reduced_cost_tolerance ? 1 : 0)
+                            << '\n';
+                    }
+                    if (breakdown.reduced_cost < reduced_cost_tolerance) {
+                        ++thread_negative_counts[thread_index];
+                        maybe_push_full_pool_top_k(
+                            local_top_negative_columns,
+                            {
+                            breakdown.reduced_cost,
+                            variant_index,
+                            entry_index,
+                            full_enumeration_variant_tau_index(variant_index),
+                            },
+                            max_total_columns
+                        );
+                    }
+                }
+                thread_top_negative_selections[thread_index] =
+                    extract_full_pool_top_k(local_top_negative_columns);
+            }
+        );
+    }
+    for (std::thread& worker : variant_threads) {
+        worker.join();
+    }
+    if (rc_detail_log_enabled && log_stream != nullptr) {
+        for (const std::ostringstream& thread_log : variant_thread_logs) {
+            *log_stream << thread_log.str();
+        }
+    }
+
+    FullPoolTopKQueue global_top_negative_columns;
+    for (const std::vector<FullPoolSelection>& local_top_negative_selections :
+         thread_top_negative_selections) {
+        for (const FullPoolSelection& selection : local_top_negative_selections) {
+            maybe_push_full_pool_top_k(global_top_negative_columns, selection, max_total_columns);
+        }
+    }
+    result.negative_selections = extract_full_pool_top_k(global_top_negative_columns);
+    for (std::size_t thread_negative_count : thread_negative_counts) {
+        result.total_negative_column_count += thread_negative_count;
+    }
+    for (double thread_best_reduced_cost : thread_best_reduced_costs) {
+        result.best_reduced_cost = std::min(result.best_reduced_cost, thread_best_reduced_cost);
+    }
+    return result;
+}
+
+#ifdef SPDP_HAVE_ONEMKL
+
+MKL_INT to_mkl_int(
+    std::size_t value,
+    const char* context
+) {
+    const std::size_t max_value =
+        static_cast<std::size_t>(std::numeric_limits<MKL_INT>::max());
+    if (value > max_value) {
+        throw std::runtime_error(
+            std::string("oneMKL index overflow in ") + context
+        );
+    }
+    return static_cast<MKL_INT>(value);
+}
+
+void check_mkl_status(
+    sparse_status_t status,
+    const char* context
+) {
+    if (status != SPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error(
+            std::string("oneMKL sparse operation failed in ") + context +
+            " (status=" + std::to_string(static_cast<int>(status)) + ")"
+        );
+    }
+}
+
+class ScopedMklThreads {
+public:
+    explicit ScopedMklThreads(std::size_t thread_count)
+        : previous_thread_count_(
+              mkl_set_num_threads_local(static_cast<int>(std::max<std::size_t>(1U, thread_count)))
+          ) {}
+
+    ~ScopedMklThreads() {
+        mkl_set_num_threads_local(previous_thread_count_);
+    }
+
+private:
+    int previous_thread_count_ = 1;
+};
+
+class ScopedMklSparseMatrix {
+public:
+    ~ScopedMklSparseMatrix() {
+        if (handle_ != nullptr) {
+            mkl_sparse_destroy(handle_);
+        }
+    }
+
+    sparse_matrix_t* out() {
+        return &handle_;
+    }
+
+    sparse_matrix_t get() const {
+        return handle_;
+    }
+
+private:
+    sparse_matrix_t handle_ = nullptr;
+};
+
+struct FullEnumerationMklCsrMatrix {
+    MKL_INT row_count = 0;
+    MKL_INT column_count = 0;
+    std::vector<MKL_INT> row_start;
+    std::vector<MKL_INT> row_end;
+    std::vector<MKL_INT> column_index;
+    std::vector<double> values;
+};
+
+FullEnumerationMklCsrMatrix build_full_enumeration_mkl_matrix(
+    const FullEnumerationStaticPool::CSRMatrix& csr_matrix,
+    const char* context
+) {
+    FullEnumerationMklCsrMatrix mkl_matrix;
+    const std::size_t row_count =
+        csr_matrix.row_ptr.empty() ? 0U : (csr_matrix.row_ptr.size() - 1U);
+    mkl_matrix.row_count = to_mkl_int(row_count, context);
+    mkl_matrix.column_count = to_mkl_int(csr_matrix.column_count, context);
+    mkl_matrix.row_start.reserve(row_count);
+    mkl_matrix.row_end.reserve(row_count);
+    for (std::size_t row = 0; row < row_count; ++row) {
+        mkl_matrix.row_start.push_back(to_mkl_int(csr_matrix.row_ptr[row], context));
+        mkl_matrix.row_end.push_back(to_mkl_int(csr_matrix.row_ptr[row + 1U], context));
+    }
+    mkl_matrix.column_index.reserve(csr_matrix.column_index.size());
+    mkl_matrix.values.reserve(csr_matrix.value.size());
+    for (std::size_t idx = 0; idx < csr_matrix.column_index.size(); ++idx) {
+        mkl_matrix.column_index.push_back(
+            to_mkl_int(static_cast<std::size_t>(csr_matrix.column_index[idx]), context)
+        );
+        mkl_matrix.values.push_back(csr_matrix.value[idx]);
+    }
+    return mkl_matrix;
+}
+
+std::vector<double> build_full_enumeration_stage2_mkl_input(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationDenseDualVectors& dense_duals,
+    const std::vector<double>& base_reduced_costs
+) {
+    std::vector<double> input;
+    input.reserve(full_enumeration_entry_count(pool) + dense_duals.time.size());
+    input.insert(input.end(), base_reduced_costs.begin(), base_reduced_costs.end());
+    input.insert(input.end(), dense_duals.time.begin(), dense_duals.time.end());
+    return input;
+}
+
+std::vector<double> run_full_enumeration_mkl_spmv(
+    const FullEnumerationMklCsrMatrix& matrix,
+    const std::vector<double>& input,
+    std::size_t thread_count,
+    const char* context
+) {
+    if (matrix.row_count == 0) {
+        return {};
+    }
+
+    ScopedMklSparseMatrix handle;
+    check_mkl_status(
+        mkl_sparse_d_create_csr(
+            handle.out(),
+            SPARSE_INDEX_BASE_ZERO,
+            matrix.row_count,
+            matrix.column_count,
+            const_cast<MKL_INT*>(matrix.row_start.data()),
+            const_cast<MKL_INT*>(matrix.row_end.data()),
+            const_cast<MKL_INT*>(matrix.column_index.data()),
+            const_cast<double*>(matrix.values.data())
         ),
-        pool.inactive_entry_indices.end()
+        context
+    );
+
+    matrix_descr descriptor;
+    descriptor.type = SPARSE_MATRIX_TYPE_GENERAL;
+    descriptor.mode = SPARSE_FILL_MODE_FULL;
+    descriptor.diag = SPARSE_DIAG_NON_UNIT;
+
+    check_mkl_status(mkl_sparse_optimize(handle.get()), context);
+
+    std::vector<double> output(static_cast<std::size_t>(matrix.row_count), 0.0);
+    ScopedMklThreads thread_guard(thread_count);
+    check_mkl_status(
+        mkl_sparse_d_mv(
+            SPARSE_OPERATION_NON_TRANSPOSE,
+            1.0,
+            handle.get(),
+            descriptor,
+            input.data(),
+            0.0,
+            output.data()
+        ),
+        context
+    );
+    return output;
+}
+
+void compute_full_enumeration_stage1_onemkl(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationPoolNodeState& node_state,
+    const FullEnumerationDenseDualVectors& dense_duals,
+    CGPhase phase,
+    std::size_t requested_thread_count,
+    std::vector<double>& base_reduced_costs,
+    bool rc_detail_log_enabled,
+    std::ostream* log_stream
+) {
+    const std::size_t thread_count =
+        resolve_full_enumeration_thread_count(
+            requested_thread_count,
+            full_enumeration_entry_count(pool)
+        );
+    const FullEnumerationMklCsrMatrix matrix =
+        build_full_enumeration_mkl_matrix(pool.stage1_matrix, "stage1 onemkl matrix");
+    const std::vector<double> output =
+        run_full_enumeration_mkl_spmv(
+            matrix,
+            dense_duals.stage1_input,
+            thread_count,
+            "stage1 onemkl SpMV"
+        );
+
+    if (rc_detail_log_enabled && log_stream != nullptr) {
+        *log_stream << "[full-enum-rc] mode=parallel stage=entry backend=onemkl rows="
+                    << full_enumeration_entry_count(pool)
+                    << " cols=" << dense_duals.stage1_input.size()
+                    << " threads=" << thread_count << '\n';
+    }
+
+    for (std::size_t entry_index = 0; entry_index < full_enumeration_entry_count(pool);
+         ++entry_index) {
+        const double entry_cost_term =
+            (phase == CGPhase::PhaseII) ? pool.entry_total_cost[entry_index] : 0.0;
+        base_reduced_costs[entry_index] = entry_cost_term - output[entry_index];
+
+        if (rc_detail_log_enabled &&
+            log_stream != nullptr &&
+            !full_enumeration_entry_is_forbidden(node_state, entry_index) &&
+            node_state.entry_available_variant_count[entry_index] > 0U) {
+            const FullEnumerationBaseRCBreakdown breakdown =
+                compute_full_enumeration_entry_base_reduced_cost(
+                    pool,
+                    dense_duals,
+                    phase,
+                    entry_index
+                );
+            *log_stream << "[full-enum-rc] mode=parallel stage=entry backend=onemkl entry="
+                        << entry_index
+                        << " cost_term=" << format_double(breakdown.entry_cost_term)
+                        << " visit_part=" << format_double(breakdown.visit_contribution)
+                        << " state_part=" << format_double(breakdown.state_contribution)
+                        << " edge_part=" << format_double(breakdown.edge_contribution)
+                        << " base_rc=" << format_double(base_reduced_costs[entry_index])
+                        << '\n';
+        }
+    }
+}
+
+FullEnumerationParallelStage2ScanResult compute_full_enumeration_stage2_onemkl(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationPoolNodeState& node_state,
+    const FullEnumerationDenseDualVectors& dense_duals,
+    const std::vector<double>& base_reduced_costs,
+    double reduced_cost_tolerance,
+    std::size_t max_total_columns,
+    std::size_t requested_thread_count,
+    bool rc_detail_log_enabled,
+    std::ostream* log_stream
+) {
+    FullEnumerationParallelStage2ScanResult result;
+    const std::size_t thread_count =
+        resolve_full_enumeration_thread_count(
+            requested_thread_count,
+            full_enumeration_variant_count(pool)
+        );
+    const FullEnumerationMklCsrMatrix matrix =
+        build_full_enumeration_mkl_matrix(pool.stage2_matrix, "stage2 onemkl matrix");
+    const std::vector<double> input =
+        build_full_enumeration_stage2_mkl_input(pool, dense_duals, base_reduced_costs);
+    const std::vector<double> output =
+        run_full_enumeration_mkl_spmv(matrix, input, thread_count, "stage2 onemkl SpMV");
+
+    if (rc_detail_log_enabled && log_stream != nullptr) {
+        *log_stream << "[full-enum-rc] mode=parallel stage=variant backend=onemkl rows="
+                    << full_enumeration_variant_count(pool)
+                    << " cols=" << input.size()
+                    << " threads=" << thread_count << '\n';
+    }
+
+    std::vector<std::thread> variant_threads;
+    std::vector<std::ostringstream> variant_thread_logs(
+        rc_detail_log_enabled ? thread_count : 0U
+    );
+    std::vector<std::vector<FullPoolSelection>> thread_top_negative_selections(thread_count);
+    std::vector<std::size_t> thread_negative_counts(thread_count, 0U);
+    std::vector<double> thread_best_reduced_costs(
+        thread_count,
+        std::numeric_limits<double>::infinity()
+    );
+    variant_threads.reserve(thread_count);
+    for (std::size_t thread_index = 0; thread_index < thread_count; ++thread_index) {
+        variant_threads.emplace_back(
+            [&, thread_index]() {
+                const auto [begin, end] = balanced_work_range(
+                    full_enumeration_variant_count(pool),
+                    thread_count,
+                    thread_index
+                );
+                std::ostringstream* thread_log =
+                    rc_detail_log_enabled ? &variant_thread_logs[thread_index] : nullptr;
+                if (thread_log != nullptr) {
+                    *thread_log
+                        << "[full-enum-rc] mode=parallel stage=variant backend=onemkl thread="
+                        << thread_index
+                        << " assigned_variants=[" << begin << "," << end << ")\n";
+                }
+
+                FullPoolTopKQueue local_top_negative_columns;
+                for (std::size_t variant_index = begin; variant_index < end; ++variant_index) {
+                    if (!full_enumeration_variant_is_available(pool, node_state, variant_index)) {
+                        continue;
+                    }
+                    const std::size_t entry_index =
+                        full_enumeration_variant_entry_index(variant_index);
+                    const int start_row_index = pool.entry_start_time_row_index[entry_index];
+                    const int last_row_index = pool.entry_last_time_row_index[entry_index];
+                    const double start_time_contribution =
+                        start_row_index >= 0
+                            ? -pool.variant_tau[variant_index] *
+                                  dense_duals.time[static_cast<std::size_t>(start_row_index)]
+                            : 0.0;
+                    const double end_time_contribution =
+                        last_row_index >= 0
+                            ? (pool.variant_tau[variant_index] +
+                               pool.entry_total_time[entry_index]) *
+                                  dense_duals.time[static_cast<std::size_t>(last_row_index)]
+                            : 0.0;
+                    const double reduced_cost = output[variant_index];
+                    thread_best_reduced_costs[thread_index] = std::min(
+                        thread_best_reduced_costs[thread_index],
+                        reduced_cost
+                    );
+
+                    if (thread_log != nullptr) {
+                        *thread_log
+                            << "[full-enum-rc] mode=parallel stage=variant backend=onemkl thread="
+                            << thread_index
+                            << " entry=" << entry_index
+                            << " tau_index="
+                            << full_enumeration_variant_tau_index(variant_index)
+                            << " tau=" << format_double(pool.variant_tau[variant_index])
+                            << " base_rc=" << format_double(base_reduced_costs[entry_index])
+                            << " start_time_part=" << format_double(start_time_contribution)
+                            << " end_time_part=" << format_double(end_time_contribution)
+                            << " rc=" << format_double(reduced_cost)
+                            << " negative=" << (reduced_cost < reduced_cost_tolerance ? 1 : 0)
+                            << '\n';
+                    }
+
+                    if (reduced_cost < reduced_cost_tolerance) {
+                        ++thread_negative_counts[thread_index];
+                        maybe_push_full_pool_top_k(
+                            local_top_negative_columns,
+                            {
+                                reduced_cost,
+                                variant_index,
+                                entry_index,
+                                full_enumeration_variant_tau_index(variant_index),
+                            },
+                            max_total_columns
+                        );
+                    }
+                }
+                thread_top_negative_selections[thread_index] =
+                    extract_full_pool_top_k(local_top_negative_columns);
+            }
+        );
+    }
+    for (std::thread& worker : variant_threads) {
+        worker.join();
+    }
+    if (rc_detail_log_enabled && log_stream != nullptr) {
+        for (const std::ostringstream& thread_log : variant_thread_logs) {
+            *log_stream << thread_log.str();
+        }
+    }
+
+    FullPoolTopKQueue global_top_negative_columns;
+    for (const std::vector<FullPoolSelection>& local_top_negative_selections :
+         thread_top_negative_selections) {
+        for (const FullPoolSelection& selection : local_top_negative_selections) {
+            maybe_push_full_pool_top_k(global_top_negative_columns, selection, max_total_columns);
+        }
+    }
+    result.negative_selections = extract_full_pool_top_k(global_top_negative_columns);
+    for (std::size_t thread_negative_count : thread_negative_counts) {
+        result.total_negative_column_count += thread_negative_count;
+    }
+    for (double thread_best_reduced_cost : thread_best_reduced_costs) {
+        result.best_reduced_cost = std::min(result.best_reduced_cost, thread_best_reduced_cost);
+    }
+    return result;
+}
+
+#else
+
+void compute_full_enumeration_stage1_onemkl(
+    const FullEnumerationStaticPool&,
+    const FullEnumerationPoolNodeState&,
+    const FullEnumerationDenseDualVectors&,
+    CGPhase,
+    std::size_t,
+    std::vector<double>&,
+    bool,
+    std::ostream*
+) {
+    throw std::runtime_error(
+        "parallel stage1 backend=onemkl requested, but this build does not include oneMKL."
     );
 }
 
+FullEnumerationParallelStage2ScanResult compute_full_enumeration_stage2_onemkl(
+    const FullEnumerationStaticPool&,
+    const FullEnumerationPoolNodeState&,
+    const FullEnumerationDenseDualVectors&,
+    const std::vector<double>&,
+    double,
+    std::size_t,
+    std::size_t,
+    bool,
+    std::ostream*
+) {
+    throw std::runtime_error(
+        "parallel stage2 backend=onemkl requested, but this build does not include oneMKL."
+    );
+}
+
+#endif
+
 }  // namespace
 
-FullEnumerationPricingPool build_full_enumeration_pricing_pool(
+FullEnumerationStaticPool build_full_enumeration_static_pool(
     const MultiDiGraph& graph,
     const FullEnumerationPoolBuildOptions& options,
-    const std::map<std::string, int>& active_column_id_by_key,
     FullEnumerationPoolBuildStats* stats
 ) {
     const auto start_time = std::chrono::steady_clock::now();
@@ -2134,18 +3369,18 @@ FullEnumerationPricingPool build_full_enumeration_pricing_pool(
     const CompactPStepArtifacts artifacts =
         build_compact_pstep_artifacts(graph, compact_options, nullptr);
 
-    FullEnumerationPricingPool pool;
+    FullEnumerationStaticPool pool;
+    pool.time_limit = options.time_limit;
     std::map<int, std::size_t> entry_index_by_raw_path_id;
-    std::size_t skipped_master_columns = 0;
     std::size_t skipped_duplicate_columns = 0;
+    std::vector<FullEnumerationEntryMatrixBuildData> entry_matrix_build_data;
+    entry_matrix_build_data.reserve(artifacts.raw_paths.size());
+    pool.entry_edge_ids_row_ptr.push_back(0U);
+    pool.entry_node_sequence_row_ptr.push_back(0U);
+    pool.entry_state_sequence_row_ptr.push_back(0U);
 
-    pool.entries.reserve(artifacts.raw_paths.size());
     for (const CompactPStep& pstep : artifacts.compact_psteps) {
         const std::string key = build_column_key(pstep.edge_ids, pstep.tau);
-        if (active_column_id_by_key.find(key) != active_column_id_by_key.end()) {
-            ++skipped_master_columns;
-            continue;
-        }
         if (pool.variant_index_by_key.find(key) != pool.variant_index_by_key.end()) {
             ++skipped_duplicate_columns;
             continue;
@@ -2154,35 +3389,57 @@ FullEnumerationPricingPool build_full_enumeration_pricing_pool(
         std::size_t entry_index = 0;
         const auto found_entry = entry_index_by_raw_path_id.find(pstep.raw_path_id);
         if (found_entry == entry_index_by_raw_path_id.end()) {
-            entry_index = pool.entries.size();
-            pool.entries.push_back(
-                build_full_pool_entry_from_pstep(pool, graph, pstep, artifacts.coefficients)
+            entry_index = full_enumeration_entry_count(pool);
+            append_full_enumeration_entry(
+                pool,
+                entry_matrix_build_data,
+                graph,
+                pstep,
+                artifacts.coefficients
             );
             entry_index_by_raw_path_id.emplace(pstep.raw_path_id, entry_index);
         } else {
             entry_index = found_entry->second;
         }
 
-        FullEnumerationPricingPool::TauVariant variant;
-        variant.tau = pstep.tau;
-        const std::size_t tau_index = pool.entries[entry_index].tau_variants.size();
-        pool.entries[entry_index].tau_variants.push_back(variant);
-        pool.variant_index_by_key.emplace(key, std::make_pair(entry_index, tau_index));
-        ++pool.inactive_column_count;
+        const double latest_start = full_enumeration_entry_latest_start(pool, entry_index);
+        std::size_t tau_index = 0U;
+        if (double_equal(pstep.tau, 0.0)) {
+            tau_index = 0U;
+        } else if (double_equal(pstep.tau, latest_start)) {
+            tau_index = 1U;
+        } else {
+            throw std::runtime_error(
+                "Full-enumeration pool encountered a tau value that is neither 0 nor T-t(entry)."
+            );
+        }
+
+        const std::size_t variant_index =
+            full_enumeration_variant_index(entry_index, tau_index);
+        if (pool.variant_valid[variant_index] != 0U) {
+            throw std::runtime_error(
+                "Full-enumeration pool encountered duplicate tau endpoint for one entry."
+            );
+        }
+        pool.variant_tau[variant_index] = pstep.tau;
+        pool.variant_valid[variant_index] = 1U;
+        pool.variant_index_by_key.emplace(key, variant_index);
     }
 
-    for (std::size_t entry_index = 0; entry_index < pool.entries.size(); ++entry_index) {
-        if (has_inactive_tau_variant(pool.entries[entry_index])) {
-            pool.inactive_entry_indices.push_back(entry_index);
-        }
-    }
+    finalize_full_enumeration_stage1_matrix(
+        pool,
+        entry_matrix_build_data,
+        graph.number_of_edges()
+    );
+    finalize_full_enumeration_stage2_matrix(pool);
+    finalize_full_enumeration_direct_visit_lookup(pool);
 
     if (stats != nullptr) {
         stats->raw_path_count = artifacts.raw_paths.size();
         stats->compact_pstep_count = artifacts.compact_psteps.size();
-        stats->inactive_column_count = pool.inactive_column_count;
-        stats->inactive_path_count = pool.inactive_entry_indices.size();
-        stats->skipped_master_column_count = skipped_master_columns;
+        stats->inactive_column_count = 0U;
+        stats->inactive_path_count = 0U;
+        stats->skipped_master_column_count = 0U;
         stats->skipped_duplicate_column_count = skipped_duplicate_columns;
         stats->runtime_seconds =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
@@ -2191,27 +3448,92 @@ FullEnumerationPricingPool build_full_enumeration_pricing_pool(
     return pool;
 }
 
-ForwardPricingResult run_full_enumeration_pool_pricing(
-    const FullEnumerationPricingPool& pool,
+FullEnumerationPoolNodeState build_full_enumeration_pool_node_state(
+    const FullEnumerationStaticPool& static_pool,
+    const std::map<std::string, int>& active_column_id_by_key,
+    FullEnumerationPoolBuildStats* stats
+) {
+    FullEnumerationPoolNodeState node_state;
+    node_state.variant_active.assign(full_enumeration_variant_count(static_pool), 0U);
+    node_state.forbidden_entry.assign(full_enumeration_entry_count(static_pool), 0U);
+    node_state.entry_available_variant_count.assign(
+        full_enumeration_entry_count(static_pool),
+        0U
+    );
+
+    for (std::size_t variant_index = 0; variant_index < full_enumeration_variant_count(static_pool);
+         ++variant_index) {
+        if (!full_enumeration_variant_is_valid(static_pool, variant_index)) {
+            continue;
+        }
+        const std::size_t entry_index = full_enumeration_variant_entry_index(variant_index);
+        if (node_state.entry_available_variant_count[entry_index] == 0U) {
+            ++node_state.available_entry_count;
+        }
+        ++node_state.entry_available_variant_count[entry_index];
+        ++node_state.available_variant_count;
+    }
+
+    std::size_t skipped_master_columns = 0U;
+    for (const auto& [key, _] : active_column_id_by_key) {
+        const auto found = static_pool.variant_index_by_key.find(key);
+        if (found == static_pool.variant_index_by_key.end()) {
+            continue;
+        }
+        const std::size_t variant_index = found->second;
+        if (!full_enumeration_variant_is_valid(static_pool, variant_index) ||
+            node_state.variant_active[variant_index] != 0U) {
+            continue;
+        }
+        node_state.variant_active[variant_index] = 1U;
+        if (node_state.available_variant_count > 0U) {
+            --node_state.available_variant_count;
+        }
+        const std::size_t entry_index = full_enumeration_variant_entry_index(variant_index);
+        if (node_state.entry_available_variant_count[entry_index] > 0U) {
+            --node_state.entry_available_variant_count[entry_index];
+            if (node_state.entry_available_variant_count[entry_index] == 0U &&
+                node_state.available_entry_count > 0U) {
+                --node_state.available_entry_count;
+            }
+        }
+        ++skipped_master_columns;
+    }
+
+    if (stats != nullptr) {
+        stats->inactive_column_count = node_state.available_variant_count;
+        stats->inactive_path_count = node_state.available_entry_count;
+        stats->skipped_master_column_count = skipped_master_columns;
+    }
+
+    return node_state;
+}
+
+namespace {
+
+ForwardPricingResult run_full_enumeration_pool_pricing_sequential(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationPoolNodeState& node_state,
     const CGDualSolution& dual_solution,
     CGPhase phase,
     double reduced_cost_tolerance,
-    std::size_t max_total_columns
+    std::size_t max_total_columns,
+    bool rc_detail_log_enabled,
+    std::ostream* log_stream
 ) {
     ForwardPricingResult result;
     result.status = ForwardPricingStatus::NoNegativeColumn;
     result.best_reduced_cost = std::numeric_limits<double>::infinity();
 
-    std::vector<double> dense_visit_duals(pool.visit_node_ids.size(), 0.0);
-    for (std::size_t idx = 0; idx < pool.visit_node_ids.size(); ++idx) {
-        dense_visit_duals[idx] = lookup_dual(dual_solution.visit_duals, pool.visit_node_ids[idx]);
-    }
+    const FullEnumerationDenseDualVectors dense_duals =
+        build_full_enumeration_dense_duals(pool, dual_solution);
+    std::vector<double> base_reduced_costs(full_enumeration_entry_count(pool), 0.0);
 
-    std::vector<double> dense_state_duals(pool.node_state_keys.size(), 0.0);
-    std::vector<double> dense_time_duals(pool.node_state_keys.size(), 0.0);
-    for (std::size_t idx = 0; idx < pool.node_state_keys.size(); ++idx) {
-        dense_state_duals[idx] = lookup_dual(dual_solution.state_duals, pool.node_state_keys[idx]);
-        dense_time_duals[idx] = lookup_dual(dual_solution.time_duals, pool.node_state_keys[idx]);
+    if (log_stream != nullptr) {
+        *log_stream << "[full-enum-rc] mode=sequential inactive_entries="
+                    << node_state.available_entry_count
+                    << " inactive_variants=" << node_state.available_variant_count
+                    << " max_total_columns=" << max_total_columns << '\n';
     }
 
     std::priority_queue<
@@ -2220,77 +3542,80 @@ ForwardPricingResult run_full_enumeration_pool_pricing(
         FullPoolWorstReducedCostFirst>
         top_negative_columns;
 
-    for (std::size_t entry_index : pool.inactive_entry_indices) {
-        const FullEnumerationPricingPool::Entry& entry = pool.entries[entry_index];
-        double base_reduced_cost = (phase == CGPhase::PhaseII) ? entry.total_cost : 0.0;
-        for (const auto& term : entry.dense_visit_coefficients) {
-            base_reduced_cost -=
-                static_cast<double>(term.second) *
-                dense_visit_duals[static_cast<std::size_t>(term.first)];
+    for (std::size_t entry_index = 0; entry_index < full_enumeration_entry_count(pool);
+         ++entry_index) {
+        if (full_enumeration_entry_is_forbidden(node_state, entry_index) ||
+            node_state.entry_available_variant_count[entry_index] == 0U) {
+            continue;
         }
-        for (const auto& term : entry.dense_state_coefficients) {
-            base_reduced_cost -=
-                static_cast<double>(term.second) *
-                dense_state_duals[static_cast<std::size_t>(term.first)];
-        }
-        for (int edge_id : entry.edge_incidence) {
-            if (edge_id >= 0 && static_cast<std::size_t>(edge_id) < dual_solution.edge_duals.size()) {
-                base_reduced_cost -= dual_solution.edge_duals[static_cast<std::size_t>(edge_id)];
-            }
-        }
-
-        for (std::size_t tau_index = 0; tau_index < entry.tau_variants.size(); ++tau_index) {
-            const FullEnumerationPricingPool::TauVariant& variant = entry.tau_variants[tau_index];
-            if (variant.active) {
-                continue;
-            }
-            double reduced_cost = base_reduced_cost;
-            if (entry.start_time_index >= 0) {
-                reduced_cost -=
-                    variant.tau *
-                    dense_time_duals[static_cast<std::size_t>(entry.start_time_index)];
-            }
-            if (entry.last_time_index >= 0) {
-                reduced_cost +=
-                    (variant.tau + entry.total_time) *
-                    dense_time_duals[static_cast<std::size_t>(entry.last_time_index)];
-            }
-
-            result.best_reduced_cost = std::min(result.best_reduced_cost, reduced_cost);
-            if (reduced_cost < reduced_cost_tolerance) {
-                ++result.total_negative_column_count;
-                FullPoolSelection selection{reduced_cost, entry_index, tau_index};
-                if (top_negative_columns.size() < max_total_columns) {
-                    top_negative_columns.push(selection);
-                } else if (max_total_columns > 0U &&
-                           reduced_cost < top_negative_columns.top().reduced_cost) {
-                    top_negative_columns.pop();
-                    top_negative_columns.push(selection);
-                }
-            }
+        const FullEnumerationBaseRCBreakdown breakdown =
+            compute_full_enumeration_entry_base_reduced_cost(
+                pool,
+                dense_duals,
+                phase,
+                entry_index
+            );
+        base_reduced_costs[entry_index] = breakdown.base_reduced_cost;
+        if (rc_detail_log_enabled &&
+            log_stream != nullptr &&
+            node_state.entry_available_variant_count[entry_index] > 0U) {
+            *log_stream << "[full-enum-rc] mode=sequential stage=entry entry=" << entry_index
+                        << " cost_term=" << format_double(breakdown.entry_cost_term)
+                        << " visit_part=" << format_double(breakdown.visit_contribution)
+                        << " state_part=" << format_double(breakdown.state_contribution)
+                        << " edge_part=" << format_double(breakdown.edge_contribution)
+                        << " base_rc=" << format_double(breakdown.base_reduced_cost)
+                        << '\n';
         }
     }
 
-    std::vector<FullPoolSelection> selected;
-    selected.reserve(top_negative_columns.size());
-    while (!top_negative_columns.empty()) {
-        selected.push_back(top_negative_columns.top());
-        top_negative_columns.pop();
-    }
-    std::sort(
-        selected.begin(),
-        selected.end(),
-        [](const FullPoolSelection& lhs, const FullPoolSelection& rhs) {
-            return lhs.reduced_cost < rhs.reduced_cost;
+    for (std::size_t variant_index = 0; variant_index < full_enumeration_variant_count(pool);
+         ++variant_index) {
+        if (!full_enumeration_variant_is_available(pool, node_state, variant_index)) {
+            continue;
         }
-    );
+        const std::size_t entry_index = full_enumeration_variant_entry_index(variant_index);
+        const FullEnumerationVariantRCBreakdown breakdown =
+            compute_full_enumeration_variant_reduced_cost(
+                pool,
+                dense_duals,
+                base_reduced_costs,
+                variant_index
+            );
+        result.best_reduced_cost = std::min(result.best_reduced_cost, breakdown.reduced_cost);
+        if (rc_detail_log_enabled && log_stream != nullptr) {
+            *log_stream << "[full-enum-rc] mode=sequential stage=variant entry="
+                        << entry_index
+                        << " tau_index=" << full_enumeration_variant_tau_index(variant_index)
+                        << " tau=" << format_double(pool.variant_tau[variant_index])
+                        << " base_rc=" << format_double(breakdown.base_reduced_cost)
+                        << " start_time_part="
+                        << format_double(breakdown.start_time_contribution)
+                        << " end_time_part="
+                        << format_double(breakdown.end_time_contribution)
+                        << " rc=" << format_double(breakdown.reduced_cost)
+                        << " negative="
+                        << (breakdown.reduced_cost < reduced_cost_tolerance ? 1 : 0)
+                        << '\n';
+        }
+
+        if (breakdown.reduced_cost < reduced_cost_tolerance) {
+            ++result.total_negative_column_count;
+            FullPoolSelection selection{
+                breakdown.reduced_cost,
+                variant_index,
+                entry_index,
+                full_enumeration_variant_tau_index(variant_index),
+            };
+            maybe_push_full_pool_top_k(top_negative_columns, selection, max_total_columns);
+        }
+    }
+
+    std::vector<FullPoolSelection> selected = extract_full_pool_top_k(top_negative_columns);
+    std::sort(selected.begin(), selected.end(), full_pool_selection_less);
 
     for (const FullPoolSelection& selection : selected) {
-        const auto& entry = pool.entries[selection.entry_index];
-        const auto& variant = entry.tau_variants[selection.tau_index];
-        result.columns.push_back(
-            build_column_from_full_pool_selection(entry, variant, selection.reduced_cost)
-        );
+        result.columns.push_back(build_column_from_full_pool_selection(pool, selection));
     }
 
     if (!std::isfinite(result.best_reduced_cost)) {
@@ -2299,30 +3624,232 @@ ForwardPricingResult run_full_enumeration_pool_pricing(
     result.status = result.columns.empty()
                         ? ForwardPricingStatus::NoNegativeColumn
                         : ForwardPricingStatus::ColumnsFound;
+
+    if (log_stream != nullptr) {
+        log_full_enumeration_pool_selection_summary(
+            *log_stream,
+            "sequential",
+            result.total_negative_column_count,
+            result.columns.size(),
+            result.best_reduced_cost
+        );
+    }
     return result;
 }
 
+ForwardPricingResult run_full_enumeration_pool_pricing_parallel(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationPoolNodeState& node_state,
+    const CGDualSolution& dual_solution,
+    CGPhase phase,
+    double reduced_cost_tolerance,
+    std::size_t max_total_columns,
+    FullEnumerationRCUpdateBackend parallel_stage1_backend,
+    FullEnumerationRCUpdateBackend parallel_stage2_backend,
+    std::size_t requested_thread_count,
+    bool rc_detail_log_enabled,
+    std::ostream* log_stream
+) {
+    ForwardPricingResult result;
+    result.status = ForwardPricingStatus::NoNegativeColumn;
+    result.best_reduced_cost = std::numeric_limits<double>::infinity();
+
+    const FullEnumerationDenseDualVectors dense_duals =
+        build_full_enumeration_dense_duals(pool, dual_solution);
+    std::vector<double> base_reduced_costs(full_enumeration_entry_count(pool), 0.0);
+
+    const std::size_t entry_thread_count =
+        resolve_full_enumeration_thread_count(
+            requested_thread_count,
+            full_enumeration_entry_count(pool)
+        );
+    const std::size_t variant_thread_count =
+        resolve_full_enumeration_thread_count(
+            requested_thread_count,
+            full_enumeration_variant_count(pool)
+        );
+
+    if (log_stream != nullptr) {
+        *log_stream << "[full-enum-rc] mode=parallel inactive_entries="
+                    << node_state.available_entry_count
+                    << " inactive_variants=" << node_state.available_variant_count
+                    << " requested_threads=" << requested_thread_count
+                    << " entry_threads=" << entry_thread_count
+                    << " variant_threads=" << variant_thread_count
+                    << " max_total_columns=" << max_total_columns
+                    << " stage1_backend=" << to_string(parallel_stage1_backend)
+                    << " stage2_backend=" << to_string(parallel_stage2_backend)
+                    << " selection=top-k\n";
+    }
+
+    switch (parallel_stage1_backend) {
+        case FullEnumerationRCUpdateBackend::Custom:
+            compute_full_enumeration_stage1_custom(
+                pool,
+                node_state,
+                dense_duals,
+                phase,
+                requested_thread_count,
+                base_reduced_costs,
+                rc_detail_log_enabled,
+                log_stream
+            );
+            break;
+        case FullEnumerationRCUpdateBackend::OneMKL:
+            compute_full_enumeration_stage1_onemkl(
+                pool,
+                node_state,
+                dense_duals,
+                phase,
+                requested_thread_count,
+                base_reduced_costs,
+                rc_detail_log_enabled,
+                log_stream
+            );
+            break;
+    }
+
+    FullEnumerationParallelStage2ScanResult stage2_result;
+    switch (parallel_stage2_backend) {
+        case FullEnumerationRCUpdateBackend::Custom:
+            stage2_result = compute_full_enumeration_stage2_custom(
+                pool,
+                node_state,
+                dense_duals,
+                base_reduced_costs,
+                reduced_cost_tolerance,
+                max_total_columns,
+                requested_thread_count,
+                rc_detail_log_enabled,
+                log_stream
+            );
+            break;
+        case FullEnumerationRCUpdateBackend::OneMKL:
+            stage2_result = compute_full_enumeration_stage2_onemkl(
+                pool,
+                node_state,
+                dense_duals,
+                base_reduced_costs,
+                reduced_cost_tolerance,
+                max_total_columns,
+                requested_thread_count,
+                rc_detail_log_enabled,
+                log_stream
+            );
+            break;
+    }
+
+    std::vector<FullPoolSelection> selected = std::move(stage2_result.negative_selections);
+    result.total_negative_column_count = stage2_result.total_negative_column_count;
+    result.best_reduced_cost = stage2_result.best_reduced_cost;
+    std::sort(selected.begin(), selected.end(), full_pool_selection_less);
+
+    result.columns.reserve(selected.size());
+    for (const FullPoolSelection& selection : selected) {
+        result.columns.push_back(build_column_from_full_pool_selection(pool, selection));
+    }
+
+    if (!std::isfinite(result.best_reduced_cost)) {
+        result.best_reduced_cost = 0.0;
+    }
+    result.status = result.columns.empty()
+                        ? ForwardPricingStatus::NoNegativeColumn
+                        : ForwardPricingStatus::ColumnsFound;
+
+    if (log_stream != nullptr) {
+        log_full_enumeration_pool_selection_summary(
+            *log_stream,
+            "parallel",
+            result.total_negative_column_count,
+            result.columns.size(),
+            result.best_reduced_cost
+        );
+    }
+    return result;
+}
+
+}  // namespace
+
+ForwardPricingResult run_full_enumeration_pool_pricing(
+    const FullEnumerationStaticPool& pool,
+    const FullEnumerationPoolNodeState& node_state,
+    const CGDualSolution& dual_solution,
+    CGPhase phase,
+    double reduced_cost_tolerance,
+    std::size_t max_total_columns,
+    FullEnumerationRCUpdateMode rc_update_mode,
+    FullEnumerationRCUpdateBackend parallel_stage1_backend,
+    FullEnumerationRCUpdateBackend parallel_stage2_backend,
+    std::size_t requested_thread_count,
+    bool rc_detail_log_enabled,
+    std::ostream* log_stream
+) {
+    switch (rc_update_mode) {
+        case FullEnumerationRCUpdateMode::Sequential:
+            return run_full_enumeration_pool_pricing_sequential(
+                pool,
+                node_state,
+                dual_solution,
+                phase,
+                reduced_cost_tolerance,
+                max_total_columns,
+                rc_detail_log_enabled,
+                log_stream
+            );
+        case FullEnumerationRCUpdateMode::Parallel:
+            return run_full_enumeration_pool_pricing_parallel(
+                pool,
+                node_state,
+                dual_solution,
+                phase,
+                reduced_cost_tolerance,
+                max_total_columns,
+                parallel_stage1_backend,
+                parallel_stage2_backend,
+                requested_thread_count,
+                rc_detail_log_enabled,
+                log_stream
+            );
+    }
+    throw std::runtime_error("Unsupported full-enumeration RC update mode.");
+}
+
 void mark_full_enumeration_pool_columns_active(
-    FullEnumerationPricingPool& pool,
+    const FullEnumerationStaticPool& pool,
+    FullEnumerationPoolNodeState& node_state,
     const std::vector<CGColumn>& columns
 ) {
     for (const CGColumn& column : columns) {
-        const std::string key = build_column_key(column.edge_ids, column.tau);
-        const auto found = pool.variant_index_by_key.find(key);
-        if (found == pool.variant_index_by_key.end()) {
+        std::size_t variant_index = std::numeric_limits<std::size_t>::max();
+        if (column.pool_variant_index >= 0 &&
+            static_cast<std::size_t>(column.pool_variant_index) < full_enumeration_variant_count(pool)) {
+            variant_index = static_cast<std::size_t>(column.pool_variant_index);
+        } else {
+            const std::string key = build_column_key(column.edge_ids, column.tau);
+            const auto found = pool.variant_index_by_key.find(key);
+            if (found == pool.variant_index_by_key.end()) {
+                continue;
+            }
+            variant_index = found->second;
+        }
+
+        if (!full_enumeration_variant_is_available(pool, node_state, variant_index)) {
             continue;
         }
-        const std::size_t entry_index = found->second.first;
-        const std::size_t tau_index = found->second.second;
-        auto& variant = pool.entries[entry_index].tau_variants[tau_index];
-        if (!variant.active) {
-            variant.active = true;
-            if (pool.inactive_column_count > 0U) {
-                --pool.inactive_column_count;
+
+        node_state.variant_active[variant_index] = 1U;
+        if (node_state.available_variant_count > 0U) {
+            --node_state.available_variant_count;
+        }
+        const std::size_t entry_index = full_enumeration_variant_entry_index(variant_index);
+        if (node_state.entry_available_variant_count[entry_index] > 0U) {
+            --node_state.entry_available_variant_count[entry_index];
+            if (node_state.entry_available_variant_count[entry_index] == 0U &&
+                node_state.available_entry_count > 0U) {
+                --node_state.available_entry_count;
             }
         }
     }
-    compact_inactive_full_pool_entries(pool);
 }
 
 void write_generated_columns(
@@ -2421,6 +3948,26 @@ const char* to_string(HeuristicStartScoreMode mode) {
     switch (mode) {
         case HeuristicStartScoreMode::OneStepMin:
             return "one-step-min";
+    }
+    return "unknown";
+}
+
+const char* to_string(FullEnumerationRCUpdateMode mode) {
+    switch (mode) {
+        case FullEnumerationRCUpdateMode::Sequential:
+            return "sequential";
+        case FullEnumerationRCUpdateMode::Parallel:
+            return "parallel";
+    }
+    return "unknown";
+}
+
+const char* to_string(FullEnumerationRCUpdateBackend backend) {
+    switch (backend) {
+        case FullEnumerationRCUpdateBackend::Custom:
+            return "custom";
+        case FullEnumerationRCUpdateBackend::OneMKL:
+            return "onemkl";
     }
     return "unknown";
 }

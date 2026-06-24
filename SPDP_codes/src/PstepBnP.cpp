@@ -2654,33 +2654,45 @@ bool run_node_pricing_phase(
     bool has_last_solved_snapshot = false;
     std::vector<PhaseTwoColumnPoolEntry> phase_two_column_pool;
     std::unordered_map<std::string, std::size_t> phase_two_pool_index_by_key;
-    FullEnumerationPricingPool full_enumeration_pool;
+    FullEnumerationStaticPool full_enumeration_static_pool;
+    FullEnumerationPoolNodeState full_enumeration_node_state;
     const bool use_full_enumeration_pool =
         phase == CGPhase::PhaseII &&
         options.phase_two_pricing_mode == NodeCGPhaseTwoPricingMode::FullEnumeration;
 
     if (use_full_enumeration_pool) {
+        const auto pool_build_start_time = std::chrono::steady_clock::now();
         FullEnumerationPoolBuildOptions pool_options;
         pool_options.p = options.p;
         pool_options.time_limit = options.time_limit;
         pool_options.prune_pickup_symmetry_43 = options.prune_pickup_symmetry_43;
         pool_options.prune_delivery_symmetry_43 = options.prune_delivery_symmetry_43;
-        FullEnumerationPoolBuildStats pool_stats;
-        full_enumeration_pool = build_full_enumeration_pricing_pool(
+        FullEnumerationPoolBuildStats static_pool_stats;
+        full_enumeration_static_pool = build_full_enumeration_static_pool(
             graph,
             pool_options,
+            &static_pool_stats
+        );
+        FullEnumerationPoolBuildStats node_state_stats = static_pool_stats;
+        full_enumeration_node_state = build_full_enumeration_pool_node_state(
+            full_enumeration_static_pool,
             master_problem.column_id_by_key,
-            &pool_stats
+            &node_state_stats
         );
         if (log_stream != nullptr) {
+            const double total_pool_build_runtime =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - pool_build_start_time
+                )
+                    .count();
             *log_stream << "[node-cg] phase2 full-enumeration pool raw_paths="
-                        << pool_stats.raw_path_count
-                        << " compact_psteps=" << pool_stats.compact_pstep_count
-                        << " pool_size=" << pool_stats.inactive_column_count
-                        << " inactive_paths=" << pool_stats.inactive_path_count
-                        << " skipped_master=" << pool_stats.skipped_master_column_count
-                        << " skipped_duplicate=" << pool_stats.skipped_duplicate_column_count
-                        << " build_runtime=" << format_double(pool_stats.runtime_seconds)
+                        << static_pool_stats.raw_path_count
+                        << " compact_psteps=" << static_pool_stats.compact_pstep_count
+                        << " pool_size=" << node_state_stats.inactive_column_count
+                        << " inactive_paths=" << node_state_stats.inactive_path_count
+                        << " skipped_master=" << node_state_stats.skipped_master_column_count
+                        << " skipped_duplicate=" << static_pool_stats.skipped_duplicate_column_count
+                        << " build_runtime=" << format_double(total_pool_build_runtime)
                         << '\n';
         }
     }
@@ -2731,7 +2743,7 @@ bool run_node_pricing_phase(
             options.phase_two_column_pool_enabled || use_full_enumeration_pool;
         iteration_log.column_pool_max_reprice =
             use_full_enumeration_pool
-                ? full_enumeration_pool.inactive_column_count
+                ? full_enumeration_node_state.available_variant_count
                 : options.phase_two_column_pool_max_reprice;
 
         if (log_stream != nullptr) {
@@ -2772,13 +2784,20 @@ bool run_node_pricing_phase(
         std::vector<CGColumn> columns_to_add_to_pool;
         if (use_full_enumeration_pool) {
             iteration_log.column_pool_size_before_reprice =
-                full_enumeration_pool.inactive_column_count;
+                full_enumeration_node_state.available_variant_count;
             pricing_result = run_full_enumeration_pool_pricing(
-                full_enumeration_pool,
+                full_enumeration_static_pool,
+                full_enumeration_node_state,
                 dual_solution,
                 phase,
                 options.reduced_cost_tolerance,
-                options.exact_pricing_max_total_columns_per_round
+                options.exact_pricing_max_total_columns_per_round,
+                options.full_enumeration_rc_update_mode,
+                options.full_enumeration_parallel_stage1_backend,
+                options.full_enumeration_parallel_stage2_backend,
+                options.full_enumeration_rc_update_threads,
+                options.full_enumeration_rc_detail_log,
+                log_stream
             );
             iteration_log.column_pool_found_column_count = pricing_result.columns.size();
         } else if (phase == CGPhase::PhaseII &&
@@ -2958,7 +2977,8 @@ bool run_node_pricing_phase(
             add_columns_to_cg_master(master_problem, pricing_result.columns);
         if (use_full_enumeration_pool && added_columns > 0U) {
             mark_full_enumeration_pool_columns_active(
-                full_enumeration_pool,
+                full_enumeration_static_pool,
+                full_enumeration_node_state,
                 pricing_result.columns
             );
         }
@@ -2979,7 +2999,7 @@ bool run_node_pricing_phase(
             (options.phase_two_column_pool_enabled || use_full_enumeration_pool)) {
             iteration_log.column_pool_size_after_update =
                 use_full_enumeration_pool
-                    ? full_enumeration_pool.inactive_column_count
+                    ? full_enumeration_node_state.available_variant_count
                     : phase_two_column_pool.size();
         }
         iteration_log.added_column_count = added_columns;

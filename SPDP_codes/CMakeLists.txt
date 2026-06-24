@@ -5,6 +5,8 @@ project(SPDP_P_step_project LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(SPDP_ENABLE_ONEMKL "Enable optional Intel oneMKL backend support" OFF)
+
 set(GUROBI_HOME "/opt/gurobi1301/linux64" CACHE PATH "Path to the Gurobi installation")
 set(GUROBI_INCLUDE_DIR "${GUROBI_HOME}/include")
 set(GUROBI_CPP_DIR "${GUROBI_HOME}/src/cpp")
@@ -47,6 +49,27 @@ add_executable(SPDP_P_step
 target_include_directories(SPDP_P_step PRIVATE include "${GUROBI_INCLUDE_DIR}" "${GUROBI_CPP_DIR}")
 target_link_libraries(SPDP_P_step PRIVATE "${GUROBI_CORE_LIB}")
 
+set(SPDP_BUILD_RPATH "${GUROBI_LIB_DIR}")
+
+if(SPDP_ENABLE_ONEMKL)
+    if(NOT MKL_DIR AND DEFINED ENV{MKLROOT})
+        set(MKL_DIR "$ENV{MKLROOT}/lib/cmake/mkl" CACHE PATH "Path to MKLConfig.cmake")
+    endif()
+
+    find_package(MKL CONFIG REQUIRED)
+    message(STATUS "Intel oneMKL enabled via MKL_DIR=${MKL_DIR}")
+    target_compile_definitions(SPDP_P_step PRIVATE SPDP_HAVE_ONEMKL=1)
+    target_link_libraries(SPDP_P_step PRIVATE MKL::MKL)
+
+    if(DEFINED MKL_ROOT)
+        list(APPEND SPDP_BUILD_RPATH "${MKL_ROOT}/lib")
+        get_filename_component(SPDP_ONEAPI_ROOT "${MKL_ROOT}/../.." ABSOLUTE)
+        list(APPEND SPDP_BUILD_RPATH "${SPDP_ONEAPI_ROOT}/compiler/latest/lib")
+    endif()
+else()
+    message(STATUS "Intel oneMKL backend support disabled")
+endif()
+
 set_target_properties(SPDP_P_step PROPERTIES
-    BUILD_RPATH "${GUROBI_LIB_DIR}"
+    BUILD_RPATH "${SPDP_BUILD_RPATH}"
 )

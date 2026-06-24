@@ -15,7 +15,7 @@ fi
 # ============================================
 P=2
 SOLVER_MODE=root-cg # Options: enumeration, root-cg
-NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg
+NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
 SOLVER_TIME_LIMIT=120
 GUROBI_THREADS=0
@@ -57,6 +57,11 @@ PHASE2_SHALLOW_K2=2
 PHASE2_COLUMN_POOL_ENABLE=0
 PHASE2_COLUMN_POOL_MAX_SIZE=100000
 PHASE2_COLUMN_POOL_MAX_REPRICE=10000
+FULL_ENUMERATION_RC_UPDATE_MODE=sequential # Options: sequential, parallel
+FULL_ENUMERATION_PARALLEL_STAGE1_BACKEND=custom # Options: custom, onemkl
+FULL_ENUMERATION_PARALLEL_STAGE2_BACKEND=custom # Options: custom, onemkl
+FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
+FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
     "RecDep_day_B1.dat"
     "RecDep_day_B2.dat"
@@ -145,6 +150,11 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "phase2-column-pool-enable: $PHASE2_COLUMN_POOL_ENABLE"
         echo "phase2-column-pool-max-size: $PHASE2_COLUMN_POOL_MAX_SIZE"
         echo "phase2-column-pool-max-reprice: $PHASE2_COLUMN_POOL_MAX_REPRICE"
+        echo "full-enumeration-rc-update-mode: $FULL_ENUMERATION_RC_UPDATE_MODE"
+        echo "full-enumeration-parallel-stage1-backend: $FULL_ENUMERATION_PARALLEL_STAGE1_BACKEND"
+        echo "full-enumeration-parallel-stage2-backend: $FULL_ENUMERATION_PARALLEL_STAGE2_BACKEND"
+        echo "full-enumeration-rc-update-threads: $FULL_ENUMERATION_RC_UPDATE_THREADS"
+        echo "full-enumeration-rc-detail-log: $FULL_ENUMERATION_RC_DETAIL_LOG"
         echo "prune-pickup-symmetry-43: $PRUNE_PICKUP_SYMMETRY_43"
         echo "prune-delivery-symmetry-43: $PRUNE_DELIVERY_SYMMETRY_43"
         echo "----------------------------------------"
@@ -194,7 +204,12 @@ for data_name in "${DATA_LIST[@]}"; do
         --phase2-shallow-k2 "$PHASE2_SHALLOW_K2" \
         --phase2-column-pool-enable "$PHASE2_COLUMN_POOL_ENABLE" \
         --phase2-column-pool-max-size "$PHASE2_COLUMN_POOL_MAX_SIZE" \
-        --phase2-column-pool-max-reprice "$PHASE2_COLUMN_POOL_MAX_REPRICE" >> "$RUNNER_LOG" 2>&1; then
+        --phase2-column-pool-max-reprice "$PHASE2_COLUMN_POOL_MAX_REPRICE" \
+        --full-enumeration-rc-update-mode "$FULL_ENUMERATION_RC_UPDATE_MODE" \
+        --full-enumeration-parallel-stage1-backend "$FULL_ENUMERATION_PARALLEL_STAGE1_BACKEND" \
+        --full-enumeration-parallel-stage2-backend "$FULL_ENUMERATION_PARALLEL_STAGE2_BACKEND" \
+        --full-enumeration-rc-update-threads "$FULL_ENUMERATION_RC_UPDATE_THREADS" \
+        --full-enumeration-rc-detail-log "$FULL_ENUMERATION_RC_DETAIL_LOG" >> "$RUNNER_LOG" 2>&1; then
         echo "Completed: $data_name"
         {
             echo "Finished at: $(date '+%Y-%m-%d %H:%M:%S')"

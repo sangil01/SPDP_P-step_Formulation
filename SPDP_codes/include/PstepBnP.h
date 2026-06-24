@@ -121,6 +121,16 @@ struct NodeCGOptions {
     bool phase_two_column_pool_enabled = false;
     std::size_t phase_two_column_pool_max_size = 5000;
     std::size_t phase_two_column_pool_max_reprice = 256;
+
+    // Full-enumeration pool RC update engine and worker count.
+    FullEnumerationRCUpdateMode full_enumeration_rc_update_mode =
+        FullEnumerationRCUpdateMode::Sequential;
+    FullEnumerationRCUpdateBackend full_enumeration_parallel_stage1_backend =
+        FullEnumerationRCUpdateBackend::Custom;
+    FullEnumerationRCUpdateBackend full_enumeration_parallel_stage2_backend =
+        FullEnumerationRCUpdateBackend::Custom;
+    std::size_t full_enumeration_rc_update_threads = 0;
+    bool full_enumeration_rc_detail_log = true;
 };
 
 // 한 CG iteration의 phase / LP / pricing 결과 요약.

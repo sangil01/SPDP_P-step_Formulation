@@ -2,6 +2,7 @@
 #define SPDP_PSTEP_PRICING_H
 
 #include <cstddef>
+#include <cstdint>
 #include <iosfwd>
 #include <map>
 #include <optional>
@@ -102,6 +103,10 @@ struct CGColumn {
 
     // column generation 당시의 reduced cost.
     double reduced_cost = 0.0;
+
+    // full-enumeration matrix pool에서 왔을 때의 variant row index.
+    // 다른 pricing 경로에서 생성된 column이면 -1이다.
+    int pool_variant_index = -1;
 
     // 경로 복원 및 디버깅용 sequence 정보.
     std::vector<int> edge_ids;
@@ -307,45 +312,74 @@ struct FullEnumerationPoolBuildStats {
     double runtime_seconds = 0.0;
 };
 
-struct FullEnumerationPricingPool {
-    struct TauVariant {
-        double tau = 0.0;
-        bool active = false;
+enum class FullEnumerationRCUpdateMode {
+    Sequential,
+    Parallel,
+};
+
+enum class FullEnumerationRCUpdateBackend {
+    Custom,
+    OneMKL,
+};
+
+struct FullEnumerationStaticPool {
+    struct CSRMatrix {
+        std::vector<std::size_t> row_ptr;
+        std::vector<int> column_index;
+        std::vector<double> value;
+        std::size_t column_count = 0;
     };
 
-    struct Entry {
-        int q = 0;
-        NodeId start_node_id = 0;
-        NodeId last_node_id = 0;
-        State start_state{};
-        State last_state{};
-        double total_time = 0.0;
-        double total_cost = 0.0;
-        std::vector<int> edge_ids;
-        std::vector<NodeId> node_sequence;
-        std::vector<State> state_sequence;
-
-        std::vector<std::pair<NodeId, int>> visit_coefficients;
-        std::vector<std::pair<NodeStateKey, int>> state_coefficients;
-        std::vector<std::pair<int, int>> dense_visit_coefficients;
-        std::vector<std::pair<int, int>> dense_state_coefficients;
-        std::vector<int> edge_incidence;
-
-        int start_time_index = -1;
-        int last_time_index = -1;
-        NodeStateKey start_time_key{};
-        NodeStateKey last_time_key{};
-        std::vector<TauVariant> tau_variants;
-    };
+    double time_limit = 0.0;
 
     std::vector<NodeId> visit_node_ids;
     std::vector<NodeStateKey> node_state_keys;
     std::map<NodeId, int> visit_index_by_node;
     std::map<NodeStateKey, int> node_state_index_by_key;
-    std::vector<Entry> entries;
-    std::vector<std::size_t> inactive_entry_indices;
-    std::unordered_map<std::string, std::pair<std::size_t, std::size_t>> variant_index_by_key;
-    std::size_t inactive_column_count = 0;
+    std::vector<int> dense_visit_row_index_by_node_id;
+
+    std::vector<int> entry_q;
+    std::vector<NodeId> entry_start_node_id;
+    std::vector<NodeId> entry_last_node_id;
+    std::vector<State> entry_start_state;
+    std::vector<State> entry_last_state;
+    std::vector<double> entry_total_time;
+    std::vector<double> entry_total_cost;
+    std::vector<int> entry_start_time_row_index;
+    std::vector<int> entry_last_time_row_index;
+
+    std::vector<std::size_t> entry_edge_ids_row_ptr;
+    std::vector<int> entry_edge_ids;
+    std::vector<std::size_t> entry_node_sequence_row_ptr;
+    std::vector<NodeId> entry_node_sequence;
+    std::vector<std::size_t> entry_state_sequence_row_ptr;
+    std::vector<State> entry_state_sequence;
+
+    // stage 1:
+    // rows = entries, columns = [visit rows | state rows | edge rows]
+    CSRMatrix stage1_matrix;
+    std::size_t stage1_visit_column_count = 0;
+    std::size_t stage1_state_column_count = 0;
+    std::size_t stage1_edge_column_count = 0;
+
+    // entry마다 최대 2개의 tau slot을 고정 배치한다.
+    // variant row v = 2 * entry + slot, slot in {0,1}.
+    std::vector<double> variant_tau;
+    std::vector<std::uint8_t> variant_valid;
+
+    // stage 2:
+    // rows = variants, columns = [base_rc(entry) | time rows]
+    CSRMatrix stage2_matrix;
+
+    std::unordered_map<std::string, std::size_t> variant_index_by_key;
+};
+
+struct FullEnumerationPoolNodeState {
+    std::vector<std::uint8_t> variant_active;
+    std::vector<std::uint8_t> forbidden_entry;
+    std::vector<std::size_t> entry_available_variant_count;
+    std::size_t available_entry_count = 0;
+    std::size_t available_variant_count = 0;
 };
 
 // forward pricing에 필요한 graph / state-space 전처리 결과를 생성한다.
@@ -374,23 +408,36 @@ ForwardPricingResult run_phase_two_shallow_search(
     const ForwardPricingOptions& options
 );
 
-FullEnumerationPricingPool build_full_enumeration_pricing_pool(
+FullEnumerationStaticPool build_full_enumeration_static_pool(
     const MultiDiGraph& graph,
     const FullEnumerationPoolBuildOptions& options,
+    FullEnumerationPoolBuildStats* stats = nullptr
+);
+
+FullEnumerationPoolNodeState build_full_enumeration_pool_node_state(
+    const FullEnumerationStaticPool& static_pool,
     const std::map<std::string, int>& active_column_id_by_key,
     FullEnumerationPoolBuildStats* stats = nullptr
 );
 
 ForwardPricingResult run_full_enumeration_pool_pricing(
-    const FullEnumerationPricingPool& pool,
+    const FullEnumerationStaticPool& static_pool,
+    const FullEnumerationPoolNodeState& node_state,
     const CGDualSolution& dual_solution,
     CGPhase phase,
     double reduced_cost_tolerance,
-    std::size_t max_total_columns
+    std::size_t max_total_columns,
+    FullEnumerationRCUpdateMode rc_update_mode,
+    FullEnumerationRCUpdateBackend parallel_stage1_backend,
+    FullEnumerationRCUpdateBackend parallel_stage2_backend,
+    std::size_t requested_thread_count,
+    bool rc_detail_log_enabled,
+    std::ostream* log_stream = nullptr
 );
 
 void mark_full_enumeration_pool_columns_active(
-    FullEnumerationPricingPool& pool,
+    const FullEnumerationStaticPool& static_pool,
+    FullEnumerationPoolNodeState& node_state,
     const std::vector<CGColumn>& columns
 );
 
@@ -416,6 +463,8 @@ void write_generated_columns(std::ostream& out, const std::vector<CGColumn>& col
 // CLI/logging용 pricing status 이름.
 const char* to_string(ForwardPricingStatus status);
 const char* to_string(HeuristicStartScoreMode mode);
+const char* to_string(FullEnumerationRCUpdateMode mode);
+const char* to_string(FullEnumerationRCUpdateBackend backend);
 
 }  // namespace spdp
 

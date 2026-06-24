@@ -10,7 +10,9 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_C_COMPILER": "/usr/bin/gcc",
         "CMAKE_CXX_COMPILER": "/usr/bin/g++",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "SPDP_ENABLE_ONEMKL": "ON",
+        "MKL_DIR": "$env{HOME}/intel/oneapi/mkl/latest/lib/cmake/mkl"
       }
     },
     {
@@ -22,7 +24,9 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "/usr/bin/gcc",
         "CMAKE_CXX_COMPILER": "/usr/bin/g++",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "SPDP_ENABLE_ONEMKL": "ON",
+        "MKL_DIR": "$env{HOME}/intel/oneapi/mkl/latest/lib/cmake/mkl"
       }
     }
   ],

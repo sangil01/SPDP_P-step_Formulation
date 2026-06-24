@@ -66,6 +66,11 @@ struct CliOptions {
     int phase_two_column_pool_enable = 0;
     int phase_two_column_pool_max_size = 5000;
     int phase_two_column_pool_max_reprice = 256;
+    std::string full_enumeration_rc_update_mode = "sequential";
+    std::string full_enumeration_parallel_stage1_backend = "custom";
+    std::string full_enumeration_parallel_stage2_backend = "custom";
+    int full_enumeration_rc_update_threads = 0;
+    int full_enumeration_rc_detail_log = 1;
 };
 
 void print_usage(const char* executable) {
@@ -104,7 +109,12 @@ void print_usage(const char* executable) {
               << " [--phase2-shallow-k1 N] [--phase2-shallow-k2 N]"
               << " [--phase2-column-pool-enable 0|1]"
               << " [--phase2-column-pool-max-size N]"
-              << " [--phase2-column-pool-max-reprice N]\n";
+              << " [--phase2-column-pool-max-reprice N]"
+              << " [--full-enumeration-rc-update-mode sequential|parallel]"
+              << " [--full-enumeration-parallel-stage1-backend custom|onemkl]"
+              << " [--full-enumeration-parallel-stage2-backend custom|onemkl]"
+              << " [--full-enumeration-rc-update-threads N]"
+              << " [--full-enumeration-rc-detail-log 0|1]\n";
 }
 
 int parse_int(const std::string& value, const std::string& field_name) {
@@ -189,6 +199,26 @@ std::string parse_phase_two_heuristic_engine(const std::string& value) {
     throw std::runtime_error(
         "Invalid value for --phase2-heuristic-engine: " + value +
         " (expected labeling or shallow-search)"
+    );
+}
+
+std::string parse_full_enumeration_rc_update_mode(const std::string& value) {
+    if (value == "sequential" || value == "parallel") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --full-enumeration-rc-update-mode: " + value +
+        " (expected sequential or parallel)"
+    );
+}
+
+std::string parse_full_enumeration_parallel_backend(const std::string& value) {
+    if (value == "custom" || value == "onemkl") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for full-enumeration parallel backend: " + value +
+        " (expected custom or onemkl)"
     );
 }
 
@@ -580,6 +610,72 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--full-enumeration-rc-update-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--full-enumeration-rc-update-mode requires a value."
+                );
+            }
+            options.full_enumeration_rc_update_mode =
+                parse_full_enumeration_rc_update_mode(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--full-enumeration-parallel-stage1-backend") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--full-enumeration-parallel-stage1-backend requires a value."
+                );
+            }
+            options.full_enumeration_parallel_stage1_backend =
+                parse_full_enumeration_parallel_backend(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--full-enumeration-parallel-stage2-backend") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--full-enumeration-parallel-stage2-backend requires a value."
+                );
+            }
+            options.full_enumeration_parallel_stage2_backend =
+                parse_full_enumeration_parallel_backend(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--full-enumeration-rc-update-threads") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--full-enumeration-rc-update-threads requires a value."
+                );
+            }
+            options.full_enumeration_rc_update_threads =
+                parse_int(argv[++idx], "--full-enumeration-rc-update-threads");
+            if (options.full_enumeration_rc_update_threads < 0) {
+                throw std::runtime_error(
+                    "--full-enumeration-rc-update-threads must be nonnegative."
+                );
+            }
+            continue;
+        }
+
+        if (arg == "--full-enumeration-rc-detail-log") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--full-enumeration-rc-detail-log requires a value."
+                );
+            }
+            options.full_enumeration_rc_detail_log =
+                parse_int(argv[++idx], "--full-enumeration-rc-detail-log");
+            if (options.full_enumeration_rc_detail_log != 0 &&
+                options.full_enumeration_rc_detail_log != 1) {
+                throw std::runtime_error(
+                    "--full-enumeration-rc-detail-log must be 0 or 1."
+                );
+            }
+            continue;
+        }
+
         if (arg == "--gurobi-threads") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error("--gurobi-threads requires a value.");
@@ -860,6 +956,16 @@ void print_instance_summary(
         << args.phase_two_column_pool_max_size << '\n';
     out << "[main] phase2_column_pool_max_reprice: "
         << args.phase_two_column_pool_max_reprice << '\n';
+    out << "[main] full_enumeration_rc_update_mode: "
+        << args.full_enumeration_rc_update_mode << '\n';
+    out << "[main] full_enumeration_parallel_stage1_backend: "
+        << args.full_enumeration_parallel_stage1_backend << '\n';
+    out << "[main] full_enumeration_parallel_stage2_backend: "
+        << args.full_enumeration_parallel_stage2_backend << '\n';
+    out << "[main] full_enumeration_rc_update_threads: "
+        << args.full_enumeration_rc_update_threads << '\n';
+    out << "[main] full_enumeration_rc_detail_log: "
+        << args.full_enumeration_rc_detail_log << '\n';
     out << "[main] cg_reduced_cost_tolerance: "
         << std::scientific << std::setprecision(6) << args.cg_reduced_cost_tolerance << '\n';
     out << std::defaultfloat;
@@ -1091,6 +1197,22 @@ int main(int argc, char** argv) {
                     static_cast<std::size_t>(args.phase_two_column_pool_max_size);
                 cg_options.phase_two_column_pool_max_reprice =
                     static_cast<std::size_t>(args.phase_two_column_pool_max_reprice);
+                cg_options.full_enumeration_rc_update_mode =
+                    args.full_enumeration_rc_update_mode == "parallel"
+                        ? spdp::FullEnumerationRCUpdateMode::Parallel
+                        : spdp::FullEnumerationRCUpdateMode::Sequential;
+                cg_options.full_enumeration_parallel_stage1_backend =
+                    args.full_enumeration_parallel_stage1_backend == "onemkl"
+                        ? spdp::FullEnumerationRCUpdateBackend::OneMKL
+                        : spdp::FullEnumerationRCUpdateBackend::Custom;
+                cg_options.full_enumeration_parallel_stage2_backend =
+                    args.full_enumeration_parallel_stage2_backend == "onemkl"
+                        ? spdp::FullEnumerationRCUpdateBackend::OneMKL
+                        : spdp::FullEnumerationRCUpdateBackend::Custom;
+                cg_options.full_enumeration_rc_update_threads =
+                    static_cast<std::size_t>(args.full_enumeration_rc_update_threads);
+                cg_options.full_enumeration_rc_detail_log =
+                    args.full_enumeration_rc_detail_log == 1;
                 const spdp::NodeCGResult cg_result =
                     spdp::solve_node_column_generation(data, graph, cg_options, &output_file);
                 spdp::write_node_cg_summary(output_file, cg_result);
