@@ -1,10 +1,12 @@
 #ifndef SPDP_PSTEP_MASTER_CG_H
 #define SPDP_PSTEP_MASTER_CG_H
 
+#include <cstdint>
 #include <cstddef>
 #include <iosfwd>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,6 +16,14 @@
 #include "ReadData.h"
 
 namespace spdp {
+
+enum class GurobiLPMethod {
+    Automatic = -1,
+    Primal = 0,
+    Dual = 1,
+    Barrier = 2,
+    Concurrent = 3,
+};
 
 // B&P node LP master construction / solve 옵션.
 struct CGMasterOptions {
@@ -25,6 +35,13 @@ struct CGMasterOptions {
 
     // 현재 node LP solve에 허용할 시간 제한.
     double solver_time_limit = 3600.0;
+
+    // 초기 LP method. 이후 solve 시점에 override 가능하다.
+    GurobiLPMethod initial_lp_method = GurobiLPMethod::Primal;
+
+    // optional theta fixing:
+    // fixed_theta_value_by_edge[e] = -1이면 free, 0이면 theta_e = 0, 1이면 theta_e = 1.
+    std::vector<int> fixed_theta_value_by_edge;
 };
 
 // node RMP에서 고정으로 존재하는 모든 row / variable handle 묶음.
@@ -72,6 +89,10 @@ struct CGMasterProblem {
     // graph 전체에서 가능한 sigma 집합. state/time row를 upfront로 고정 생성할 때 사용한다.
     std::map<NodeId, std::vector<State>> sigma_by_node;
 
+    // theta fixing과 phase-I artificial.
+    std::vector<int> fixed_theta_value_by_edge;
+    std::map<std::size_t, GRBVar> artificial_fixed_theta_vars;
+
     // 현재 phase.
     CGPhase phase = CGPhase::PhaseI;
 };
@@ -106,6 +127,7 @@ std::size_t add_columns_to_cg_master(
 
 // 현재 RMP를 node LP relaxation으로 최적화한다.
 void solve_cg_master_lp(CGMasterProblem& problem);
+void solve_cg_master_lp(CGMasterProblem& problem, GurobiLPMethod method);
 
 // 현재 LP dual을 pricing이 바로 사용할 수 있게 추출한다.
 CGDualSolution extract_cg_master_duals(const CGMasterProblem& problem);

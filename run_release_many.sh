@@ -14,11 +14,19 @@ fi
 # INPUT PARAMETERS
 # ============================================
 P=2
-SOLVER_MODE=root-cg # Options: enumeration, root-cg
+SOLVER_MODE=branch-and-price # Options: enumeration, branch-and-price
+BNP_TREE_MODE=full-tree # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=120
+SOLVER_TIME_LIMIT=120 # seconds
 GUROBI_THREADS=0
+NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
+NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
+BNP_BRANCHING_RULE=closest-to-half # Options: closest-to-half
+BNP_NODE_SELECTION_RULE=dfs # Options: best-bound, dfs
+BNP_THETA_INTEGRALITY_TOLERANCE=1e-6
+BNP_GAP_TOLERANCE=1e-6
+BNP_INITIAL_UPPER_BOUND=-1 # 음수면 instance별 baseline UB 사용
 VI_FORMULATION=theta # Options: theta, x
 DUMP_PSTEPS=10
 VALIDATE_PSTEPS=0
@@ -63,29 +71,30 @@ FULL_ENUMERATION_PARALLEL_STAGE2_BACKEND=custom # Options: custom, onemkl
 FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
 FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
-    "RecDep_day_B1.dat"
-    "RecDep_day_B2.dat"
-    "RecDep_day_C1.dat"
-    "RecDep_day_C2.dat"
-    "RecDep_day_C3.dat"
-    "RecDep_day_C4.dat"
     "RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
-    "RecDep_day_A4.dat"
-    "RecDep_day_A5.dat"
-    "RecDep_day_A6.dat"
-    "RecDep_day_A7.dat"
-    "RecDep_day_A8.dat"
-    "RecDep_day_A9.dat"
-    "RecDep_day_A10.dat"
-    "RecDep_day_A11.dat"
+    #"RecDep_day_A4.dat"
+    #"RecDep_day_A5.dat"
+    #"RecDep_day_A6.dat"
+    #"RecDep_day_A7.dat"
+    #"RecDep_day_A8.dat"
+    #"RecDep_day_A9.dat"
+    #"RecDep_day_A10.dat"
+    #"RecDep_day_A11.dat"
+    #"RecDep_day_B1.dat"
+    #"RecDep_day_B2.dat"
+    #"RecDep_day_C1.dat"
+    #"RecDep_day_C2.dat"
+    #"RecDep_day_C3.dat"
+    #"RecDep_day_C4.dat"
 )
 # Put one data file name per line in DATA_LIST.
 # ============================================
 
-RUNNER_LOG="$SCRIPT_DIR/P${P}_root-cg_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}.log"
-SUMMARY_XLSX="$SCRIPT_DIR/P${P}_root-cg_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}.xlsx"
+RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}"
+RUNNER_LOG="$SCRIPT_DIR/${RUN_TAG}.log"
+SUMMARY_XLSX="$SCRIPT_DIR/${RUN_TAG}.xlsx"
 
 FAILED=0
 TOTAL=${#DATA_LIST[@]}
@@ -122,8 +131,16 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "Running data [$CURRENT/$TOTAL]: $data_name"
         echo "p: $P"
         echo "solver-mode: $SOLVER_MODE"
+        echo "bnp-tree-mode: $BNP_TREE_MODE"
         echo "node-cg-phase1-mode: $NODE_CG_PHASE1_MODE"
         echo "node-cg-phase2-pricing-mode: $NODE_CG_PHASE2_PRICING_MODE"
+        echo "node-cg-phase1-lp-method: $NODE_CG_PHASE1_LP_METHOD"
+        echo "node-cg-phase2-lp-method: $NODE_CG_PHASE2_LP_METHOD"
+        echo "bnp-branching-rule: $BNP_BRANCHING_RULE"
+        echo "bnp-node-selection-rule: $BNP_NODE_SELECTION_RULE"
+        echo "bnp-theta-integrality-tolerance: $BNP_THETA_INTEGRALITY_TOLERANCE"
+        echo "bnp-gap-tolerance: $BNP_GAP_TOLERANCE"
+        echo "bnp-initial-upper-bound: $BNP_INITIAL_UPPER_BOUND"
         echo "vi-formulation: $VI_FORMULATION"
         echo "cg-max-iterations-per-phase: $CG_MAX_ITERATIONS_PER_PHASE"
         echo "exact-pricing-max-columns-per-start: $EXACT_PRICING_MAX_COLUMNS_PER_START"
@@ -163,8 +180,16 @@ for data_name in "${DATA_LIST[@]}"; do
     if "$EXE" "$data_name" \
         --p "$P" \
         --solver-mode "$SOLVER_MODE" \
+        --bnp-tree-mode "$BNP_TREE_MODE" \
         --node-cg-phase1-mode "$NODE_CG_PHASE1_MODE" \
         --node-cg-phase2-pricing-mode "$NODE_CG_PHASE2_PRICING_MODE" \
+        --node-cg-phase1-lp-method "$NODE_CG_PHASE1_LP_METHOD" \
+        --node-cg-phase2-lp-method "$NODE_CG_PHASE2_LP_METHOD" \
+        --bnp-branching-rule "$BNP_BRANCHING_RULE" \
+        --bnp-node-selection-rule "$BNP_NODE_SELECTION_RULE" \
+        --bnp-theta-integrality-tolerance "$BNP_THETA_INTEGRALITY_TOLERANCE" \
+        --bnp-gap-tolerance "$BNP_GAP_TOLERANCE" \
+        --bnp-initial-upper-bound "$BNP_INITIAL_UPPER_BOUND" \
         --solver-time-limit "$SOLVER_TIME_LIMIT" \
         --gurobi-threads "$GUROBI_THREADS" \
         --vi-formulation "$VI_FORMULATION" \
@@ -227,7 +252,7 @@ for data_name in "${DATA_LIST[@]}"; do
     fi
 done
 
-if [[ "$SOLVER_MODE" == "root-cg" ]]; then
+if [[ "$SOLVER_MODE" == "branch-and-price" ]]; then
     echo "=================================================="
     echo "Generating summary workbook: $SUMMARY_XLSX"
     {

@@ -34,6 +34,54 @@ bool double_equal(double lhs, double rhs) {
     return std::fabs(lhs - rhs) <= kTolerance;
 }
 
+bool is_forbidden_pricing_edge(
+    const ForwardPricingOptions& options,
+    int graph_edge_id
+) {
+    return graph_edge_id >= 0 &&
+           static_cast<std::size_t>(graph_edge_id) < options.forbidden_edge_mask.size() &&
+           options.forbidden_edge_mask[static_cast<std::size_t>(graph_edge_id)] != 0U;
+}
+
+bool violates_required_pricing_edge_rule(
+    const ForwardPricingOptions& options,
+    const MultiDiGraph& graph,
+    int graph_edge_id
+) {
+    if (graph_edge_id < 0 ||
+        static_cast<std::size_t>(graph_edge_id) >= graph.edges().size()) {
+        return false;
+    }
+
+    const EdgeRecord& edge = graph.edges()[static_cast<std::size_t>(graph_edge_id)];
+    if (edge.u >= 0 &&
+        static_cast<std::size_t>(edge.u) < options.required_outgoing_edge_by_node_id.size()) {
+        const int required_edge_id =
+            options.required_outgoing_edge_by_node_id[static_cast<std::size_t>(edge.u)];
+        if (required_edge_id >= 0 && required_edge_id != graph_edge_id) {
+            return true;
+        }
+    }
+    if (edge.v >= 0 &&
+        static_cast<std::size_t>(edge.v) < options.required_incoming_edge_by_node_id.size()) {
+        const int required_edge_id =
+            options.required_incoming_edge_by_node_id[static_cast<std::size_t>(edge.v)];
+        if (required_edge_id >= 0 && required_edge_id != graph_edge_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool is_disallowed_pricing_edge(
+    const ForwardPricingOptions& options,
+    const MultiDiGraph& graph,
+    int graph_edge_id
+) {
+    return is_forbidden_pricing_edge(options, graph_edge_id) ||
+           violates_required_pricing_edge_rule(options, graph, graph_edge_id);
+}
+
 bool double_less_or_equal(double lhs, double rhs) {
     return lhs <= rhs + kTolerance;
 }
@@ -703,6 +751,9 @@ std::vector<int> collect_feasible_shallow_edges(
     for (int pricing_edge_index :
          context.outgoing_edges_by_node_state[static_cast<std::size_t>(current_state.node_state_index)]) {
         const auto& pricing_edge = context.edges[static_cast<std::size_t>(pricing_edge_index)];
+        if (is_disallowed_pricing_edge(options, graph, pricing_edge.graph_edge_id)) {
+            continue;
+        }
         if (!double_less_or_equal(
                 current_state.total_time + pricing_edge.time,
                 context.time_limit
@@ -781,6 +832,9 @@ TopKForwardEdgeSelection collect_top_k_forward_labeling_edges(
          context.outgoing_edges_by_node_state[static_cast<std::size_t>(current_label.node_state_index)]) {
         const ForwardPricingContext::EdgeInfo& pricing_edge =
             context.edges[static_cast<std::size_t>(pricing_edge_index)];
+        if (is_disallowed_pricing_edge(options, graph, pricing_edge.graph_edge_id)) {
+            continue;
+        }
         const ForwardPricingContext::NodeStateInfo& next_info =
             context.node_states[static_cast<std::size_t>(pricing_edge.to_node_state_index)];
 
@@ -1415,6 +1469,9 @@ ForwardPricingResult run_forward_pricing(
                 for (int pricing_edge_index : *pricing_edge_indices) {
                     const ForwardPricingContext::EdgeInfo& pricing_edge =
                         context.edges[static_cast<std::size_t>(pricing_edge_index)];
+                    if (is_disallowed_pricing_edge(options, graph, pricing_edge.graph_edge_id)) {
+                        continue;
+                    }
                     const ForwardPricingContext::NodeStateInfo& next_info =
                         context.node_states[static_cast<std::size_t>(pricing_edge.to_node_state_index)];
 
@@ -3371,6 +3428,12 @@ FullEnumerationStaticPool build_full_enumeration_static_pool(
 
     FullEnumerationStaticPool pool;
     pool.time_limit = options.time_limit;
+    pool.graph_edge_source_node_id.reserve(graph.number_of_edges());
+    pool.graph_edge_target_node_id.reserve(graph.number_of_edges());
+    for (const EdgeRecord& edge : graph.edges()) {
+        pool.graph_edge_source_node_id.push_back(edge.u);
+        pool.graph_edge_target_node_id.push_back(edge.v);
+    }
     std::map<int, std::size_t> entry_index_by_raw_path_id;
     std::size_t skipped_duplicate_columns = 0;
     std::vector<FullEnumerationEntryMatrixBuildData> entry_matrix_build_data;
@@ -3846,6 +3909,131 @@ void mark_full_enumeration_pool_columns_active(
             --node_state.entry_available_variant_count[entry_index];
             if (node_state.entry_available_variant_count[entry_index] == 0U &&
                 node_state.available_entry_count > 0U) {
+                --node_state.available_entry_count;
+            }
+        }
+    }
+}
+
+void mark_full_enumeration_pool_entries_forbidden_by_edge_mask(
+    const FullEnumerationStaticPool& static_pool,
+    const std::vector<std::uint8_t>& forbidden_edge_mask,
+    FullEnumerationPoolNodeState& node_state
+) {
+    if (forbidden_edge_mask.empty()) {
+        return;
+    }
+
+    for (std::size_t entry_index = 0; entry_index < full_enumeration_entry_count(static_pool);
+         ++entry_index) {
+        if (full_enumeration_entry_is_forbidden(node_state, entry_index)) {
+            continue;
+        }
+
+        bool contains_forbidden_edge = false;
+        for (std::size_t k = static_pool.entry_edge_ids_row_ptr[entry_index];
+             k < static_pool.entry_edge_ids_row_ptr[entry_index + 1U];
+             ++k) {
+            const int edge_id = static_pool.entry_edge_ids[k];
+            if (edge_id >= 0 &&
+                static_cast<std::size_t>(edge_id) < forbidden_edge_mask.size() &&
+                forbidden_edge_mask[static_cast<std::size_t>(edge_id)] != 0U) {
+                contains_forbidden_edge = true;
+                break;
+            }
+        }
+
+        if (!contains_forbidden_edge) {
+            continue;
+        }
+
+        node_state.forbidden_entry[entry_index] = 1U;
+        const std::size_t available_variant_count =
+            node_state.entry_available_variant_count[entry_index];
+        if (available_variant_count > 0U) {
+            if (node_state.available_variant_count >= available_variant_count) {
+                node_state.available_variant_count -= available_variant_count;
+            } else {
+                node_state.available_variant_count = 0U;
+            }
+            node_state.entry_available_variant_count[entry_index] = 0U;
+            if (node_state.available_entry_count > 0U) {
+                --node_state.available_entry_count;
+            }
+        }
+    }
+}
+
+void mark_full_enumeration_pool_entries_forbidden_by_required_edges(
+    const FullEnumerationStaticPool& static_pool,
+    const std::vector<int>& required_outgoing_edge_by_node_id,
+    const std::vector<int>& required_incoming_edge_by_node_id,
+    FullEnumerationPoolNodeState& node_state
+) {
+    if (required_outgoing_edge_by_node_id.empty() &&
+        required_incoming_edge_by_node_id.empty()) {
+        return;
+    }
+
+    for (std::size_t entry_index = 0; entry_index < full_enumeration_entry_count(static_pool);
+         ++entry_index) {
+        if (full_enumeration_entry_is_forbidden(node_state, entry_index)) {
+            continue;
+        }
+
+        bool violates_required_rule = false;
+        for (std::size_t k = static_pool.entry_edge_ids_row_ptr[entry_index];
+             k < static_pool.entry_edge_ids_row_ptr[entry_index + 1U];
+             ++k) {
+            const int edge_id = static_pool.entry_edge_ids[k];
+            if (edge_id < 0 ||
+                static_cast<std::size_t>(edge_id) >= static_pool.graph_edge_source_node_id.size() ||
+                static_cast<std::size_t>(edge_id) >= static_pool.graph_edge_target_node_id.size()) {
+                continue;
+            }
+
+            const NodeId source_node_id =
+                static_pool.graph_edge_source_node_id[static_cast<std::size_t>(edge_id)];
+            if (source_node_id >= 0 &&
+                static_cast<std::size_t>(source_node_id) <
+                    required_outgoing_edge_by_node_id.size()) {
+                const int required_edge_id =
+                    required_outgoing_edge_by_node_id[static_cast<std::size_t>(source_node_id)];
+                if (required_edge_id >= 0 && required_edge_id != edge_id) {
+                    violates_required_rule = true;
+                    break;
+                }
+            }
+
+            const NodeId target_node_id =
+                static_pool.graph_edge_target_node_id[static_cast<std::size_t>(edge_id)];
+            if (target_node_id >= 0 &&
+                static_cast<std::size_t>(target_node_id) <
+                    required_incoming_edge_by_node_id.size()) {
+                const int required_edge_id =
+                    required_incoming_edge_by_node_id[static_cast<std::size_t>(target_node_id)];
+                if (required_edge_id >= 0 && required_edge_id != edge_id) {
+                    violates_required_rule = true;
+                    break;
+                }
+            }
+        }
+
+        if (!violates_required_rule) {
+            continue;
+        }
+
+        node_state.forbidden_entry[entry_index] = 1U;
+        const std::size_t available_variant_count =
+            node_state.entry_available_variant_count[entry_index];
+        if (available_variant_count > 0U) {
+            if (node_state.available_variant_count >= available_variant_count) {
+                node_state.available_variant_count -= available_variant_count;
+            } else {
+                node_state.available_variant_count = 0U;
+            }
+            node_state.entry_available_variant_count[entry_index] = 0U;
+            if (node_state.available_entry_count > 0U) {
                 --node_state.available_entry_count;
             }
         }

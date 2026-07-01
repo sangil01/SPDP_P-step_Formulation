@@ -26,8 +26,16 @@ struct CliOptions {
     double solver_time_limit = 3600.0;
     int gurobi_threads = -1;
     std::string solver_mode = "enumeration";
+    std::string bnp_tree_mode = "root-only";
     std::string node_cg_phase_one_mode = "exact-cg";
     std::string node_cg_phase_two_pricing_mode = "exact-pricing";
+    std::string node_cg_phase1_lp_method = "primal";
+    std::string node_cg_phase2_lp_method = "primal";
+    std::string bnp_branching_rule = "closest-to-half";
+    std::string bnp_node_selection_rule = "best-bound";
+    double bnp_theta_integrality_tolerance = 1e-6;
+    double bnp_gap_tolerance = 1e-6;
+    double bnp_initial_upper_bound = -1.0;
     std::string vi_formulation = "theta";
     int dump_psteps = 10;
     int validate_psteps = 0;
@@ -76,9 +84,17 @@ struct CliOptions {
 void print_usage(const char* executable) {
     std::cerr << "Usage: " << executable
               << " [instance] [--p N] [--solver-time-limit T] [--gurobi-threads N]"
-              << " [--solver-mode enumeration|root-cg]"
+              << " [--solver-mode enumeration|branch-and-price]"
+              << " [--bnp-tree-mode root-only|full-tree]"
               << " [--node-cg-phase1-mode exact-cg|heuristic-cg|heuristic-cg-3-step]"
               << " [--node-cg-phase2-pricing-mode exact-pricing|heuristic-pricing-then-exact|full-enumeration]"
+              << " [--node-cg-phase1-lp-method automatic|primal|dual|barrier|concurrent]"
+              << " [--node-cg-phase2-lp-method automatic|primal|dual|barrier|concurrent]"
+              << " [--bnp-branching-rule closest-to-half]"
+              << " [--bnp-node-selection-rule best-bound|dfs]"
+              << " [--bnp-theta-integrality-tolerance T]"
+              << " [--bnp-gap-tolerance T]"
+              << " [--bnp-initial-upper-bound UB]"
               << " [--vi-formulation theta|x] [--dump-psteps N] [--validate-psteps 0|1] [--solve 0|1]"
               << " [--prune-infeasible-edges 0|1] [--prune-dominated-edges 0|1]"
               << " [--prune-symmetry-40 0|1] [--prune-symmetry-41 0|1]"
@@ -143,6 +159,14 @@ double parse_double(const std::string& value, const std::string& field_name) {
     }
 }
 
+int parse_binary_flag(const std::string& value, const std::string& field_name) {
+    const int parsed = parse_int(value, field_name);
+    if (parsed != 0 && parsed != 1) {
+        throw std::runtime_error(field_name + " must be 0 or 1.");
+    }
+    return parsed;
+}
+
 std::string parse_vi_formulation(const std::string& value) {
     if (value == "theta" || value == "x") {
         return value;
@@ -151,12 +175,22 @@ std::string parse_vi_formulation(const std::string& value) {
 }
 
 std::string parse_solver_mode(const std::string& value) {
-    if (value == "enumeration" || value == "root-cg") {
+    if (value == "enumeration" || value == "branch-and-price") {
         return value;
     }
     throw std::runtime_error(
         "Invalid value for --solver-mode: " + value +
-        " (expected enumeration or root-cg)"
+        " (expected enumeration or branch-and-price)"
+    );
+}
+
+std::string parse_bnp_tree_mode(const std::string& value) {
+    if (value == "root-only" || value == "full-tree") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --bnp-tree-mode: " + value +
+        " (expected root-only or full-tree)"
     );
 }
 
@@ -222,6 +256,56 @@ std::string parse_full_enumeration_parallel_backend(const std::string& value) {
     );
 }
 
+std::string parse_lp_method(const std::string& value) {
+    if (value == "automatic" || value == "primal" || value == "dual" ||
+        value == "barrier" || value == "concurrent") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid LP method: " + value +
+        " (expected automatic, primal, dual, barrier, or concurrent)"
+    );
+}
+
+std::string parse_bnp_branching_rule(const std::string& value) {
+    if (value == "closest-to-half") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --bnp-branching-rule: " + value +
+        " (expected closest-to-half)"
+    );
+}
+
+std::string parse_bnp_node_selection_rule(const std::string& value) {
+    if (value == "best-bound" || value == "dfs") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --bnp-node-selection-rule: " + value +
+        " (expected best-bound or dfs)"
+    );
+}
+
+spdp::GurobiLPMethod to_lp_method(const std::string& value) {
+    if (value == "automatic") {
+        return spdp::GurobiLPMethod::Automatic;
+    }
+    if (value == "primal") {
+        return spdp::GurobiLPMethod::Primal;
+    }
+    if (value == "dual") {
+        return spdp::GurobiLPMethod::Dual;
+    }
+    if (value == "barrier") {
+        return spdp::GurobiLPMethod::Barrier;
+    }
+    if (value == "concurrent") {
+        return spdp::GurobiLPMethod::Concurrent;
+    }
+    throw std::runtime_error("Unsupported LP method: " + value);
+}
+
 spdp::VIFormulation to_vi_formulation(const std::string& value) {
     if (value == "theta") {
         return spdp::VIFormulation::Theta;
@@ -260,6 +344,14 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--bnp-tree-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--bnp-tree-mode requires a value.");
+            }
+            options.bnp_tree_mode = parse_bnp_tree_mode(argv[++idx]);
+            continue;
+        }
+
         if (arg == "--node-cg-phase1-mode") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
@@ -274,6 +366,70 @@ CliOptions parse_cli(int argc, char** argv) {
             }
             options.node_cg_phase_two_pricing_mode =
                 parse_node_cg_phase_two_pricing_mode(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--node-cg-phase1-lp-method") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.node_cg_phase1_lp_method = parse_lp_method(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--node-cg-phase2-lp-method") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.node_cg_phase2_lp_method = parse_lp_method(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--bnp-branching-rule") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.bnp_branching_rule = parse_bnp_branching_rule(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--bnp-node-selection-rule") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.bnp_node_selection_rule =
+                parse_bnp_node_selection_rule(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--bnp-theta-integrality-tolerance") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.bnp_theta_integrality_tolerance =
+                parse_double(argv[++idx], arg);
+            if (options.bnp_theta_integrality_tolerance <= 0.0) {
+                throw std::runtime_error(arg + " must be positive.");
+            }
+            continue;
+        }
+
+        if (arg == "--bnp-gap-tolerance") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.bnp_gap_tolerance = parse_double(argv[++idx], arg);
+            if (options.bnp_gap_tolerance < 0.0) {
+                throw std::runtime_error(arg + " must be nonnegative.");
+            }
+            continue;
+        }
+
+        if (arg == "--bnp-initial-upper-bound") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.bnp_initial_upper_bound = parse_double(argv[++idx], arg);
             continue;
         }
 
@@ -884,6 +1040,7 @@ void print_instance_summary(
     out << "[main] Loaded instance: " << args.instance << '\n';
     out << "[main] p: " << args.p << '\n';
     out << "[main] Solver mode: " << args.solver_mode << '\n';
+    out << "[main] BnP tree mode: " << args.bnp_tree_mode << '\n';
     out << "[main] Node CG phase-1 mode: " << args.node_cg_phase_one_mode << '\n';
     out << "[main] Node CG phase-2 pricing mode: "
         << args.node_cg_phase_two_pricing_mode << '\n';
@@ -966,6 +1123,20 @@ void print_instance_summary(
         << args.full_enumeration_rc_update_threads << '\n';
     out << "[main] full_enumeration_rc_detail_log: "
         << args.full_enumeration_rc_detail_log << '\n';
+    out << "[main] node_cg_phase1_lp_method: "
+        << args.node_cg_phase1_lp_method << '\n';
+    out << "[main] node_cg_phase2_lp_method: "
+        << args.node_cg_phase2_lp_method << '\n';
+    out << "[main] bnp_branching_rule: "
+        << args.bnp_branching_rule << '\n';
+    out << "[main] bnp_node_selection_rule: "
+        << args.bnp_node_selection_rule << '\n';
+    out << "[main] bnp_theta_integrality_tolerance: "
+        << format_double(args.bnp_theta_integrality_tolerance) << '\n';
+    out << "[main] bnp_gap_tolerance: "
+        << format_double(args.bnp_gap_tolerance) << '\n';
+    out << "[main] bnp_initial_upper_bound: "
+        << format_double(args.bnp_initial_upper_bound) << '\n';
     out << "[main] cg_reduced_cost_tolerance: "
         << std::scientific << std::setprecision(6) << args.cg_reduced_cost_tolerance << '\n';
     out << std::defaultfloat;
@@ -1106,17 +1277,17 @@ int main(int argc, char** argv) {
         }
         gurobi_log_file.close();
 
-        if (args.solver_mode == "root-cg") {
+        if (args.solver_mode == "branch-and-price") {
             if (args.add_vi_35 == 1 || args.add_vi_36 == 1 || args.add_vi_44 == 1) {
                 throw std::runtime_error(
-                    "root-cg mode does not yet support VI-35/36/44. "
+                    "branch-and-price mode does not yet support VI-35/36/44. "
                     "The seedless Phase-I RMP becomes infeasible without dedicated artificials "
                     "for those inequalities. Please set them to 0."
                 );
             }
             if (args.vi_formulation != "theta") {
                 throw std::runtime_error(
-                    "root-cg mode currently supports only --vi-formulation theta."
+                    "branch-and-price mode currently supports only --vi-formulation theta."
                 );
             }
 
@@ -1126,6 +1297,10 @@ int main(int argc, char** argv) {
                 cg_options.time_limit = data.time_limit;
                 cg_options.solver_time_limit = args.solver_time_limit;
                 cg_options.gurobi_threads = args.gurobi_threads;
+                cg_options.phase_one_lp_method =
+                    to_lp_method(args.node_cg_phase1_lp_method);
+                cg_options.phase_two_lp_method =
+                    to_lp_method(args.node_cg_phase2_lp_method);
                 cg_options.max_iterations_per_phase =
                     static_cast<std::size_t>(args.cg_max_iterations_per_phase);
                 cg_options.exact_pricing_max_columns_per_start =
@@ -1213,10 +1388,34 @@ int main(int argc, char** argv) {
                     static_cast<std::size_t>(args.full_enumeration_rc_update_threads);
                 cg_options.full_enumeration_rc_detail_log =
                     args.full_enumeration_rc_detail_log == 1;
-                const spdp::NodeCGResult cg_result =
-                    spdp::solve_node_column_generation(data, graph, cg_options, &output_file);
-                spdp::write_node_cg_summary(output_file, cg_result);
-                spdp::write_node_cg_solution(solution_file, cg_result);
+                if (args.bnp_tree_mode == "root-only") {
+                    const spdp::NodeCGResult cg_result =
+                        spdp::solve_node_column_generation(data, graph, cg_options, &output_file);
+                    spdp::write_node_cg_summary(output_file, cg_result);
+                    spdp::write_node_cg_solution(solution_file, cg_result);
+                } else {
+                    spdp::BranchAndPriceOptions bnp_options;
+                    bnp_options.node_cg_options = cg_options;
+                    bnp_options.tree_mode = spdp::BnPTreeMode::FullTree;
+                    bnp_options.branching_rule =
+                        args.bnp_branching_rule == "closest-to-half"
+                            ? spdp::BnPBranchingRule::ClosestToHalf
+                            : spdp::BnPBranchingRule::ClosestToHalf;
+                    bnp_options.node_selection_rule =
+                        args.bnp_node_selection_rule == "dfs"
+                            ? spdp::BnPNodeSelectionRule::DepthFirst
+                            : spdp::BnPNodeSelectionRule::BestBound;
+                    bnp_options.theta_integrality_tolerance =
+                        args.bnp_theta_integrality_tolerance;
+                    bnp_options.gap_tolerance = args.bnp_gap_tolerance;
+                    bnp_options.instance_name =
+                        std::filesystem::path(args.instance).stem().string();
+                    bnp_options.initial_upper_bound = args.bnp_initial_upper_bound;
+                    const spdp::BranchAndPriceResult bnp_result =
+                        spdp::solve_branch_and_price(data, graph, bnp_options, &output_file);
+                    spdp::write_branch_and_price_summary(output_file, bnp_result);
+                    spdp::write_branch_and_price_solution(solution_file, bnp_result);
+                }
             } else {
                 output_file << "[main] Solve skipped by CLI option.\n";
                 solution_file << "!! Print 2\n";

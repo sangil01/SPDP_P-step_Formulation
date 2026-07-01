@@ -2553,6 +2553,7 @@ void write_iteration_log(
         << " artificial_sum=" << format_double(log.artificial_sum)
         << " best_rc=" << format_double(log.best_reduced_cost)
         << " pricing_status=" << to_string(log.pricing_status)
+        << " lp_seconds=" << format_double(log.lp_runtime_seconds)
         << " pricing_seconds=" << format_double(log.pricing_runtime_seconds)
         << " added_columns=" << log.added_column_count
         << " complete_labels=" << log.complete_label_count
@@ -2600,9 +2601,15 @@ void capture_column_values_if_available(
 ) {
     result.columns = master_problem.columns;
     result.column_values.clear();
+    result.theta_values.clear();
 
     if (master_problem.model->get(GRB_IntAttr_SolCount) <= 0) {
         return;
+    }
+
+    result.theta_values.resize(master_problem.theta_vars.size(), 0.0);
+    for (std::size_t idx = 0; idx < master_problem.theta_vars.size(); ++idx) {
+        result.theta_values[idx] = master_problem.theta_vars[idx].get(GRB_DoubleAttr_X);
     }
 
     result.column_values.resize(master_problem.x_vars.size(), 0.0);
@@ -2616,6 +2623,7 @@ bool run_node_pricing_phase(
     const ForwardPricingContext& pricing_context,
     CGMasterProblem& master_problem,
     const NodeCGOptions& options,
+    const NodeCGInputState& input_state,
     CGPhase phase,
     const std::chrono::steady_clock::time_point global_start_time,
     NodeCGResult& result,
@@ -2629,6 +2637,11 @@ bool run_node_pricing_phase(
     exact_pricing_options.reduced_cost_tolerance = options.reduced_cost_tolerance;
     exact_pricing_options.prune_pickup_symmetry_43 = options.prune_pickup_symmetry_43;
     exact_pricing_options.prune_delivery_symmetry_43 = options.prune_delivery_symmetry_43;
+    exact_pricing_options.forbidden_edge_mask = input_state.forbidden_edge_mask;
+    exact_pricing_options.required_outgoing_edge_by_node_id =
+        input_state.required_outgoing_edge_by_node_id;
+    exact_pricing_options.required_incoming_edge_by_node_id =
+        input_state.required_incoming_edge_by_node_id;
 
     ForwardPricingOptions heuristic_pricing_options;
     heuristic_pricing_options.max_columns_per_start =
@@ -2649,6 +2662,11 @@ bool run_node_pricing_phase(
         options.phase_two_labeling_top_k_next;
     heuristic_pricing_options.shallow_k1 = options.phase_two_shallow_k1;
     heuristic_pricing_options.shallow_k2 = options.phase_two_shallow_k2;
+    heuristic_pricing_options.forbidden_edge_mask = input_state.forbidden_edge_mask;
+    heuristic_pricing_options.required_outgoing_edge_by_node_id =
+        input_state.required_outgoing_edge_by_node_id;
+    heuristic_pricing_options.required_incoming_edge_by_node_id =
+        input_state.required_incoming_edge_by_node_id;
 
     CGLPSnapshot last_solved_snapshot;
     bool has_last_solved_snapshot = false;
@@ -2656,35 +2674,54 @@ bool run_node_pricing_phase(
     std::unordered_map<std::string, std::size_t> phase_two_pool_index_by_key;
     FullEnumerationStaticPool full_enumeration_static_pool;
     FullEnumerationPoolNodeState full_enumeration_node_state;
+    const FullEnumerationStaticPool* full_enumeration_static_pool_ptr = nullptr;
     const bool use_full_enumeration_pool =
         phase == CGPhase::PhaseII &&
         options.phase_two_pricing_mode == NodeCGPhaseTwoPricingMode::FullEnumeration;
 
     if (use_full_enumeration_pool) {
-        const auto pool_build_start_time = std::chrono::steady_clock::now();
-        FullEnumerationPoolBuildOptions pool_options;
-        pool_options.p = options.p;
-        pool_options.time_limit = options.time_limit;
-        pool_options.prune_pickup_symmetry_43 = options.prune_pickup_symmetry_43;
-        pool_options.prune_delivery_symmetry_43 = options.prune_delivery_symmetry_43;
         FullEnumerationPoolBuildStats static_pool_stats;
-        full_enumeration_static_pool = build_full_enumeration_static_pool(
-            graph,
-            pool_options,
-            &static_pool_stats
-        );
-        FullEnumerationPoolBuildStats node_state_stats = static_pool_stats;
-        full_enumeration_node_state = build_full_enumeration_pool_node_state(
-            full_enumeration_static_pool,
-            master_problem.column_id_by_key,
-            &node_state_stats
-        );
-        if (log_stream != nullptr) {
-            const double total_pool_build_runtime =
+        FullEnumerationPoolBuildStats node_state_stats;
+        double total_pool_build_runtime = 0.0;
+        if (input_state.shared_full_enumeration_static_pool != nullptr) {
+            full_enumeration_static_pool_ptr = input_state.shared_full_enumeration_static_pool;
+        } else {
+            const auto pool_build_start_time = std::chrono::steady_clock::now();
+            FullEnumerationPoolBuildOptions pool_options;
+            pool_options.p = options.p;
+            pool_options.time_limit = options.time_limit;
+            pool_options.prune_pickup_symmetry_43 = options.prune_pickup_symmetry_43;
+            pool_options.prune_delivery_symmetry_43 = options.prune_delivery_symmetry_43;
+            full_enumeration_static_pool = build_full_enumeration_static_pool(
+                graph,
+                pool_options,
+                &static_pool_stats
+            );
+            total_pool_build_runtime =
                 std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - pool_build_start_time
                 )
                     .count();
+            full_enumeration_static_pool_ptr = &full_enumeration_static_pool;
+        }
+        node_state_stats = static_pool_stats;
+        full_enumeration_node_state = build_full_enumeration_pool_node_state(
+            *full_enumeration_static_pool_ptr,
+            master_problem.column_id_by_key,
+            &node_state_stats
+        );
+        mark_full_enumeration_pool_entries_forbidden_by_edge_mask(
+            *full_enumeration_static_pool_ptr,
+            input_state.forbidden_edge_mask,
+            full_enumeration_node_state
+        );
+        mark_full_enumeration_pool_entries_forbidden_by_required_edges(
+            *full_enumeration_static_pool_ptr,
+            input_state.required_outgoing_edge_by_node_id,
+            input_state.required_incoming_edge_by_node_id,
+            full_enumeration_node_state
+        );
+        if (log_stream != nullptr) {
             *log_stream << "[node-cg] phase2 full-enumeration pool raw_paths="
                         << static_pool_stats.raw_path_count
                         << " compact_psteps=" << static_pool_stats.compact_pstep_count
@@ -2692,6 +2729,8 @@ bool run_node_pricing_phase(
                         << " inactive_paths=" << node_state_stats.inactive_path_count
                         << " skipped_master=" << node_state_stats.skipped_master_column_count
                         << " skipped_duplicate=" << static_pool_stats.skipped_duplicate_column_count
+                        << " reused_static_pool="
+                        << (input_state.shared_full_enumeration_static_pool != nullptr ? 1 : 0)
                         << " build_runtime=" << format_double(total_pool_build_runtime)
                         << '\n';
         }
@@ -2703,8 +2742,10 @@ bool run_node_pricing_phase(
             master_problem.model->set(GRB_DoubleParam_TimeLimit, remaining);
         }
 
-        solve_cg_master_lp(master_problem);
-        const CGLPSnapshot snapshot = capture_cg_master_snapshot(master_problem);
+        const GurobiLPMethod lp_method =
+            phase == CGPhase::PhaseI ? options.phase_one_lp_method : options.phase_two_lp_method;
+        solve_cg_master_lp(master_problem, lp_method);
+        CGLPSnapshot snapshot = capture_cg_master_snapshot(master_problem);
         last_solved_snapshot = snapshot;
         has_last_solved_snapshot = true;
 
@@ -2713,6 +2754,7 @@ bool run_node_pricing_phase(
         iteration_log.iteration_index = iteration;
         iteration_log.lp_objective_value = snapshot.objective_value;
         iteration_log.artificial_sum = snapshot.artificial_sum;
+        iteration_log.lp_runtime_seconds = snapshot.runtime_seconds;
         iteration_log.heuristic_engine = options.phase_two_heuristic_engine;
         iteration_log.heuristic_available_start_count =
             pricing_context.start_node_state_indices.size();
@@ -2786,7 +2828,7 @@ bool run_node_pricing_phase(
             iteration_log.column_pool_size_before_reprice =
                 full_enumeration_node_state.available_variant_count;
             pricing_result = run_full_enumeration_pool_pricing(
-                full_enumeration_static_pool,
+                *full_enumeration_static_pool_ptr,
                 full_enumeration_node_state,
                 dual_solution,
                 phase,
@@ -2977,7 +3019,7 @@ bool run_node_pricing_phase(
             add_columns_to_cg_master(master_problem, pricing_result.columns);
         if (use_full_enumeration_pool && added_columns > 0U) {
             mark_full_enumeration_pool_columns_active(
-                full_enumeration_static_pool,
+                *full_enumeration_static_pool_ptr,
                 full_enumeration_node_state,
                 pricing_result.columns
             );
@@ -3043,6 +3085,7 @@ bool run_node_phase_one_exact_cg(
     const ForwardPricingContext& pricing_context,
     CGMasterProblem& master_problem,
     const NodeCGOptions& options,
+    const NodeCGInputState& input_state,
     const std::chrono::steady_clock::time_point global_start_time,
     NodeCGResult& result,
     std::ostream* log_stream
@@ -3055,6 +3098,7 @@ bool run_node_phase_one_exact_cg(
         pricing_context,
         master_problem,
         options,
+        input_state,
         CGPhase::PhaseI,
         global_start_time,
         result,
@@ -3068,6 +3112,7 @@ bool run_node_phase_one_heuristic_cg(
     const ForwardPricingContext& pricing_context,
     CGMasterProblem& master_problem,
     const NodeCGOptions& options,
+    const NodeCGInputState& input_state,
     const std::chrono::steady_clock::time_point global_start_time,
     NodeCGResult& result,
     std::ostream* log_stream,
@@ -3113,6 +3158,7 @@ bool run_node_phase_one_heuristic_cg(
         pricing_context,
         master_problem,
         options,
+        input_state,
         CGPhase::PhaseI,
         global_start_time,
         result,
@@ -3126,10 +3172,27 @@ bool run_node_phase_one(
     const ForwardPricingContext& pricing_context,
     CGMasterProblem& master_problem,
     const NodeCGOptions& options,
+    const NodeCGInputState& input_state,
     const std::chrono::steady_clock::time_point global_start_time,
     NodeCGResult& result,
     std::ostream* log_stream
 ) {
+    if (!input_state.enable_phase_one_seed_generation) {
+        if (log_stream != nullptr) {
+            *log_stream << "[node-cg] Phase I using inherited columns without new seed generation\n";
+        }
+        return run_node_phase_one_exact_cg(
+            graph,
+            pricing_context,
+            master_problem,
+            options,
+            input_state,
+            global_start_time,
+            result,
+            log_stream
+        );
+    }
+
     switch (options.phase_one_mode) {
         case NodeCGPhaseOneMode::ExactCG:
             return run_node_phase_one_exact_cg(
@@ -3137,6 +3200,7 @@ bool run_node_phase_one(
                 pricing_context,
                 master_problem,
                 options,
+                input_state,
                 global_start_time,
                 result,
                 log_stream
@@ -3148,6 +3212,7 @@ bool run_node_phase_one(
                 pricing_context,
                 master_problem,
                 options,
+                input_state,
                 global_start_time,
                 result,
                 log_stream,
@@ -3160,6 +3225,7 @@ bool run_node_phase_one(
                 pricing_context,
                 master_problem,
                 options,
+                input_state,
                 global_start_time,
                 result,
                 log_stream,
@@ -3174,6 +3240,7 @@ bool run_node_phase_two(
     const ForwardPricingContext& pricing_context,
     CGMasterProblem& master_problem,
     const NodeCGOptions& options,
+    const NodeCGInputState& input_state,
     const std::chrono::steady_clock::time_point global_start_time,
     NodeCGResult& result,
     std::ostream* log_stream
@@ -3189,6 +3256,7 @@ bool run_node_phase_two(
         pricing_context,
         master_problem,
         options,
+        input_state,
         CGPhase::PhaseII,
         global_start_time,
         result,
@@ -3202,6 +3270,22 @@ NodeCGResult solve_node_column_generation(
     const SPDPData& data,
     const MultiDiGraph& graph,
     const NodeCGOptions& options,
+    std::ostream* log_stream
+) {
+    return solve_node_column_generation(
+        data,
+        graph,
+        options,
+        NodeCGInputState{},
+        log_stream
+    );
+}
+
+NodeCGResult solve_node_column_generation(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const NodeCGOptions& options,
+    const NodeCGInputState& input_state,
     std::ostream* log_stream
 ) {
     if (options.p < 1) {
@@ -3222,9 +3306,17 @@ NodeCGResult solve_node_column_generation(
         options.gurobi_log_path,
         options.gurobi_threads,
         options.solver_time_limit,
+        options.phase_one_lp_method,
+        input_state.fixed_theta_value_by_edge,
     };
     CGMasterProblem master_problem =
         build_cg_master_problem(data, graph, master_options);
+
+    if (!input_state.initial_columns.empty()) {
+        const std::size_t added_initial_columns =
+            add_columns_to_cg_master(master_problem, input_state.initial_columns);
+        result.total_columns_added += added_initial_columns;
+    }
 
     const auto global_start_time = std::chrono::steady_clock::now();
 
@@ -3234,6 +3326,7 @@ NodeCGResult solve_node_column_generation(
         pricing_context,
         master_problem,
         options,
+        input_state,
         global_start_time,
         result,
         log_stream
@@ -3248,6 +3341,7 @@ NodeCGResult solve_node_column_generation(
         pricing_context,
         master_problem,
         options,
+        input_state,
         global_start_time,
         result,
         log_stream
@@ -3326,6 +3420,846 @@ void write_node_cg_solution(
     out << "Solution done \n";
 }
 
+namespace {
+
+double lookup_baseline_upper_bound(const std::string& instance_name) {
+    static const std::map<std::string, double> kBaselineUpperBounds = {
+        {"RecDep_day_A1", 648.0},
+        {"RecDep_day_A2", 625.0},
+        {"RecDep_day_A3", 619.0},
+        {"RecDep_day_A4", 695.0},
+        {"RecDep_day_A5", 707.0},
+        {"RecDep_day_A6", 1202.0},
+        {"RecDep_day_A7", 1211.0},
+        {"RecDep_day_A8", 1314.0},
+        {"RecDep_day_A9", 1244.0},
+        {"RecDep_day_A10", 1297.0},
+        {"RecDep_day_A11", 1289.0},
+        {"RecDep_day_B1", 1299.0},
+        {"RecDep_day_B2", 1121.0},
+        {"RecDep_day_C1", 1297.0},
+        {"RecDep_day_C2", 1438.0},
+        {"RecDep_day_C3", 2269.0},
+        {"RecDep_day_C4", 1520.0},
+    };
+
+    const auto found = kBaselineUpperBounds.find(instance_name);
+    if (found == kBaselineUpperBounds.end()) {
+        return std::numeric_limits<double>::infinity();
+    }
+    return found->second;
+}
+
+std::size_t bit_word_count_for_edges(std::size_t edge_count) {
+    return (edge_count + 63U) / 64U;
+}
+
+void set_packed_edge_bit(
+    std::vector<std::uint64_t>& packed_mask,
+    std::size_t edge_id
+) {
+    packed_mask[edge_id / 64U] |= (1ULL << (edge_id % 64U));
+}
+
+std::vector<std::uint8_t> unpack_edge_mask(
+    const std::vector<std::uint64_t>& packed_mask,
+    std::size_t edge_count
+) {
+    std::vector<std::uint8_t> dense_mask(edge_count, 0U);
+    for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
+        if ((packed_mask[edge_id / 64U] >> (edge_id % 64U)) & 1ULL) {
+            dense_mask[edge_id] = 1U;
+        }
+    }
+    return dense_mask;
+}
+
+bool build_required_edge_node_maps(
+    const MultiDiGraph& graph,
+    const std::vector<std::uint8_t>& required_edge_mask,
+    std::vector<int>& required_outgoing_edge_by_node_id,
+    std::vector<int>& required_incoming_edge_by_node_id
+) {
+    required_outgoing_edge_by_node_id.assign(graph.number_of_nodes(), -1);
+    required_incoming_edge_by_node_id.assign(graph.number_of_nodes(), -1);
+
+    for (std::size_t edge_id = 0; edge_id < required_edge_mask.size() &&
+                                  edge_id < graph.number_of_edges();
+         ++edge_id) {
+        if (required_edge_mask[edge_id] == 0U) {
+            continue;
+        }
+
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        if (!graph.is_physical_service_node(edge.u) ||
+            !graph.is_physical_service_node(edge.v)) {
+            return false;
+        }
+
+        const std::size_t source_index = static_cast<std::size_t>(edge.u);
+        const std::size_t target_index = static_cast<std::size_t>(edge.v);
+        const int required_edge_id = static_cast<int>(edge_id);
+        if ((required_outgoing_edge_by_node_id[source_index] >= 0 &&
+             required_outgoing_edge_by_node_id[source_index] != required_edge_id) ||
+            (required_incoming_edge_by_node_id[target_index] >= 0 &&
+             required_incoming_edge_by_node_id[target_index] != required_edge_id)) {
+            return false;
+        }
+
+        required_outgoing_edge_by_node_id[source_index] = required_edge_id;
+        required_incoming_edge_by_node_id[target_index] = required_edge_id;
+    }
+
+    return true;
+}
+
+bool column_violates_required_edge_rules(
+    const MultiDiGraph& graph,
+    const CGColumn& column,
+    const std::vector<int>& required_outgoing_edge_by_node_id,
+    const std::vector<int>& required_incoming_edge_by_node_id
+) {
+    if (required_outgoing_edge_by_node_id.empty() &&
+        required_incoming_edge_by_node_id.empty()) {
+        return false;
+    }
+
+    for (int edge_id : column.edge_incidence) {
+        if (edge_id < 0 ||
+            static_cast<std::size_t>(edge_id) >= graph.number_of_edges()) {
+            continue;
+        }
+
+        const EdgeRecord& edge = graph.edges()[static_cast<std::size_t>(edge_id)];
+        if (edge.u >= 0 &&
+            static_cast<std::size_t>(edge.u) < required_outgoing_edge_by_node_id.size()) {
+            const int required_edge_id =
+                required_outgoing_edge_by_node_id[static_cast<std::size_t>(edge.u)];
+            if (required_edge_id >= 0 && required_edge_id != edge_id) {
+                return true;
+            }
+        }
+        if (edge.v >= 0 &&
+            static_cast<std::size_t>(edge.v) < required_incoming_edge_by_node_id.size()) {
+            const int required_edge_id =
+                required_incoming_edge_by_node_id[static_cast<std::size_t>(edge.v)];
+            if (required_edge_id >= 0 && required_edge_id != edge_id) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool column_violates_forbidden_edge_mask(
+    const CGColumn& column,
+    const std::vector<std::uint8_t>& forbidden_edge_mask
+) {
+    for (int edge_id : column.edge_incidence) {
+        if (edge_id >= 0 &&
+            static_cast<std::size_t>(edge_id) < forbidden_edge_mask.size() &&
+            forbidden_edge_mask[static_cast<std::size_t>(edge_id)] != 0U) {
+            return true;
+        }
+    }
+    return false;
+}
+
+struct BranchNodeKey {
+    std::vector<std::uint64_t> forbidden_edge_words;
+    std::vector<std::uint64_t> forced_edge_words;
+
+    bool operator==(const BranchNodeKey& other) const {
+        return forbidden_edge_words == other.forbidden_edge_words &&
+               forced_edge_words == other.forced_edge_words;
+    }
+};
+
+struct BranchNodeKeyHash {
+    std::size_t operator()(const BranchNodeKey& key) const {
+        std::size_t seed = 1469598103934665603ULL;
+        const auto mix = [&](std::uint64_t word) {
+            seed ^= static_cast<std::size_t>(word + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U));
+        };
+        for (std::uint64_t word : key.forbidden_edge_words) {
+            mix(word);
+        }
+        mix(0xabcdefULL);
+        for (std::uint64_t word : key.forced_edge_words) {
+            mix(word);
+        }
+        return seed;
+    }
+};
+
+struct BranchNodeRecord {
+    std::size_t id = 0U;
+    std::optional<std::size_t> parent_id;
+    std::size_t depth = 0U;
+    std::vector<std::uint64_t> forbidden_edge_words;
+    std::vector<std::uint64_t> forced_edge_words;
+    double lower_bound = std::numeric_limits<double>::infinity();
+    bool phase_one_feasible = false;
+    bool solved_to_completion = false;
+    bool is_integer = false;
+    std::vector<CGColumn> master_columns;
+    std::vector<double> column_values;
+    std::vector<double> theta_values;
+};
+
+std::optional<std::size_t> choose_branching_edge(
+    const MultiDiGraph& graph,
+    const std::vector<double>& theta_values,
+    double theta_integrality_tolerance
+) {
+    std::optional<std::size_t> best_edge_id;
+    double best_distance = std::numeric_limits<double>::infinity();
+    for (std::size_t edge_id = 0; edge_id < theta_values.size(); ++edge_id) {
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        const double theta_value = theta_values[edge_id];
+        if (theta_value <= theta_integrality_tolerance ||
+            theta_value >= 1.0 - theta_integrality_tolerance) {
+            continue;
+        }
+        const double distance_to_half = std::fabs(theta_value - 0.5);
+        if (!best_edge_id.has_value() ||
+            distance_to_half < best_distance - kTolerance ||
+            (double_equal(distance_to_half, best_distance) &&
+             (edge.u < graph.edges()[best_edge_id.value()].u ||
+              (edge.u == graph.edges()[best_edge_id.value()].u &&
+               (edge.v < graph.edges()[best_edge_id.value()].v ||
+                (edge.v == graph.edges()[best_edge_id.value()].v &&
+                 edge_id < best_edge_id.value())))))) {
+            best_edge_id = edge_id;
+            best_distance = distance_to_half;
+        }
+    }
+    return best_edge_id;
+}
+
+std::vector<std::size_t> collect_branching_candidates_by_distance(
+    const MultiDiGraph&,
+    const std::vector<double>& theta_values,
+    double theta_integrality_tolerance
+) {
+    std::vector<std::pair<std::size_t, double>> candidates;
+    candidates.reserve(theta_values.size());
+    for (std::size_t edge_id = 0; edge_id < theta_values.size(); ++edge_id) {
+        const double theta_value = theta_values[edge_id];
+        if (theta_value <= theta_integrality_tolerance ||
+            theta_value >= 1.0 - theta_integrality_tolerance) {
+            continue;
+        }
+        candidates.emplace_back(edge_id, std::fabs(theta_value - 0.5));
+    }
+
+    std::sort(
+        candidates.begin(),
+        candidates.end(),
+        [](const auto& lhs, const auto& rhs) {
+            if (lhs.second < rhs.second - kTolerance) {
+                return true;
+            }
+            if (rhs.second < lhs.second - kTolerance) {
+                return false;
+            }
+            return lhs.first < rhs.first;
+        }
+    );
+
+    std::vector<std::size_t> ordered_edge_ids;
+    ordered_edge_ids.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        ordered_edge_ids.push_back(candidate.first);
+    }
+    return ordered_edge_ids;
+}
+
+bool theta_solution_is_integral(
+    const MultiDiGraph&,
+    const std::vector<double>& theta_values,
+    double theta_integrality_tolerance
+) {
+    for (std::size_t edge_id = 0; edge_id < theta_values.size(); ++edge_id) {
+        const double theta_value = theta_values[edge_id];
+        if (theta_value > theta_integrality_tolerance &&
+            theta_value < 1.0 - theta_integrality_tolerance) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool column_uses_forbidden_edge(
+    const CGColumn& column,
+    const std::vector<std::uint8_t>& forbidden_edge_mask
+) {
+    if (forbidden_edge_mask.empty()) {
+        return false;
+    }
+    for (int edge_id : column.edge_incidence) {
+        if (edge_id >= 0 &&
+            static_cast<std::size_t>(edge_id) < forbidden_edge_mask.size() &&
+            forbidden_edge_mask[static_cast<std::size_t>(edge_id)] != 0U) {
+            return true;
+        }
+    }
+    return false;
+}
+
+double compute_best_open_lower_bound(
+    const std::vector<BranchNodeRecord>& nodes,
+    const std::vector<std::size_t>& open_node_ids
+) {
+    double best_lower_bound = std::numeric_limits<double>::infinity();
+    for (std::size_t node_id : open_node_ids) {
+        best_lower_bound = std::min(best_lower_bound, nodes[node_id].lower_bound);
+    }
+    return best_lower_bound;
+}
+
+NodeCGInputState build_child_node_input_state(
+    const MultiDiGraph& graph,
+    const std::vector<std::uint64_t>& forbidden_edge_words,
+    const std::vector<std::uint64_t>& forced_edge_words,
+    std::size_t edge_count,
+    const std::vector<CGColumn>* inherited_columns
+) {
+    NodeCGInputState input_state;
+    input_state.enable_phase_one_seed_generation = false;
+    input_state.forbidden_edge_mask = unpack_edge_mask(forbidden_edge_words, edge_count);
+    input_state.forced_edge_mask = unpack_edge_mask(forced_edge_words, edge_count);
+    input_state.fixed_theta_value_by_edge.assign(edge_count, -1);
+
+    for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
+        if (input_state.forbidden_edge_mask[edge_id] != 0U &&
+            input_state.forced_edge_mask[edge_id] != 0U) {
+            input_state.branch_fixing_infeasible = true;
+            return input_state;
+        }
+        if (input_state.forbidden_edge_mask[edge_id] != 0U) {
+            input_state.fixed_theta_value_by_edge[edge_id] = 0;
+        } else if (input_state.forced_edge_mask[edge_id] != 0U) {
+            input_state.fixed_theta_value_by_edge[edge_id] = 1;
+        }
+    }
+
+    input_state.branch_fixing_infeasible = !build_required_edge_node_maps(
+        graph,
+        input_state.forced_edge_mask,
+        input_state.required_outgoing_edge_by_node_id,
+        input_state.required_incoming_edge_by_node_id
+    );
+    if (input_state.branch_fixing_infeasible) {
+        return input_state;
+    }
+
+    for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        bool implied_zero_fix = false;
+        if (edge.u >= 0 &&
+            static_cast<std::size_t>(edge.u) <
+                input_state.required_outgoing_edge_by_node_id.size()) {
+            const int required_edge_id =
+                input_state.required_outgoing_edge_by_node_id[static_cast<std::size_t>(edge.u)];
+            if (required_edge_id >= 0 &&
+                required_edge_id != static_cast<int>(edge_id)) {
+                implied_zero_fix = true;
+            }
+        }
+        if (edge.v >= 0 &&
+            static_cast<std::size_t>(edge.v) <
+                input_state.required_incoming_edge_by_node_id.size()) {
+            const int required_edge_id =
+                input_state.required_incoming_edge_by_node_id[static_cast<std::size_t>(edge.v)];
+            if (required_edge_id >= 0 &&
+                required_edge_id != static_cast<int>(edge_id)) {
+                implied_zero_fix = true;
+            }
+        }
+
+        if (!implied_zero_fix) {
+            continue;
+        }
+        if (input_state.fixed_theta_value_by_edge[edge_id] == 1) {
+            input_state.branch_fixing_infeasible = true;
+            return input_state;
+        }
+        input_state.fixed_theta_value_by_edge[edge_id] = 0;
+    }
+
+    if (inherited_columns != nullptr) {
+        for (const CGColumn& column : *inherited_columns) {
+            if (!column_uses_forbidden_edge(column, input_state.forbidden_edge_mask) &&
+                !column_violates_required_edge_rules(
+                    graph,
+                    column,
+                    input_state.required_outgoing_edge_by_node_id,
+                    input_state.required_incoming_edge_by_node_id
+                )) {
+                input_state.initial_columns.push_back(column);
+            }
+        }
+    }
+    return input_state;
+}
+
+NodeCGInputState build_root_node_input_state(std::size_t edge_count) {
+    NodeCGInputState input_state;
+    input_state.enable_phase_one_seed_generation = true;
+    input_state.forbidden_edge_mask.assign(edge_count, 0U);
+    input_state.forced_edge_mask.assign(edge_count, 0U);
+    input_state.fixed_theta_value_by_edge.assign(edge_count, -1);
+    return input_state;
+}
+
+double sum_node_pricing_runtime_seconds(const NodeCGResult& node_result) {
+    double total = 0.0;
+    for (const NodeCGIterationLog& log : node_result.iteration_logs) {
+        total += log.pricing_runtime_seconds;
+    }
+    return total;
+}
+
+double sum_node_lp_runtime_seconds(const NodeCGResult& node_result) {
+    double total = 0.0;
+    for (const NodeCGIterationLog& log : node_result.iteration_logs) {
+        total += log.lp_runtime_seconds;
+    }
+    return total;
+}
+
+double sum_node_phase_lp_runtime_seconds(
+    const NodeCGResult& node_result,
+    CGPhase phase
+) {
+    double total = 0.0;
+    for (const NodeCGIterationLog& log : node_result.iteration_logs) {
+        if (log.phase == phase) {
+            total += log.lp_runtime_seconds;
+        }
+    }
+    return total;
+}
+
+double sum_node_phase_pricing_runtime_seconds(
+    const NodeCGResult& node_result,
+    CGPhase phase
+) {
+    double total = 0.0;
+    for (const NodeCGIterationLog& log : node_result.iteration_logs) {
+        if (log.phase == phase) {
+            total += log.pricing_runtime_seconds;
+        }
+    }
+    return total;
+}
+
+}  // namespace
+
+BranchAndPriceResult solve_branch_and_price(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const BranchAndPriceOptions& options,
+    std::ostream* log_stream
+) {
+    if (options.node_cg_options.p < 1) {
+        throw std::runtime_error("Branch-and-price requires p >= 1.");
+    }
+
+    BranchAndPriceResult result;
+    result.tree_mode = options.tree_mode;
+    double incumbent_value =
+        options.initial_upper_bound >= 0.0
+            ? options.initial_upper_bound
+            : lookup_baseline_upper_bound(options.instance_name);
+
+    const bool has_initial_upper_bound = std::isfinite(incumbent_value);
+    const std::size_t edge_count = graph.number_of_edges();
+    const std::size_t edge_word_count = bit_word_count_for_edges(edge_count);
+
+    std::optional<FullEnumerationStaticPool> shared_full_enumeration_static_pool;
+    if (options.node_cg_options.phase_two_pricing_mode ==
+        NodeCGPhaseTwoPricingMode::FullEnumeration) {
+        FullEnumerationPoolBuildOptions pool_options;
+        pool_options.p = options.node_cg_options.p;
+        pool_options.time_limit = options.node_cg_options.time_limit;
+        pool_options.prune_pickup_symmetry_43 = options.node_cg_options.prune_pickup_symmetry_43;
+        pool_options.prune_delivery_symmetry_43 =
+            options.node_cg_options.prune_delivery_symmetry_43;
+        shared_full_enumeration_static_pool =
+            build_full_enumeration_static_pool(graph, pool_options, nullptr);
+    }
+
+    std::vector<BranchNodeRecord> nodes;
+    std::vector<std::size_t> open_node_ids;
+    std::unordered_set<BranchNodeKey, BranchNodeKeyHash> seen_node_keys;
+    const auto global_start_time = std::chrono::steady_clock::now();
+
+    const auto attach_shared_pool =
+        [&](NodeCGInputState input_state) -> NodeCGInputState {
+            if (shared_full_enumeration_static_pool.has_value()) {
+                input_state.shared_full_enumeration_static_pool =
+                    &shared_full_enumeration_static_pool.value();
+            }
+            return input_state;
+        };
+
+    const auto accumulate_node_work =
+        [&](const NodeCGResult& node_result) {
+            result.total_lp_runtime_seconds += sum_node_lp_runtime_seconds(node_result);
+            result.total_pricing_runtime_seconds += sum_node_pricing_runtime_seconds(node_result);
+            result.phase_one_iterations += node_result.phase_one_iterations;
+            result.phase_two_iterations += node_result.phase_two_iterations;
+            result.phase_one_lp_runtime_seconds +=
+                sum_node_phase_lp_runtime_seconds(node_result, CGPhase::PhaseI);
+            result.phase_two_lp_runtime_seconds +=
+                sum_node_phase_lp_runtime_seconds(node_result, CGPhase::PhaseII);
+            result.phase_one_pricing_runtime_seconds +=
+                sum_node_phase_pricing_runtime_seconds(node_result, CGPhase::PhaseI);
+            result.phase_two_pricing_runtime_seconds +=
+                sum_node_phase_pricing_runtime_seconds(node_result, CGPhase::PhaseII);
+        };
+
+    const auto node_result_lower_bound =
+        [&](const NodeCGResult& node_result) -> double {
+            return node_result.phase_two_reached
+                       ? node_result.phase_two_objective
+                       : node_result.phase_one_objective;
+        };
+
+    const auto node_result_is_integer =
+        [&](const NodeCGResult& node_result) -> bool {
+            return theta_solution_is_integral(
+                graph,
+                node_result.theta_values,
+                options.theta_integrality_tolerance
+            );
+        };
+
+    const auto create_and_evaluate_node =
+        [&](std::optional<std::size_t> parent_id,
+            const std::vector<std::uint64_t>& forbidden_edge_words,
+            const std::vector<std::uint64_t>& forced_edge_words,
+            const NodeCGInputState& input_state,
+            std::size_t depth) -> std::optional<std::size_t> {
+            const double remaining =
+                remaining_time_seconds(global_start_time, options.node_cg_options.solver_time_limit);
+            if (remaining >= 0.0 && remaining <= 0.0) {
+                result.hit_time_limit = true;
+                return std::nullopt;
+            }
+            BranchNodeKey node_key{forbidden_edge_words, forced_edge_words};
+            if (seen_node_keys.find(node_key) != seen_node_keys.end()) {
+                return std::nullopt;
+            }
+            seen_node_keys.insert(node_key);
+
+            BranchNodeRecord node;
+            node.id = nodes.size();
+            node.parent_id = parent_id;
+            node.depth = depth;
+            node.forbidden_edge_words = forbidden_edge_words;
+            node.forced_edge_words = forced_edge_words;
+
+            NodeCGInputState node_input_state = attach_shared_pool(input_state);
+
+            if (node_input_state.branch_fixing_infeasible) {
+                if (log_stream != nullptr) {
+                    *log_stream << "[bnp] prune node id=" << node.id
+                                << " depth=" << node.depth
+                                << " reason=branch-fixing-infeasible"
+                                << '\n';
+                }
+                node.phase_one_feasible = false;
+                node.solved_to_completion = true;
+                const std::size_t node_id = node.id;
+                nodes.push_back(std::move(node));
+                ++result.processed_node_count;
+                ++result.infeasible_prune_count;
+                return node_id;
+            }
+
+            NodeCGOptions node_options = options.node_cg_options;
+            node_options.solver_time_limit = remaining;
+
+            if (log_stream != nullptr) {
+                *log_stream << "[bnp] solve node id=" << node.id
+                            << " depth=" << node.depth
+                            << " parent=" << (parent_id.has_value() ? std::to_string(parent_id.value()) : std::string("root"))
+                            << " initial_columns=" << node_input_state.initial_columns.size()
+                            << " forbidden_edges="
+                            << std::count(
+                                   node_input_state.forbidden_edge_mask.begin(),
+                                   node_input_state.forbidden_edge_mask.end(),
+                                   static_cast<std::uint8_t>(1U))
+                            << " forced_edges="
+                            << std::count(
+                                   node_input_state.forced_edge_mask.begin(),
+                                   node_input_state.forced_edge_mask.end(),
+                                   static_cast<std::uint8_t>(1U))
+                            << '\n';
+            }
+
+            const NodeCGResult node_result =
+                solve_node_column_generation(data, graph, node_options, node_input_state, log_stream);
+
+            accumulate_node_work(node_result);
+            ++result.processed_node_count;
+
+            node.phase_one_feasible = node_result.phase_one_feasible;
+            node.solved_to_completion = node_result.solved_to_completion;
+            node.lower_bound = node_result_lower_bound(node_result);
+            node.master_columns = node_result.columns;
+            node.column_values = node_result.column_values;
+            node.theta_values = node_result.theta_values;
+            node.is_integer = node_result_is_integer(node_result);
+
+            const std::size_t node_id = node.id;
+            nodes.push_back(std::move(node));
+
+            if (!node_result.phase_one_feasible) {
+                ++result.infeasible_prune_count;
+                return node_id;
+            }
+            if (!node_result.solved_to_completion) {
+                result.hit_time_limit = true;
+                return node_id;
+            }
+
+            if (nodes[node_id].is_integer) {
+                if (nodes[node_id].lower_bound < incumbent_value) {
+                    incumbent_value = nodes[node_id].lower_bound;
+                    result.incumbent_updated = true;
+                    result.incumbent_value = incumbent_value;
+                    result.incumbent_theta_values = nodes[node_id].theta_values;
+                    result.incumbent_columns = nodes[node_id].master_columns;
+                    result.incumbent_column_values = nodes[node_id].column_values;
+                }
+                ++result.integer_prune_count;
+                return node_id;
+            }
+
+            if (has_initial_upper_bound &&
+                incumbent_value - nodes[node_id].lower_bound < 1.0 - options.gap_tolerance) {
+                ++result.bound_prune_count;
+                return node_id;
+            }
+
+            open_node_ids.push_back(node_id);
+            return node_id;
+        };
+
+    NodeCGInputState root_input_state = build_root_node_input_state(edge_count);
+    create_and_evaluate_node(
+        std::nullopt,
+        std::vector<std::uint64_t>(edge_word_count, 0U),
+        std::vector<std::uint64_t>(edge_word_count, 0U),
+        root_input_state,
+        0U
+    );
+
+    if (options.tree_mode == BnPTreeMode::RootOnly) {
+        result.open_node_count = open_node_ids.size();
+        if (!result.incumbent_updated && has_initial_upper_bound) {
+            result.incumbent_value = incumbent_value;
+        }
+        if (!std::isfinite(result.best_global_lower_bound)) {
+            result.best_global_lower_bound =
+                open_node_ids.empty()
+                    ? incumbent_value
+                    : compute_best_open_lower_bound(nodes, open_node_ids);
+        }
+        if (std::isfinite(result.incumbent_value) &&
+            std::isfinite(result.best_global_lower_bound)) {
+            result.global_gap =
+                std::max(0.0, result.incumbent_value - result.best_global_lower_bound);
+        }
+        return result;
+    }
+
+    while (!open_node_ids.empty() && !result.hit_time_limit) {
+        double best_open_lower_bound =
+            compute_best_open_lower_bound(nodes, open_node_ids);
+        result.best_global_lower_bound = best_open_lower_bound;
+        if (has_initial_upper_bound &&
+            incumbent_value - best_open_lower_bound < 1.0 - options.gap_tolerance) {
+            result.solved_to_optimality = true;
+            break;
+        }
+
+        std::size_t selected_position = 0U;
+        if (options.node_selection_rule == BnPNodeSelectionRule::BestBound) {
+            for (std::size_t pos = 1; pos < open_node_ids.size(); ++pos) {
+                const std::size_t lhs_node_id = open_node_ids[pos];
+                const std::size_t rhs_node_id = open_node_ids[selected_position];
+                if (nodes[lhs_node_id].lower_bound < nodes[rhs_node_id].lower_bound - kTolerance ||
+                    (double_equal(nodes[lhs_node_id].lower_bound, nodes[rhs_node_id].lower_bound) &&
+                     lhs_node_id < rhs_node_id)) {
+                    selected_position = pos;
+                }
+            }
+        } else {
+            selected_position = open_node_ids.size() - 1U;
+        }
+
+        const std::size_t selected_node_id = open_node_ids[selected_position];
+        open_node_ids[selected_position] = open_node_ids.back();
+        open_node_ids.pop_back();
+
+        const BranchNodeRecord& node = nodes[selected_node_id];
+        const std::optional<std::size_t> branching_edge =
+            choose_branching_edge(
+                graph,
+                node.theta_values,
+                options.theta_integrality_tolerance
+            );
+        if (!branching_edge.has_value()) {
+            continue;
+        }
+        if (log_stream != nullptr && selected_node_id == 0U) {
+            *log_stream << "[bnp] root_branch_edge=" << branching_edge.value()
+                        << " source=closest-to-half"
+                        << '\n';
+        }
+
+        BranchNodeRecord zero_child_template = node;
+        zero_child_template.parent_id = selected_node_id;
+        zero_child_template.depth = node.depth + 1U;
+        set_packed_edge_bit(zero_child_template.forbidden_edge_words, branching_edge.value());
+
+        BranchNodeRecord one_child_template = node;
+        one_child_template.parent_id = selected_node_id;
+        one_child_template.depth = node.depth + 1U;
+        set_packed_edge_bit(one_child_template.forced_edge_words, branching_edge.value());
+
+        const NodeCGInputState zero_child_input =
+            build_child_node_input_state(
+                graph,
+                zero_child_template.forbidden_edge_words,
+                zero_child_template.forced_edge_words,
+                edge_count,
+                &node.master_columns
+            );
+        const NodeCGInputState one_child_input =
+            build_child_node_input_state(
+                graph,
+                one_child_template.forbidden_edge_words,
+                one_child_template.forced_edge_words,
+                edge_count,
+                &node.master_columns
+            );
+
+        const std::optional<std::size_t> one_child_id = create_and_evaluate_node(
+            selected_node_id,
+            one_child_template.forbidden_edge_words,
+            one_child_template.forced_edge_words,
+            one_child_input,
+            node.depth + 1U
+        );
+        if (result.hit_time_limit) {
+            break;
+        }
+        const std::optional<std::size_t> zero_child_id = create_and_evaluate_node(
+            selected_node_id,
+            zero_child_template.forbidden_edge_words,
+            zero_child_template.forced_edge_words,
+            zero_child_input,
+            node.depth + 1U
+        );
+        (void)one_child_id;
+        (void)zero_child_id;
+    }
+
+    result.open_node_count = open_node_ids.size();
+    if (!result.incumbent_updated && has_initial_upper_bound) {
+        result.incumbent_value = incumbent_value;
+    }
+    if (!result.hit_time_limit && open_node_ids.empty()) {
+        result.solved_to_optimality = true;
+        result.best_global_lower_bound = incumbent_value;
+    }
+    if (std::isinf(result.best_global_lower_bound)) {
+        result.best_global_lower_bound =
+            open_node_ids.empty() ? incumbent_value : compute_best_open_lower_bound(nodes, open_node_ids);
+    }
+    if (std::isfinite(result.incumbent_value) &&
+        std::isfinite(result.best_global_lower_bound)) {
+        result.global_gap =
+            std::max(0.0, result.incumbent_value - result.best_global_lower_bound);
+    }
+    return result;
+}
+
+void write_branch_and_price_summary(
+    std::ostream& out,
+    const BranchAndPriceResult& result
+) {
+    out << "[bnp-summary] tree_mode=" << to_string(result.tree_mode) << '\n';
+    out << "[bnp-summary] solved_to_optimality=" << (result.solved_to_optimality ? 1 : 0) << '\n';
+    out << "[bnp-summary] hit_time_limit=" << (result.hit_time_limit ? 1 : 0) << '\n';
+    out << "[bnp-summary] incumbent_updated=" << (result.incumbent_updated ? 1 : 0) << '\n';
+    out << "[bnp-summary] incumbent_value=" << format_double(result.incumbent_value) << '\n';
+    out << "[bnp-summary] best_global_lower_bound="
+        << format_double(result.best_global_lower_bound) << '\n';
+    out << "[bnp-summary] global_gap=" << format_double(result.global_gap) << '\n';
+    out << "[bnp-summary] processed_nodes=" << result.processed_node_count << '\n';
+    out << "[bnp-summary] open_nodes=" << result.open_node_count << '\n';
+    out << "[bnp-summary] prune_infeasible=" << result.infeasible_prune_count << '\n';
+    out << "[bnp-summary] prune_bound=" << result.bound_prune_count << '\n';
+    out << "[bnp-summary] prune_integer=" << result.integer_prune_count << '\n';
+    out << "[bnp-summary] phase_one_iterations=" << result.phase_one_iterations << '\n';
+    out << "[bnp-summary] phase_two_iterations=" << result.phase_two_iterations << '\n';
+    out << "[bnp-summary] phase_one_lp_runtime_seconds="
+        << format_double(result.phase_one_lp_runtime_seconds) << '\n';
+    out << "[bnp-summary] phase_two_lp_runtime_seconds="
+        << format_double(result.phase_two_lp_runtime_seconds) << '\n';
+    out << "[bnp-summary] phase_one_pricing_runtime_seconds="
+        << format_double(result.phase_one_pricing_runtime_seconds) << '\n';
+    out << "[bnp-summary] phase_two_pricing_runtime_seconds="
+        << format_double(result.phase_two_pricing_runtime_seconds) << '\n';
+    out << "[bnp-summary] total_lp_runtime_seconds="
+        << format_double(result.total_lp_runtime_seconds) << '\n';
+    out << "[bnp-summary] total_pricing_runtime_seconds="
+        << format_double(result.total_pricing_runtime_seconds) << '\n';
+}
+
+void write_branch_and_price_solution(
+    std::ostream& out,
+    const BranchAndPriceResult& result
+) {
+    out << "Solution:\n";
+    if (!result.incumbent_updated) {
+        out << "  No incumbent decomposition was found during branch-and-price\n";
+        out << "Solution done \n";
+        return;
+    }
+
+    for (std::size_t idx = 0;
+         idx < result.incumbent_columns.size() && idx < result.incumbent_column_values.size();
+         ++idx) {
+        if (result.incumbent_column_values[idx] <= 1e-6) {
+            continue;
+        }
+        const CGColumn& column = result.incumbent_columns[idx];
+        out << "  x_" << column.id
+            << " = " << format_double(result.incumbent_column_values[idx])
+            << " | tau=" << format_double(column.tau)
+            << " | time=" << format_double(column.total_time)
+            << " | cost=" << format_double(column.total_cost)
+            << " | edges=[";
+        for (std::size_t edge_idx = 0; edge_idx < column.edge_ids.size(); ++edge_idx) {
+            if (edge_idx > 0U) {
+                out << ", ";
+            }
+            out << column.edge_ids[edge_idx];
+        }
+        out << "]\n";
+    }
+    out << "Solution done \n";
+}
+
 const char* to_string(NodeCGPhaseOneMode mode) {
     switch (mode) {
         case NodeCGPhaseOneMode::ExactCG:
@@ -3356,6 +4290,34 @@ const char* to_string(NodeCGPhaseTwoHeuristicEngine mode) {
             return "labeling";
         case NodeCGPhaseTwoHeuristicEngine::ShallowSearch:
             return "shallow-search";
+    }
+    return "unknown";
+}
+
+const char* to_string(BnPTreeMode mode) {
+    switch (mode) {
+        case BnPTreeMode::RootOnly:
+            return "root-only";
+        case BnPTreeMode::FullTree:
+            return "full-tree";
+    }
+    return "unknown";
+}
+
+const char* to_string(BnPBranchingRule rule) {
+    switch (rule) {
+        case BnPBranchingRule::ClosestToHalf:
+            return "closest-to-half";
+    }
+    return "unknown";
+}
+
+const char* to_string(BnPNodeSelectionRule rule) {
+    switch (rule) {
+        case BnPNodeSelectionRule::BestBound:
+            return "best-bound";
+        case BnPNodeSelectionRule::DepthFirst:
+            return "dfs";
     }
     return "unknown";
 }

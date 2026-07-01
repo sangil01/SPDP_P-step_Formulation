@@ -235,6 +235,16 @@ struct ForwardPricingOptions {
 
     // 비어 있지 않으면 이 start class subset만 순서대로 pricing한다.
     std::vector<int> explicit_start_node_state_indices;
+
+    // branch-and-price node에서 금지된 original graph edge mask.
+    // size = graph.number_of_edges(), 1이면 해당 edge를 사용하는 transition/column을 금지한다.
+    std::vector<std::uint8_t> forbidden_edge_mask;
+
+    // branch-and-price one-child consistency rule:
+    // if required_outgoing_edge_by_node_id[i] = e, any pricing edge leaving node i must be e.
+    // if required_incoming_edge_by_node_id[j] = e, any pricing edge entering node j must be e.
+    std::vector<int> required_outgoing_edge_by_node_id;
+    std::vector<int> required_incoming_edge_by_node_id;
 };
 
 enum class ForwardPricingStatus {
@@ -337,6 +347,8 @@ struct FullEnumerationStaticPool {
     std::map<NodeId, int> visit_index_by_node;
     std::map<NodeStateKey, int> node_state_index_by_key;
     std::vector<int> dense_visit_row_index_by_node_id;
+    std::vector<NodeId> graph_edge_source_node_id;
+    std::vector<NodeId> graph_edge_target_node_id;
 
     std::vector<int> entry_q;
     std::vector<NodeId> entry_start_node_id;
@@ -439,6 +451,19 @@ void mark_full_enumeration_pool_columns_active(
     const FullEnumerationStaticPool& static_pool,
     FullEnumerationPoolNodeState& node_state,
     const std::vector<CGColumn>& columns
+);
+
+void mark_full_enumeration_pool_entries_forbidden_by_edge_mask(
+    const FullEnumerationStaticPool& static_pool,
+    const std::vector<std::uint8_t>& forbidden_edge_mask,
+    FullEnumerationPoolNodeState& node_state
+);
+
+void mark_full_enumeration_pool_entries_forbidden_by_required_edges(
+    const FullEnumerationStaticPool& static_pool,
+    const std::vector<int>& required_outgoing_edge_by_node_id,
+    const std::vector<int>& required_incoming_edge_by_node_id,
+    FullEnumerationPoolNodeState& node_state
 );
 
 // 현재 dual에서 heuristic start score 기준으로 start class를 정렬한다.

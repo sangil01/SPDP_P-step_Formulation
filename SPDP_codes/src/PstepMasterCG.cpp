@@ -6,6 +6,7 @@
 #include <iosfwd>
 #include <limits>
 #include <map>
+#include <optional>
 #include <ostream>
 #include <set>
 #include <sstream>
@@ -21,6 +22,10 @@ constexpr double kTolerance = 1e-9;
 
 bool double_equal(double lhs, double rhs) {
     return std::fabs(lhs - rhs) <= kTolerance;
+}
+
+int to_gurobi_method(GurobiLPMethod method) {
+    return static_cast<int>(method);
 }
 
 std::string format_double(double value) {
@@ -101,7 +106,7 @@ CGMasterProblem build_cg_master_problem(
     problem.model = std::make_unique<GRBModel>(*problem.env);
     problem.model->set(GRB_StringAttr_ModelName, "node_cg_master");
     problem.model->set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
-    problem.model->set(GRB_IntParam_Method, 0);  //0 = primal simplex, 1 = dual simplex, 2 = barrier, 3 = concurrent
+    problem.model->set(GRB_IntParam_Method, to_gurobi_method(options.initial_lp_method));
     if (options.gurobi_threads >= 0) {
         problem.model->set(GRB_IntParam_Threads, options.gurobi_threads);
     }
@@ -111,14 +116,30 @@ CGMasterProblem build_cg_master_problem(
 
     const NodeId end_node_id = graph.end_node_id();
     problem.sigma_by_node = collect_sigma_by_node_from_graph(graph);
+    problem.fixed_theta_value_by_edge.assign(graph.number_of_edges(), -1);
+    for (std::size_t edge_id = 0;
+         edge_id < options.fixed_theta_value_by_edge.size() &&
+         edge_id < graph.number_of_edges();
+         ++edge_id) {
+        problem.fixed_theta_value_by_edge[edge_id] = options.fixed_theta_value_by_edge[edge_id];
+    }
 
     // theta_e variables: node LP relaxation에서는 [0,1] continuous.
     problem.theta_vars.reserve(graph.number_of_edges());
     for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
+        double lower_bound = 0.0;
+        double upper_bound = 1.0;
+        if (problem.fixed_theta_value_by_edge[edge_id] == 0) {
+            lower_bound = 0.0;
+            upper_bound = 0.0;
+        } else if (problem.fixed_theta_value_by_edge[edge_id] == 1) {
+            lower_bound = 1.0;
+            upper_bound = 1.0;
+        }
         problem.theta_vars.push_back(
             problem.model->addVar(
-                0.0,
-                1.0,
+                lower_bound,
+                upper_bound,
                 0.0,
                 GRB_CONTINUOUS,
                 "theta_" + std::to_string(edge_id)
@@ -226,15 +247,26 @@ CGMasterProblem build_cg_master_problem(
 
     problem.edge_rows.reserve(graph.number_of_edges());
     for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
+        GRBLinExpr edge_expr = -problem.theta_vars[edge_id];
+        if (problem.fixed_theta_value_by_edge[edge_id] == 1) {
+            GRBVar artificial_var = problem.model->addVar(
+                0.0,
+                GRB_INFINITY,
+                1.0,
+                GRB_CONTINUOUS,
+                "z_theta_fix_" + std::to_string(edge_id)
+            );
+            problem.artificial_fixed_theta_vars.emplace(edge_id, artificial_var);
+            edge_expr += artificial_var;
+        }
         problem.edge_rows.push_back(
             problem.model->addConstr(
-                -problem.theta_vars[edge_id] == 0.0,
+                edge_expr == 0.0,
                 "edge_" + std::to_string(edge_id)
             )
         );
     }
 
-    problem.model->update();
     return problem;
 }
 
@@ -305,8 +337,18 @@ std::size_t add_columns_to_cg_master(
 }
 
 void solve_cg_master_lp(CGMasterProblem& problem) {
+    solve_cg_master_lp(problem, GurobiLPMethod::Automatic);
+}
+
+void solve_cg_master_lp(
+    CGMasterProblem& problem,
+    GurobiLPMethod method
+) {
     if (problem.model == nullptr) {
         throw std::runtime_error("CG master model must exist before solving.");
+    }
+    if (method != GurobiLPMethod::Automatic) {
+        problem.model->set(GRB_IntParam_Method, to_gurobi_method(method));
     }
     problem.model->optimize();
 }
@@ -363,6 +405,9 @@ CGLPSnapshot capture_cg_master_snapshot(const CGMasterProblem& problem) {
         for (const auto& entry : problem.artificial_time_vars) {
             snapshot.artificial_sum += entry.second.get(GRB_DoubleAttr_X);
         }
+        for (const auto& entry : problem.artificial_fixed_theta_vars) {
+            snapshot.artificial_sum += entry.second.get(GRB_DoubleAttr_X);
+        }
         for (const GRBVar& x_var : problem.x_vars) {
             if (x_var.get(GRB_DoubleAttr_X) > 1e-6) {
                 ++snapshot.positive_x_count;
@@ -399,6 +444,10 @@ void switch_cg_master_to_phase_two(CGMasterProblem& problem) {
         entry.second.set(GRB_DoubleAttr_UB, 0.0);
     }
     for (auto& entry : problem.artificial_time_vars) {
+        entry.second.set(GRB_DoubleAttr_Obj, 0.0);
+        entry.second.set(GRB_DoubleAttr_UB, 0.0);
+    }
+    for (auto& entry : problem.artificial_fixed_theta_vars) {
         entry.second.set(GRB_DoubleAttr_Obj, 0.0);
         entry.second.set(GRB_DoubleAttr_UB, 0.0);
     }

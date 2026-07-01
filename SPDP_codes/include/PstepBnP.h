@@ -1,8 +1,10 @@
 #ifndef SPDP_PSTEP_BNP_H
 #define SPDP_PSTEP_BNP_H
 
+#include <cstdint>
 #include <cstddef>
 #include <iosfwd>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,6 +32,20 @@ enum class NodeCGPhaseTwoHeuristicEngine {
     ShallowSearch,
 };
 
+enum class BnPBranchingRule {
+    ClosestToHalf,
+};
+
+enum class BnPNodeSelectionRule {
+    BestBound,
+    DepthFirst,
+};
+
+enum class BnPTreeMode {
+    RootOnly,
+    FullTree,
+};
+
 // B&P node column generation solver 전체 제어 옵션.
 struct NodeCGOptions {
     // pricing에 사용할 p.
@@ -43,6 +59,10 @@ struct NodeCGOptions {
 
     // Gurobi thread 수.
     int gurobi_threads = -1;
+
+    // Phase I / II simplex method.
+    GurobiLPMethod phase_one_lp_method = GurobiLPMethod::Primal;
+    GurobiLPMethod phase_two_lp_method = GurobiLPMethod::Primal;
 
     // 한 phase에서 허용하는 최대 CG iteration 수.
     std::size_t max_iterations_per_phase = 1000;
@@ -133,6 +153,18 @@ struct NodeCGOptions {
     bool full_enumeration_rc_detail_log = true;
 };
 
+struct NodeCGInputState {
+    std::vector<CGColumn> initial_columns;
+    std::vector<std::uint8_t> forbidden_edge_mask;
+    std::vector<std::uint8_t> forced_edge_mask;
+    std::vector<int> fixed_theta_value_by_edge;
+    std::vector<int> required_outgoing_edge_by_node_id;
+    std::vector<int> required_incoming_edge_by_node_id;
+    bool branch_fixing_infeasible = false;
+    bool enable_phase_one_seed_generation = true;
+    const FullEnumerationStaticPool* shared_full_enumeration_static_pool = nullptr;
+};
+
 // 한 CG iteration의 phase / LP / pricing 결과 요약.
 struct NodeCGIterationLog {
     CGPhase phase = CGPhase::PhaseI;
@@ -141,6 +173,7 @@ struct NodeCGIterationLog {
     double artificial_sum = 0.0;
     double best_reduced_cost = 0.0;
     ForwardPricingStatus pricing_status = ForwardPricingStatus::NoCompleteLabel;
+    double lp_runtime_seconds = 0.0;
     double pricing_runtime_seconds = 0.0;
     std::size_t added_column_count = 0;
     std::size_t complete_label_count = 0;
@@ -201,6 +234,49 @@ struct NodeCGResult {
     // 최종 RMP에 존재하는 모든 column과 그 LP 값.
     std::vector<CGColumn> columns;
     std::vector<double> column_values;
+    std::vector<double> theta_values;
+};
+
+struct BranchAndPriceOptions {
+    NodeCGOptions node_cg_options;
+    BnPTreeMode tree_mode = BnPTreeMode::FullTree;
+    BnPBranchingRule branching_rule = BnPBranchingRule::ClosestToHalf;
+    BnPNodeSelectionRule node_selection_rule = BnPNodeSelectionRule::BestBound;
+    double theta_integrality_tolerance = 1e-6;
+    double gap_tolerance = 1e-6;
+    std::string instance_name;
+    double initial_upper_bound = -1.0;
+};
+
+struct BranchAndPriceResult {
+    BnPTreeMode tree_mode = BnPTreeMode::FullTree;
+    bool solved_to_optimality = false;
+    bool hit_time_limit = false;
+    bool incumbent_updated = false;
+
+    double incumbent_value = 0.0;
+    double best_global_lower_bound = 0.0;
+    double global_gap = 0.0;
+
+    std::size_t processed_node_count = 0;
+    std::size_t open_node_count = 0;
+    std::size_t infeasible_prune_count = 0;
+    std::size_t bound_prune_count = 0;
+    std::size_t integer_prune_count = 0;
+
+    std::size_t phase_one_iterations = 0;
+    std::size_t phase_two_iterations = 0;
+
+    double phase_one_lp_runtime_seconds = 0.0;
+    double phase_two_lp_runtime_seconds = 0.0;
+    double phase_one_pricing_runtime_seconds = 0.0;
+    double phase_two_pricing_runtime_seconds = 0.0;
+    double total_lp_runtime_seconds = 0.0;
+    double total_pricing_runtime_seconds = 0.0;
+
+    std::vector<double> incumbent_theta_values;
+    std::vector<CGColumn> incumbent_columns;
+    std::vector<double> incumbent_column_values;
 };
 
 // two-phase column generation으로 한 B&P node의 LP relaxation을 푼다.
@@ -211,16 +287,36 @@ NodeCGResult solve_node_column_generation(
     std::ostream* log_stream = nullptr
 );
 
+NodeCGResult solve_node_column_generation(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const NodeCGOptions& options,
+    const NodeCGInputState& input_state,
+    std::ostream* log_stream = nullptr
+);
+
+BranchAndPriceResult solve_branch_and_price(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const BranchAndPriceOptions& options,
+    std::ostream* log_stream = nullptr
+);
+
 // node CG 결과를 요약 출력한다.
 void write_node_cg_summary(std::ostream& out, const NodeCGResult& result);
 
 // node LP에서 양의 값을 갖는 x-column들을 출력한다.
 void write_node_cg_solution(std::ostream& out, const NodeCGResult& result);
+void write_branch_and_price_summary(std::ostream& out, const BranchAndPriceResult& result);
+void write_branch_and_price_solution(std::ostream& out, const BranchAndPriceResult& result);
 
 // CLI/logging용 phase-one mode 이름.
 const char* to_string(NodeCGPhaseOneMode mode);
 const char* to_string(NodeCGPhaseTwoPricingMode mode);
 const char* to_string(NodeCGPhaseTwoHeuristicEngine mode);
+const char* to_string(BnPTreeMode mode);
+const char* to_string(BnPBranchingRule rule);
+const char* to_string(BnPNodeSelectionRule rule);
 
 }  // namespace spdp
 
