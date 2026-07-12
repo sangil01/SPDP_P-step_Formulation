@@ -14,11 +14,12 @@ fi
 # INPUT PARAMETERS
 # ============================================
 P=2
-SOLVER_MODE=branch-and-price # Options: enumeration, branch-and-price
-BNP_TREE_MODE=full-tree # Options: root-only, full-tree
+SOLVER_MODE=enumeration # Options: enumeration, branch-and-price
+ENUMERATION_SOS1_MODE=default # Options: default, sos1-auto, sos1-native (used only with SOLVER_MODE=enumeration)
+BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=120 # seconds
+SOLVER_TIME_LIMIT=1800 # seconds
 GUROBI_THREADS=0
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
@@ -38,7 +39,10 @@ PRUNE_SYMMETRY_41=1
 PRUNE_PICKUP_SYMMETRY_43=1
 PRUNE_DELIVERY_SYMMETRY_43=1
 ADD_VI_35=0
-ADD_VI_36=0
+ADD_VI_36_COMBINED=0
+VI_36_SUBSET_MAX_SIZE=1 # 1이상으로 설정, 1이면 기존 singleton Eq. (36)과 동일, 7이면 현재 instance들에 대해 전체 set까지 포함하는 것
+ADD_VI_Request_BLOCK_SEC=0
+VI_Request_BLOCK_SEC_MAX_SIZE=2 # 2이상으로 설정.
 ADD_VI_44=0
 CG_MAX_ITERATIONS_PER_PHASE=1000
 EXACT_PRICING_MAX_COLUMNS_PER_START=64
@@ -74,25 +78,30 @@ DATA_LIST=(
     "RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
-    #"RecDep_day_A4.dat"
-    #"RecDep_day_A5.dat"
-    #"RecDep_day_A6.dat"
-    #"RecDep_day_A7.dat"
-    #"RecDep_day_A8.dat"
-    #"RecDep_day_A9.dat"
+    "RecDep_day_A4.dat"
+    "RecDep_day_A5.dat"
+    "RecDep_day_A6.dat"
+    "RecDep_day_A7.dat"
+    "RecDep_day_A8.dat"
+    "RecDep_day_A9.dat"
     #"RecDep_day_A10.dat"
     #"RecDep_day_A11.dat"
-    #"RecDep_day_B1.dat"
-    #"RecDep_day_B2.dat"
-    #"RecDep_day_C1.dat"
-    #"RecDep_day_C2.dat"
-    #"RecDep_day_C3.dat"
-    #"RecDep_day_C4.dat"
+    "RecDep_day_B1.dat"
+    "RecDep_day_B2.dat"
+    "RecDep_day_C1.dat"
+    "RecDep_day_C2.dat"
+    "RecDep_day_C3.dat"
+    "RecDep_day_C4.dat"
 )
 # Put one data file name per line in DATA_LIST.
 # ============================================
 
-RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}"
+RUN_TAG_SUFFIX="${RUN_TAG_SUFFIX:-}"
+ENUMERATION_SOS1_TAG=""
+if [[ "$SOLVER_MODE" == "enumeration" ]]; then
+    ENUMERATION_SOS1_TAG="_${ENUMERATION_SOS1_MODE}"
+fi
+RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}${ENUMERATION_SOS1_TAG}${RUN_TAG_SUFFIX}"
 RUNNER_LOG="$SCRIPT_DIR/${RUN_TAG}.log"
 SUMMARY_XLSX="$SCRIPT_DIR/${RUN_TAG}.xlsx"
 
@@ -131,6 +140,7 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "Running data [$CURRENT/$TOTAL]: $data_name"
         echo "p: $P"
         echo "solver-mode: $SOLVER_MODE"
+        echo "enumeration-sos1-mode: $ENUMERATION_SOS1_MODE"
         echo "bnp-tree-mode: $BNP_TREE_MODE"
         echo "node-cg-phase1-mode: $NODE_CG_PHASE1_MODE"
         echo "node-cg-phase2-pricing-mode: $NODE_CG_PHASE2_PRICING_MODE"
@@ -174,12 +184,19 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "full-enumeration-rc-detail-log: $FULL_ENUMERATION_RC_DETAIL_LOG"
         echo "prune-pickup-symmetry-43: $PRUNE_PICKUP_SYMMETRY_43"
         echo "prune-delivery-symmetry-43: $PRUNE_DELIVERY_SYMMETRY_43"
+        echo "add-vi-35: $ADD_VI_35"
+        echo "add-vi-36-combined: $ADD_VI_36_COMBINED"
+        echo "vi-36-subset-max-size: $VI_36_SUBSET_MAX_SIZE"
+        echo "add-vi-request-block-sec: $ADD_VI_Request_BLOCK_SEC"
+        echo "vi-request-block-sec-max-size: $VI_Request_BLOCK_SEC_MAX_SIZE"
+        echo "add-vi-44: $ADD_VI_44"
         echo "----------------------------------------"
     } >> "$RUNNER_LOG"
 
     if "$EXE" "$data_name" \
         --p "$P" \
         --solver-mode "$SOLVER_MODE" \
+        --enumeration-sos1-mode "$ENUMERATION_SOS1_MODE" \
         --bnp-tree-mode "$BNP_TREE_MODE" \
         --node-cg-phase1-mode "$NODE_CG_PHASE1_MODE" \
         --node-cg-phase2-pricing-mode "$NODE_CG_PHASE2_PRICING_MODE" \
@@ -203,7 +220,10 @@ for data_name in "${DATA_LIST[@]}"; do
         --prune-pickup-symmetry-43 "$PRUNE_PICKUP_SYMMETRY_43" \
         --prune-delivery-symmetry-43 "$PRUNE_DELIVERY_SYMMETRY_43" \
         --add-vi-35 "$ADD_VI_35" \
-        --add-vi-36 "$ADD_VI_36" \
+        --add-vi-36-combined "$ADD_VI_36_COMBINED" \
+        --vi-36-subset-max-size "$VI_36_SUBSET_MAX_SIZE" \
+        --add-vi-request-block-sec "$ADD_VI_Request_BLOCK_SEC" \
+        --vi-request-block-sec-max-size "$VI_Request_BLOCK_SEC_MAX_SIZE" \
         --add-vi-44 "$ADD_VI_44" \
         --cg-max-iterations-per-phase "$CG_MAX_ITERATIONS_PER_PHASE" \
         --exact-pricing-max-columns-per-start "$EXACT_PRICING_MAX_COLUMNS_PER_START" \

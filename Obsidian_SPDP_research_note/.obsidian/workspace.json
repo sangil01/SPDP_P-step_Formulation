@@ -6,9 +6,10 @@
       {
         "id": "e7d65a491b384f2b",
         "type": "tabs",
+        "dimension": 48.76912840984697,
         "children": [
           {
-            "id": "d429bcf8022ffeae",
+            "id": "471debd3dfede7d2",
             "type": "leaf",
             "state": {
               "type": "markdown",
@@ -22,6 +23,56 @@
             }
           }
         ]
+      },
+      {
+        "id": "e3fa98d7e1b2fac7",
+        "type": "tabs",
+        "dimension": 51.23087159015303,
+        "children": [
+          {
+            "id": "d429bcf8022ffeae",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "3. P-step Formulation for SPDP-flexible.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "3. P-step Formulation for SPDP-flexible"
+            }
+          },
+          {
+            "id": "d08ddd738fb76d1b",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "5. Column Generation for root node.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "5. Column Generation for root node"
+            }
+          },
+          {
+            "id": "43ee70e8f4c7e76f",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "2. Skip Pick-up and Delivery Problem (SPDP).md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "2. Skip Pick-up and Delivery Problem (SPDP)"
+            }
+          }
+        ],
+        "currentTab": 2
       }
     ],
     "direction": "vertical"
@@ -78,7 +129,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 311.5
+    "width": 373.5
   },
   "right": {
     "id": "b90d585d0fa44aa9",
@@ -183,31 +234,36 @@
       "bases:Create new base": false
     }
   },
-  "active": "d429bcf8022ffeae",
+  "active": "471debd3dfede7d2",
   "lastOpenFiles": [
-    "6. P2 Full Pool Delayed Column Activation.md",
+    "10. Arc elimination at Multi Graph.md",
+    "9. Branching rule on multiple edges.md",
     "8. Valid inequalities for tightening LP bound.md",
-    "5. Column Generation for root node.md",
-    "7. Branch and Price algorithm.md",
-    "3. P-step Formulation for SPDP-flexible.md",
-    "4. Pricing.md",
     "2. Skip Pick-up and Delivery Problem (SPDP).md",
-    "1. P-step Formulation For CVRP.md",
-    "meeting/260520_meeting.md",
+    "3. P-step Formulation for SPDP-flexible.md",
+    "5. Column Generation for root node.md",
+    "6. P2 Full Pool Delayed Column Activation.md",
+    "images/Pasted image 20260702154259.png",
+    "4. Pricing.md",
     "100. p-step labeling efficiency.md",
-    "0. For efficient pricing.md",
-    "meeting/260618_meeting.md",
-    "103. Why using physical emptying locations inside arcs is more compact than using emptying-action identities inside arcs.md",
-    "meeting/260427_forward dominance issue & problem complexity analysis per setting.md",
-    "106. Exactness proof with short boundary p-step in heuristic CG for initial column set.md",
-    "107. Issue; flow-based model 보다 p=2일때 full enumeration 시 root node bound가 훨씬 좋지 않은 경우가 존재함..md",
-    "6. 2-step full enumeration based Column Recalculation.md",
-    "images/proposition1_for_compact_P-step_formulation.png",
-    "104. Forward dominance rule exactness proof.md",
     "101. Pick-up, Delivery symmetry breaking as a valid strengthening.md",
     "102. Pricing complexity.md",
-    "Untitled",
+    "103. Why using physical emptying locations inside arcs is more compact than using emptying-action identities inside arcs.md",
+    "COR (2022) Transport of skips between recycling centers and treatment facilities.pdf",
+    "107. Issue; flow-based model 보다 p=2일때 full enumeration 시 root node bound가 훨씬 좋지 않은 경우가 존재함..md",
     "105. Patterns in optimal solution.md",
+    "106. Exactness proof with short boundary p-step in heuristic CG for initial column set.md",
+    "104. Forward dominance rule exactness proof.md",
+    "TS (2025) A p-step Formulation for the Capacitated Vehicle Routing Problem_초안.pdf",
+    "7. Branch and Price algorithm.md",
+    "1. P-step Formulation For CVRP.md",
+    "meeting/260520_meeting.md",
+    "0. For efficient pricing.md",
+    "meeting/260618_meeting.md",
+    "meeting/260427_forward dominance issue & problem complexity analysis per setting.md",
+    "6. 2-step full enumeration based Column Recalculation.md",
+    "images/proposition1_for_compact_P-step_formulation.png",
+    "Untitled",
     "Pasted image 20260512160705.png",
     "meeting/260504.md",
     "home/sangil/Documents/Kaist_PhD (1-1)/Partial Set Partitioning/SPDP_project/Obsidian_SPDP_research_note/101. Pick-up, Delivery symmetry breaking as a valid strengthening.md",
@@ -217,8 +273,6 @@
     "home/sangil/Documents/Kaist_PhD (1-1)",
     "home/sangil/Documents",
     "home/sangil",
-    "home",
-    "meeting.zip",
-    "meeting"
+    "home"
   ]
 }

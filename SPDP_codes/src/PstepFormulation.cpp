@@ -1,4 +1,6 @@
 #include "PstepFormulation.h"
+#include "RequestBlockSEC.h"
+#include "VI36LocationSubset.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1399,6 +1401,67 @@ CompactMasterProblem build_compact_master_problem(
         );
     }
 
+    if (options.enumeration_sos1_mode != EnumerationSOS1Mode::Default) {
+        if (options.enumeration_sos1_mode == EnumerationSOS1Mode::Auto) {
+            problem.model->set(GRB_DoubleParam_PreSOS1BigM, 1.0);
+            problem.model->set(GRB_IntParam_PreSOS1Encoding, -1);
+        } else {
+            problem.model->set(GRB_DoubleParam_PreSOS1BigM, 0.0);
+            problem.model->set(GRB_IntParam_PreSOS1Encoding, -1);
+        }
+
+        std::map<std::pair<NodeId, NodeId>, std::vector<std::size_t>> edge_ids_by_pair;
+        const std::vector<EdgeRecord>& edges = graph.edges();
+        for (std::size_t edge_id = 0; edge_id < edges.size(); ++edge_id) {
+            edge_ids_by_pair[{edges[edge_id].u, edges[edge_id].v}].push_back(edge_id);
+        }
+
+        for (auto& entry : edge_ids_by_pair) {
+            std::vector<std::size_t>& edge_ids = entry.second;
+            if (edge_ids.size() < 2U) {
+                continue;
+            }
+
+            std::sort(
+                edge_ids.begin(),
+                edge_ids.end(),
+                [&edges](std::size_t lhs_id, std::size_t rhs_id) {
+                    const EdgeRecord& lhs = edges[lhs_id];
+                    const EdgeRecord& rhs = edges[rhs_id];
+                    if (lhs.data.start_state != rhs.data.start_state) {
+                        return lhs.data.start_state < rhs.data.start_state;
+                    }
+                    if (lhs.data.end_state != rhs.data.end_state) {
+                        return lhs.data.end_state < rhs.data.end_state;
+                    }
+                    if (lhs.data.sequence_pi != rhs.data.sequence_pi) {
+                        return lhs.data.sequence_pi < rhs.data.sequence_pi;
+                    }
+                    return lhs_id < rhs_id;
+                }
+            );
+
+            std::vector<GRBVar> sos_vars;
+            std::vector<double> sos_weights;
+            sos_vars.reserve(edge_ids.size());
+            sos_weights.reserve(edge_ids.size());
+            for (std::size_t position = 0; position < edge_ids.size(); ++position) {
+                sos_vars.push_back(problem.theta_vars[edge_ids[position]]);
+                sos_weights.push_back(static_cast<double>(position + 1U));
+            }
+
+            problem.model->addSOS(
+                sos_vars.data(),
+                sos_weights.data(),
+                static_cast<int>(sos_vars.size()),
+                GRB_SOS_TYPE1
+            );
+            ++problem.parallel_edge_sos1_count;
+            problem.parallel_edge_sos1_max_size =
+                std::max(problem.parallel_edge_sos1_max_size, edge_ids.size());
+        }
+    }
+
     const bool use_x_for_vi = options.vi_formulation == VIFormulation::X;
     const auto add_vi_edge_term = [&](GRBLinExpr& expr, std::size_t edge_id) {
         // VI를 x_r 기준으로 쓰는 경우, theta_e를 직접 쓰지 않고
@@ -1533,88 +1596,37 @@ CompactMasterProblem build_compact_master_problem(
     }
 
     // [수정] 논문 식 (36)의 location-based cover inequality를 theta 변수로 추가한다.
-    if (options.add_vi_36) {
-        std::map<int, int> pickup_count_by_location;
-        std::map<int, int> treatment_count_by_location;
-        std::map<int, int> delivery_count_by_location;
-
-        for (NodeId node_id : artifacts.coefficients.physical_nodes) {
-            const NodeSpec& node = graph.node(node_id);
-            if (node.kind == NodeSpec::Kind::Pickup) {
-                ++pickup_count_by_location[node.location];
-                require_condition(
-                    node.landfill_location.has_value(),
-                    "Pickup node must have treatment location for VI-36."
-                );
-                ++treatment_count_by_location[node.landfill_location.value()];
-            } else if (node.kind == NodeSpec::Kind::Delivery) {
-                ++delivery_count_by_location[node.location];
-            }
-        }
-
-        std::map<int, GRBLinExpr> pickup_expr_by_location;
-        std::map<int, GRBLinExpr> treatment_expr_by_location;
-        std::map<int, GRBLinExpr> delivery_expr_by_location;
-
-        for (const auto& entry : pickup_count_by_location) {
-            pickup_expr_by_location.try_emplace(entry.first);
-        }
-        for (const auto& entry : treatment_count_by_location) {
-            treatment_expr_by_location.try_emplace(entry.first);
-        }
-        for (const auto& entry : delivery_count_by_location) {
-            delivery_expr_by_location.try_emplace(entry.first);
-        }
-
-        for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
-            const EdgeRecord& edge = graph.edges()[edge_id];
-            const NodeSpec& u = graph.node(edge.u);
-            const NodeSpec& v = graph.node(edge.v);
-            const bool has_treatment = edge_has_treatment(edge);
-
-            if (v.kind == NodeSpec::Kind::Pickup) {
-                const bool continues_same_pickup_visit =
-                    !has_treatment && u.kind == NodeSpec::Kind::Pickup &&
-                    u.location == v.location;
-                if (!continues_same_pickup_visit) {
-                    add_vi_edge_term(pickup_expr_by_location[v.location], edge_id);
+    if (options.add_vi_36_combined) {
+        const std::vector<VI36CombinedRow> vi36_rows =
+            build_vi36_combined_location_subset_rows(
+                graph,
+                options.vi_36_subset_max_size,
+                options.add_vi_35
+            );
+        for (const VI36CombinedRow& row : vi36_rows) {
+            GRBLinExpr expr = 0.0;
+            for (const auto& term : row.edge_terms) {
+                for (int repeat = 0; repeat < term.second; ++repeat) {
+                    add_vi_edge_term(expr, term.first);
                 }
             }
+            problem.model->addConstr(expr >= row.rhs, row.name);
+        }
+    }
 
-            for (int treatment_location : edge.data.sequence_pi) {
-                add_vi_edge_term(treatment_expr_by_location[treatment_location], edge_id);
+    if (options.add_vi_request_block_sec) {
+        const std::vector<RequestBlockSECRow> request_block_sec_rows =
+            build_request_block_sec_rows(
+                data,
+                graph,
+                options.vi_request_block_sec_max_size
+            );
+        for (const RequestBlockSECRow& row : request_block_sec_rows) {
+            GRBLinExpr expr = 0.0;
+            for (std::size_t edge_id : row.edge_ids) {
+                add_vi_edge_term(expr, edge_id);
             }
-
-            if (v.kind == NodeSpec::Kind::Delivery) {
-                const bool continues_same_delivery_visit =
-                    !has_treatment && u.kind == NodeSpec::Kind::Delivery &&
-                    u.location == v.location;
-                if (!continues_same_delivery_visit) {
-                    add_vi_edge_term(delivery_expr_by_location[v.location], edge_id);
-                }
-            }
-        }
-
-        for (const auto& entry : pickup_count_by_location) {
-            problem.model->addConstr(
-                pickup_expr_by_location[entry.first] >=
-                    static_cast<double>(cover_rhs(entry.second)),
-                "vi36_pickup_loc_" + std::to_string(entry.first)
-            );
-        }
-        for (const auto& entry : treatment_count_by_location) {
-            problem.model->addConstr(
-                treatment_expr_by_location[entry.first] >=
-                    static_cast<double>(cover_rhs(entry.second)),
-                "vi36_treatment_loc_" + std::to_string(entry.first)
-            );
-        }
-        for (const auto& entry : delivery_count_by_location) {
-            problem.model->addConstr(
-                delivery_expr_by_location[entry.first] >=
-                    static_cast<double>(cover_rhs(entry.second)),
-                "vi36_delivery_loc_" + std::to_string(entry.first)
-            );
+            problem.model->addConstr(expr <= row.rhs, row.name);
         }
     }
 

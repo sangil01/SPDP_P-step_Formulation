@@ -103,6 +103,8 @@ struct CompactMasterProblem {
     std::unique_ptr<GRBModel> model;
     std::vector<GRBVar> x_vars;
     std::vector<GRBVar> theta_vars;
+    std::size_t parallel_edge_sos1_count = 0;
+    std::size_t parallel_edge_sos1_max_size = 0;
 };
 
 enum class VIFormulation {
@@ -110,13 +112,23 @@ enum class VIFormulation {
     X,
 };
 
+enum class EnumerationSOS1Mode {
+    Default,
+    Auto,
+    Native,
+};
+
 // [수정] master problem 생성 시 사용할 valid inequality 옵션.
 struct CompactMasterBuildOptions {
     std::string log_path;
     bool add_vi_35 = true;
-    bool add_vi_36 = true;
+    bool add_vi_36_combined = true;
+    std::size_t vi_36_subset_max_size = 1;
+    bool add_vi_request_block_sec = false;
+    std::size_t vi_request_block_sec_max_size = 2;
     bool add_vi_44 = true;
     VIFormulation vi_formulation = VIFormulation::Theta;
+    EnumerationSOS1Mode enumeration_sos1_mode = EnumerationSOS1Mode::Default;
 };
 
 // 사람이 읽기 쉬운 해 복원 결과에서의 한 route action.

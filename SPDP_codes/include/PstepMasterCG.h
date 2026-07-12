@@ -42,6 +42,14 @@ struct CGMasterOptions {
     // optional theta fixing:
     // fixed_theta_value_by_edge[e] = -1이면 free, 0이면 theta_e = 0, 1이면 theta_e = 1.
     std::vector<int> fixed_theta_value_by_edge;
+
+    // Root-node theta-form valid inequalities.
+    bool add_vi_35 = false;
+    bool add_vi_36_combined = false;
+    std::size_t vi_36_subset_max_size = 1;
+    bool add_vi_request_block_sec = false;
+    std::size_t vi_request_block_sec_max_size = 2;
+    bool add_vi_44 = false;
 };
 
 // node RMP에서 고정으로 존재하는 모든 row / variable handle 묶음.
@@ -92,6 +100,7 @@ struct CGMasterProblem {
     // theta fixing과 phase-I artificial.
     std::vector<int> fixed_theta_value_by_edge;
     std::map<std::size_t, GRBVar> artificial_fixed_theta_vars;
+    std::vector<GRBVar> artificial_vi_vars;
 
     // 현재 phase.
     CGPhase phase = CGPhase::PhaseI;

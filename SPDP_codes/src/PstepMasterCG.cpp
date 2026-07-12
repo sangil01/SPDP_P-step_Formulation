@@ -1,4 +1,6 @@
 #include "PstepMasterCG.h"
+#include "RequestBlockSEC.h"
+#include "VI36LocationSubset.h"
 
 #include <algorithm>
 #include <cmath>
@@ -68,6 +70,207 @@ std::map<NodeId, std::vector<State>> collect_sigma_by_node_from_graph(
         sigma_by_node.emplace(entry.first, std::vector<State>(entry.second.begin(), entry.second.end()));
     }
     return sigma_by_node;
+}
+
+int cover_rhs(int request_count) {
+    return (request_count + 1) / 2;
+}
+
+bool edge_has_treatment(const EdgeRecord& edge) {
+    return !edge.data.sequence_pi.empty();
+}
+
+int flexible_route_lower_bound_kmin(const SPDPData& data) {
+    if (data.time_limit <= 0.0) {
+        throw std::runtime_error("Time limit must be positive for VI-44.");
+    }
+
+    if (data.requests.empty()) {
+        return 0;
+    }
+
+    double pickup_to_treatment_time_sum = 0.0;
+    double treatment_to_best_delivery_time_sum = 0.0;
+
+    for (const Request& request : data.requests) {
+        pickup_to_treatment_time_sum +=
+            data.time[static_cast<std::size_t>(request.from_id)]
+                     [static_cast<std::size_t>(request.to_id)];
+
+        double best_compatible_delivery_time = std::numeric_limits<double>::infinity();
+        for (const Request& candidate : data.requests) {
+            if (candidate.container_type != request.container_type) {
+                continue;
+            }
+            best_compatible_delivery_time = std::min(
+                best_compatible_delivery_time,
+                data.time[static_cast<std::size_t>(request.to_id)]
+                         [static_cast<std::size_t>(candidate.from_id)]
+            );
+        }
+
+        if (!std::isfinite(best_compatible_delivery_time)) {
+            throw std::runtime_error(
+                "Failed to compute VI-44 k_min because no compatible delivery location exists."
+            );
+        }
+        treatment_to_best_delivery_time_sum += best_compatible_delivery_time;
+    }
+
+    const double total_service_time =
+        static_cast<double>(data.requests.size()) *
+        (data.time_pickup + data.time_empty + data.time_delivery);
+    const double bound_value =
+        ((pickup_to_treatment_time_sum + treatment_to_best_delivery_time_sum) / 2.0 +
+         total_service_time) /
+        data.time_limit;
+    const int k_min = static_cast<int>(std::ceil(bound_value - kTolerance));
+    return std::max(0, std::min(static_cast<int>(data.requests.size()), k_min));
+}
+
+void add_phase_one_vi_row(
+    CGMasterProblem& problem,
+    GRBLinExpr expr,
+    double rhs,
+    const std::string& name
+) {
+    GRBVar artificial_var = problem.model->addVar(
+        0.0,
+        GRB_INFINITY,
+        1.0,
+        GRB_CONTINUOUS,
+        "z_" + name
+    );
+    problem.artificial_vi_vars.push_back(artificial_var);
+    expr += artificial_var;
+    problem.model->addConstr(expr >= rhs, name);
+}
+
+void add_phase_one_vi_upper_row(
+    CGMasterProblem& problem,
+    GRBLinExpr expr,
+    double rhs,
+    const std::string& name
+) {
+    GRBVar artificial_var = problem.model->addVar(
+        0.0,
+        GRB_INFINITY,
+        1.0,
+        GRB_CONTINUOUS,
+        "z_" + name
+    );
+    problem.artificial_vi_vars.push_back(artificial_var);
+    expr -= artificial_var;
+    problem.model->addConstr(expr <= rhs, name);
+}
+
+void add_root_theta_valid_inequalities(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    CGMasterProblem& problem,
+    const CGMasterOptions& options
+) {
+    const std::size_t edge_count = graph.number_of_edges();
+
+    if (options.add_vi_35) {
+        const double rhs = static_cast<double>(
+            cover_rhs(static_cast<int>(data.requests.size()))
+        );
+        GRBLinExpr pickup_in_expr = 0.0;
+        GRBLinExpr pickup_out_expr = 0.0;
+        GRBLinExpr treatment_in_expr = 0.0;
+        GRBLinExpr treatment_out_expr = 0.0;
+        GRBLinExpr delivery_in_expr = 0.0;
+        GRBLinExpr delivery_out_expr = 0.0;
+
+        for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
+            const EdgeRecord& edge = graph.edges()[edge_id];
+            const NodeSpec& u = graph.node(edge.u);
+            const NodeSpec& v = graph.node(edge.v);
+            const bool has_treatment = edge_has_treatment(edge);
+
+            if (v.kind == NodeSpec::Kind::Pickup &&
+                (has_treatment || u.kind == NodeSpec::Kind::Start ||
+                 u.kind == NodeSpec::Kind::Delivery)) {
+                pickup_in_expr += problem.theta_vars[edge_id];
+            }
+            if (u.kind == NodeSpec::Kind::Pickup &&
+                (has_treatment || v.kind == NodeSpec::Kind::Delivery ||
+                 v.kind == NodeSpec::Kind::End)) {
+                pickup_out_expr += problem.theta_vars[edge_id];
+            }
+            if (has_treatment) {
+                treatment_in_expr += problem.theta_vars[edge_id];
+                treatment_out_expr += problem.theta_vars[edge_id];
+            }
+            if (v.kind == NodeSpec::Kind::Delivery &&
+                (has_treatment || u.kind == NodeSpec::Kind::Pickup ||
+                 u.kind == NodeSpec::Kind::Start)) {
+                delivery_in_expr += problem.theta_vars[edge_id];
+            }
+            if (u.kind == NodeSpec::Kind::Delivery &&
+                (has_treatment || v.kind == NodeSpec::Kind::Pickup ||
+                 v.kind == NodeSpec::Kind::End)) {
+                delivery_out_expr += problem.theta_vars[edge_id];
+            }
+        }
+
+        add_phase_one_vi_row(problem, pickup_in_expr, rhs, "vi35_pickup_in");
+        add_phase_one_vi_row(problem, pickup_out_expr, rhs, "vi35_pickup_out");
+        add_phase_one_vi_row(problem, treatment_in_expr, rhs, "vi35_treatment_in");
+        add_phase_one_vi_row(problem, treatment_out_expr, rhs, "vi35_treatment_out");
+        add_phase_one_vi_row(problem, delivery_in_expr, rhs, "vi35_delivery_in");
+        add_phase_one_vi_row(problem, delivery_out_expr, rhs, "vi35_delivery_out");
+    }
+
+    if (options.add_vi_36_combined) {
+        const std::vector<VI36CombinedRow> vi36_rows =
+            build_vi36_combined_location_subset_rows(
+                graph,
+                options.vi_36_subset_max_size,
+                options.add_vi_35
+            );
+        for (const VI36CombinedRow& row : vi36_rows) {
+            GRBLinExpr expr = 0.0;
+            for (const auto& term : row.edge_terms) {
+                expr += static_cast<double>(term.second) * problem.theta_vars[term.first];
+            }
+            add_phase_one_vi_row(problem, expr, row.rhs, row.name);
+        }
+    }
+
+    if (options.add_vi_request_block_sec) {
+        const std::vector<RequestBlockSECRow> request_block_sec_rows =
+            build_request_block_sec_rows(
+                data,
+                graph,
+                options.vi_request_block_sec_max_size
+            );
+        for (const RequestBlockSECRow& row : request_block_sec_rows) {
+            GRBLinExpr expr = 0.0;
+            for (std::size_t edge_id : row.edge_ids) {
+                expr += problem.theta_vars[edge_id];
+            }
+            add_phase_one_vi_upper_row(problem, expr, row.rhs, row.name);
+        }
+    }
+
+    if (options.add_vi_44) {
+        GRBLinExpr route_count_expr = 0.0;
+        for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
+            const EdgeRecord& edge = graph.edges()[edge_id];
+            if (edge.u == 0) {
+                route_count_expr += problem.theta_vars[edge_id];
+            }
+        }
+        add_phase_one_vi_row(
+            problem,
+            route_count_expr,
+            static_cast<double>(flexible_route_lower_bound_kmin(data)),
+            "vi44_route_lower_bound"
+        );
+    }
+
 }
 
 std::string build_column_key(
@@ -267,6 +470,8 @@ CGMasterProblem build_cg_master_problem(
         );
     }
 
+    add_root_theta_valid_inequalities(data, graph, problem, options);
+
     return problem;
 }
 
@@ -408,6 +613,9 @@ CGLPSnapshot capture_cg_master_snapshot(const CGMasterProblem& problem) {
         for (const auto& entry : problem.artificial_fixed_theta_vars) {
             snapshot.artificial_sum += entry.second.get(GRB_DoubleAttr_X);
         }
+        for (const GRBVar& artificial_var : problem.artificial_vi_vars) {
+            snapshot.artificial_sum += artificial_var.get(GRB_DoubleAttr_X);
+        }
         for (const GRBVar& x_var : problem.x_vars) {
             if (x_var.get(GRB_DoubleAttr_X) > 1e-6) {
                 ++snapshot.positive_x_count;
@@ -450,6 +658,10 @@ void switch_cg_master_to_phase_two(CGMasterProblem& problem) {
     for (auto& entry : problem.artificial_fixed_theta_vars) {
         entry.second.set(GRB_DoubleAttr_Obj, 0.0);
         entry.second.set(GRB_DoubleAttr_UB, 0.0);
+    }
+    for (GRBVar& artificial_var : problem.artificial_vi_vars) {
+        artificial_var.set(GRB_DoubleAttr_Obj, 0.0);
+        artificial_var.set(GRB_DoubleAttr_UB, 0.0);
     }
     for (std::size_t column_id = 0; column_id < problem.x_vars.size(); ++column_id) {
         problem.x_vars[column_id].set(

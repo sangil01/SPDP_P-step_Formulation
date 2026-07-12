@@ -37,6 +37,7 @@ SPDP_solution_benchmark/
 SPDP_data/
 SPDP_output*/
 SPDP_optimal/
+SPDP_benchmark*/
 Obsidian_SPDP_research_notes/
 *.log
 *.xlsx

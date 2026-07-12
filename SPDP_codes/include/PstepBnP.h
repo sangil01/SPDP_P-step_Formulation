@@ -85,6 +85,15 @@ struct NodeCGOptions {
     // Gurobi log file 경로.
     std::string gurobi_log_path;
 
+    // Root node에만 theta-form VI 35/36/44를 추가할지 여부.
+    // Full-tree B&P에서는 child node RMP를 가볍게 유지하기 위해 root input state에만 전달한다.
+    bool add_root_vi_35 = false;
+    bool add_root_vi_36_combined = false;
+    std::size_t root_vi_36_subset_max_size = 1;
+    bool add_root_vi_request_block_sec = false;
+    std::size_t root_vi_request_block_sec_max_size = 2;
+    bool add_root_vi_44 = false;
+
     // Phase I에서 node-feasible RMP를 만드는 방식.
     NodeCGPhaseOneMode phase_one_mode = NodeCGPhaseOneMode::ExactCG;
 
@@ -162,6 +171,12 @@ struct NodeCGInputState {
     std::vector<int> required_incoming_edge_by_node_id;
     bool branch_fixing_infeasible = false;
     bool enable_phase_one_seed_generation = true;
+    bool add_vi_35 = false;
+    bool add_vi_36_combined = false;
+    std::size_t vi_36_subset_max_size = 1;
+    bool add_vi_request_block_sec = false;
+    std::size_t vi_request_block_sec_max_size = 2;
+    bool add_vi_44 = false;
     const FullEnumerationStaticPool* shared_full_enumeration_static_pool = nullptr;
 };
 
@@ -305,10 +320,18 @@ BranchAndPriceResult solve_branch_and_price(
 // node CG 결과를 요약 출력한다.
 void write_node_cg_summary(std::ostream& out, const NodeCGResult& result);
 
-// node LP에서 양의 값을 갖는 x-column들을 출력한다.
-void write_node_cg_solution(std::ostream& out, const NodeCGResult& result);
+// node LP에서 양의 값을 갖는 x-column과 theta edge들을 출력한다.
+void write_node_cg_solution(
+    std::ostream& out,
+    const NodeCGResult& result,
+    const MultiDiGraph& graph
+);
 void write_branch_and_price_summary(std::ostream& out, const BranchAndPriceResult& result);
-void write_branch_and_price_solution(std::ostream& out, const BranchAndPriceResult& result);
+void write_branch_and_price_solution(
+    std::ostream& out,
+    const BranchAndPriceResult& result,
+    const MultiDiGraph& graph
+);
 
 // CLI/logging용 phase-one mode 이름.
 const char* to_string(NodeCGPhaseOneMode mode);

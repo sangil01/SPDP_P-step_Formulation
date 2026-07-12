@@ -39,6 +39,8 @@ add_executable(SPDP_P_step
     src/main.cpp
     src/ReadData.cpp
     src/GenMultiGraph.cpp
+    src/VI36LocationSubset.cpp
+    src/RequestBlockSEC.cpp
     src/PstepFormulation.cpp
     src/PstepPricing.cpp
     src/PstepMasterCG.cpp

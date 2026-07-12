@@ -26,6 +26,7 @@ struct CliOptions {
     double solver_time_limit = 3600.0;
     int gurobi_threads = -1;
     std::string solver_mode = "enumeration";
+    std::string enumeration_sos1_mode = "default";
     std::string bnp_tree_mode = "root-only";
     std::string node_cg_phase_one_mode = "exact-cg";
     std::string node_cg_phase_two_pricing_mode = "exact-pricing";
@@ -47,7 +48,10 @@ struct CliOptions {
     int prune_pickup_symmetry_43 = 1;
     int prune_delivery_symmetry_43 = 1;
     int add_vi_35 = 0;
-    int add_vi_36 = 0;
+    int add_vi_36_combined = 0;
+    int vi_36_subset_max_size = 1;
+    int add_vi_request_block_sec = 0;
+    int vi_request_block_sec_max_size = 2;
     int add_vi_44 = 0;
     int cg_max_iterations_per_phase = 1000;
     int exact_pricing_max_columns_per_start = 16;
@@ -85,6 +89,7 @@ void print_usage(const char* executable) {
     std::cerr << "Usage: " << executable
               << " [instance] [--p N] [--solver-time-limit T] [--gurobi-threads N]"
               << " [--solver-mode enumeration|branch-and-price]"
+              << " [--enumeration-sos1-mode default|sos1-auto|sos1-native]"
               << " [--bnp-tree-mode root-only|full-tree]"
               << " [--node-cg-phase1-mode exact-cg|heuristic-cg|heuristic-cg-3-step]"
               << " [--node-cg-phase2-pricing-mode exact-pricing|heuristic-pricing-then-exact|full-enumeration]"
@@ -100,7 +105,10 @@ void print_usage(const char* executable) {
               << " [--prune-symmetry-40 0|1] [--prune-symmetry-41 0|1]"
               << " [--prune-pickup-symmetry-43 0|1]"
               << " [--prune-delivery-symmetry-43 0|1]"
-              << " [--add-vi-35 0|1] [--add-vi-36 0|1]"
+              << " [--add-vi-35 0|1]"
+              << " [--add-vi-36-combined 0|1] [--vi-36-subset-max-size N]"
+              << " [--add-vi-request-block-sec 0|1]"
+              << " [--vi-request-block-sec-max-size N]"
               << " [--add-vi-44 0|1]"
               << " [--cg-max-iterations-per-phase N]"
               << " [--exact-pricing-max-columns-per-start N]"
@@ -181,6 +189,16 @@ std::string parse_solver_mode(const std::string& value) {
     throw std::runtime_error(
         "Invalid value for --solver-mode: " + value +
         " (expected enumeration or branch-and-price)"
+    );
+}
+
+std::string parse_enumeration_sos1_mode(const std::string& value) {
+    if (value == "default" || value == "sos1-auto" || value == "sos1-native") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --enumeration-sos1-mode: " + value +
+        " (expected default, sos1-auto, or sos1-native)"
     );
 }
 
@@ -316,6 +334,19 @@ spdp::VIFormulation to_vi_formulation(const std::string& value) {
     throw std::runtime_error("Unsupported VI formulation: " + value);
 }
 
+spdp::EnumerationSOS1Mode to_enumeration_sos1_mode(const std::string& value) {
+    if (value == "default") {
+        return spdp::EnumerationSOS1Mode::Default;
+    }
+    if (value == "sos1-auto") {
+        return spdp::EnumerationSOS1Mode::Auto;
+    }
+    if (value == "sos1-native") {
+        return spdp::EnumerationSOS1Mode::Native;
+    }
+    throw std::runtime_error("Unsupported enumeration SOS1 mode: " + value);
+}
+
 CliOptions parse_cli(int argc, char** argv) {
     CliOptions options;
     bool instance_set = false;
@@ -341,6 +372,15 @@ CliOptions parse_cli(int argc, char** argv) {
                 throw std::runtime_error("--solver-mode requires a value.");
             }
             options.solver_mode = parse_solver_mode(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--enumeration-sos1-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--enumeration-sos1-mode requires a value.");
+            }
+            options.enumeration_sos1_mode =
+                parse_enumeration_sos1_mode(argv[++idx]);
             continue;
         }
 
@@ -935,13 +975,55 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
-        if (arg == "--add-vi-36") {
+        if (arg == "--add-vi-36-combined") {
             if (idx + 1 >= argc) {
-                throw std::runtime_error("--add-vi-36 requires a value.");
+                throw std::runtime_error("--add-vi-36-combined requires a value.");
             }
-            options.add_vi_36 = parse_int(argv[++idx], "--add-vi-36");
-            if (options.add_vi_36 != 0 && options.add_vi_36 != 1) {
-                throw std::runtime_error("--add-vi-36 must be 0 or 1.");
+            options.add_vi_36_combined =
+                parse_int(argv[++idx], "--add-vi-36-combined");
+            if (options.add_vi_36_combined != 0 && options.add_vi_36_combined != 1) {
+                throw std::runtime_error("--add-vi-36-combined must be 0 or 1.");
+            }
+            continue;
+        }
+
+        if (arg == "--vi-36-subset-max-size") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--vi-36-subset-max-size requires a value.");
+            }
+            options.vi_36_subset_max_size =
+                parse_int(argv[++idx], "--vi-36-subset-max-size");
+            if (options.vi_36_subset_max_size < 1) {
+                throw std::runtime_error("--vi-36-subset-max-size must be at least 1.");
+            }
+            continue;
+        }
+
+        if (arg == "--add-vi-request-block-sec") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--add-vi-request-block-sec requires a value.");
+            }
+            options.add_vi_request_block_sec =
+                parse_int(argv[++idx], "--add-vi-request-block-sec");
+            if (options.add_vi_request_block_sec != 0 &&
+                options.add_vi_request_block_sec != 1) {
+                throw std::runtime_error("--add-vi-request-block-sec must be 0 or 1.");
+            }
+            continue;
+        }
+
+        if (arg == "--vi-request-block-sec-max-size") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--vi-request-block-sec-max-size requires a value."
+                );
+            }
+            options.vi_request_block_sec_max_size =
+                parse_int(argv[++idx], "--vi-request-block-sec-max-size");
+            if (options.vi_request_block_sec_max_size < 2) {
+                throw std::runtime_error(
+                    "--vi-request-block-sec-max-size must be at least 2."
+                );
             }
             continue;
         }
@@ -1040,6 +1122,7 @@ void print_instance_summary(
     out << "[main] Loaded instance: " << args.instance << '\n';
     out << "[main] p: " << args.p << '\n';
     out << "[main] Solver mode: " << args.solver_mode << '\n';
+    out << "[main] Enumeration SOS1 mode: " << args.enumeration_sos1_mode << '\n';
     out << "[main] BnP tree mode: " << args.bnp_tree_mode << '\n';
     out << "[main] Node CG phase-1 mode: " << args.node_cg_phase_one_mode << '\n';
     out << "[main] Node CG phase-2 pricing mode: "
@@ -1067,7 +1150,11 @@ void print_instance_summary(
     out << "[main] prune_pickup_symmetry_43: " << args.prune_pickup_symmetry_43 << '\n';
     out << "[main] prune_delivery_symmetry_43: " << args.prune_delivery_symmetry_43 << '\n';
     out << "[main] add_vi_35: " << args.add_vi_35 << '\n';
-    out << "[main] add_vi_36: " << args.add_vi_36 << '\n';
+    out << "[main] add_vi_36_combined: " << args.add_vi_36_combined << '\n';
+    out << "[main] vi_36_subset_max_size: " << args.vi_36_subset_max_size << '\n';
+    out << "[main] add_vi_request_block_sec: " << args.add_vi_request_block_sec << '\n';
+    out << "[main] vi_request_block_sec_max_size: "
+        << args.vi_request_block_sec_max_size << '\n';
     out << "[main] add_vi_44: " << args.add_vi_44 << '\n';
     out << "[main] cg_max_iterations_per_phase: " << args.cg_max_iterations_per_phase << '\n';
     out << "[main] exact_pricing_max_columns_per_start: "
@@ -1278,13 +1365,6 @@ int main(int argc, char** argv) {
         gurobi_log_file.close();
 
         if (args.solver_mode == "branch-and-price") {
-            if (args.add_vi_35 == 1 || args.add_vi_36 == 1 || args.add_vi_44 == 1) {
-                throw std::runtime_error(
-                    "branch-and-price mode does not yet support VI-35/36/44. "
-                    "The seedless Phase-I RMP becomes infeasible without dedicated artificials "
-                    "for those inequalities. Please set them to 0."
-                );
-            }
             if (args.vi_formulation != "theta") {
                 throw std::runtime_error(
                     "branch-and-price mode currently supports only --vi-formulation theta."
@@ -1324,6 +1404,15 @@ int main(int argc, char** argv) {
                     static_cast<unsigned int>(args.phase_one_heuristic_cg_random_seed);
                 cg_options.prune_pickup_symmetry_43 = args.prune_pickup_symmetry_43 == 1;
                 cg_options.prune_delivery_symmetry_43 = args.prune_delivery_symmetry_43 == 1;
+                cg_options.add_root_vi_35 = args.add_vi_35 == 1;
+                cg_options.add_root_vi_36_combined = args.add_vi_36_combined == 1;
+                cg_options.root_vi_36_subset_max_size =
+                    static_cast<std::size_t>(args.vi_36_subset_max_size);
+                cg_options.add_root_vi_request_block_sec =
+                    args.add_vi_request_block_sec == 1;
+                cg_options.root_vi_request_block_sec_max_size =
+                    static_cast<std::size_t>(args.vi_request_block_sec_max_size);
+                cg_options.add_root_vi_44 = args.add_vi_44 == 1;
                 cg_options.gurobi_log_path = gurobi_log_path.string();
                 if (args.node_cg_phase_one_mode == "exact-cg") {
                     cg_options.phase_one_mode = spdp::NodeCGPhaseOneMode::ExactCG;
@@ -1392,7 +1481,7 @@ int main(int argc, char** argv) {
                     const spdp::NodeCGResult cg_result =
                         spdp::solve_node_column_generation(data, graph, cg_options, &output_file);
                     spdp::write_node_cg_summary(output_file, cg_result);
-                    spdp::write_node_cg_solution(solution_file, cg_result);
+                    spdp::write_node_cg_solution(solution_file, cg_result, graph);
                 } else {
                     spdp::BranchAndPriceOptions bnp_options;
                     bnp_options.node_cg_options = cg_options;
@@ -1414,7 +1503,7 @@ int main(int argc, char** argv) {
                     const spdp::BranchAndPriceResult bnp_result =
                         spdp::solve_branch_and_price(data, graph, bnp_options, &output_file);
                     spdp::write_branch_and_price_summary(output_file, bnp_result);
-                    spdp::write_branch_and_price_solution(solution_file, bnp_result);
+                    spdp::write_branch_and_price_solution(solution_file, bnp_result, graph);
                 }
             } else {
                 output_file << "[main] Solve skipped by CLI option.\n";
@@ -1448,9 +1537,13 @@ int main(int argc, char** argv) {
             const spdp::CompactMasterBuildOptions master_build_options{
                 gurobi_log_path.string(),
                 args.add_vi_35 == 1,
-                args.add_vi_36 == 1,
+                args.add_vi_36_combined == 1,
+                static_cast<std::size_t>(args.vi_36_subset_max_size),
+                args.add_vi_request_block_sec == 1,
+                static_cast<std::size_t>(args.vi_request_block_sec_max_size),
                 args.add_vi_44 == 1,
                 to_vi_formulation(args.vi_formulation),
+                to_enumeration_sos1_mode(args.enumeration_sos1_mode),
             };
             spdp::CompactMasterProblem problem = spdp::build_compact_master_problem(
                 data,
@@ -1464,6 +1557,10 @@ int main(int argc, char** argv) {
             problem.model->set(GRB_DoubleParam_TimeLimit, args.solver_time_limit);
 
             output_file << "[main] Compact master model built successfully.\n";
+            output_file << "[main] Parallel-edge SOS1 count: "
+                        << problem.parallel_edge_sos1_count << '\n';
+            output_file << "[main] Parallel-edge SOS1 max size: "
+                        << problem.parallel_edge_sos1_max_size << '\n';
             if (args.solve_model == 1) {
                 spdp::solve_compact_master_problem(problem);
                 print_solution_summary(output_file, problem);

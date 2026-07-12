@@ -3272,11 +3272,19 @@ NodeCGResult solve_node_column_generation(
     const NodeCGOptions& options,
     std::ostream* log_stream
 ) {
+    NodeCGInputState input_state;
+    input_state.add_vi_35 = options.add_root_vi_35;
+    input_state.add_vi_36_combined = options.add_root_vi_36_combined;
+    input_state.vi_36_subset_max_size = options.root_vi_36_subset_max_size;
+    input_state.add_vi_request_block_sec = options.add_root_vi_request_block_sec;
+    input_state.vi_request_block_sec_max_size =
+        options.root_vi_request_block_sec_max_size;
+    input_state.add_vi_44 = options.add_root_vi_44;
     return solve_node_column_generation(
         data,
         graph,
         options,
-        NodeCGInputState{},
+        input_state,
         log_stream
     );
 }
@@ -3308,6 +3316,12 @@ NodeCGResult solve_node_column_generation(
         options.solver_time_limit,
         options.phase_one_lp_method,
         input_state.fixed_theta_value_by_edge,
+        input_state.add_vi_35,
+        input_state.add_vi_36_combined,
+        input_state.vi_36_subset_max_size,
+        input_state.add_vi_request_block_sec,
+        input_state.vi_request_block_sec_max_size,
+        input_state.add_vi_44,
     };
     CGMasterProblem master_problem =
         build_cg_master_problem(data, graph, master_options);
@@ -3375,9 +3389,54 @@ void write_node_cg_summary(
     write_cg_master_snapshot(out, result.final_snapshot);
 }
 
+std::string format_sequence_pi(const std::vector<int>& sequence_pi) {
+    std::ostringstream out;
+    out << "[";
+    for (std::size_t idx = 0; idx < sequence_pi.size(); ++idx) {
+        if (idx > 0U) {
+            out << ", ";
+        }
+        out << sequence_pi[idx];
+    }
+    out << "]";
+    return out.str();
+}
+
+void write_active_theta_values(
+    std::ostream& out,
+    const std::vector<double>& theta_values,
+    const MultiDiGraph& graph
+) {
+    bool wrote_header = false;
+    const std::size_t edge_count = graph.number_of_edges();
+    for (std::size_t edge_id = 0; edge_id < theta_values.size() && edge_id < edge_count; ++edge_id) {
+        const double theta_value = theta_values[edge_id];
+        if (theta_value <= 1e-6) {
+            continue;
+        }
+        if (!wrote_header) {
+            out << "  Active theta_e:\n";
+            wrote_header = true;
+        }
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        out << "    theta_" << edge_id
+            << " = " << format_double(theta_value)
+            << " | " << edge.u << "->" << edge.v
+            << " | key=" << edge.key
+            << " | pi=" << format_sequence_pi(edge.data.sequence_pi)
+            << " | time=" << format_double(edge.data.time)
+            << " | cost=" << format_double(edge.data.cost)
+            << '\n';
+    }
+    if (!wrote_header) {
+        out << "  Active theta_e: none\n";
+    }
+}
+
 void write_node_cg_solution(
     std::ostream& out,
-    const NodeCGResult& result
+    const NodeCGResult& result,
+    const MultiDiGraph& graph
 ) {
     out << "Solution:\n";
 
@@ -3416,6 +3475,8 @@ void write_node_cg_solution(
         }
         out << "]\n";
     }
+
+    write_active_theta_values(out, result.theta_values, graph);
 
     out << "Solution done \n";
 }
@@ -4052,6 +4113,15 @@ BranchAndPriceResult solve_branch_and_price(
         };
 
     NodeCGInputState root_input_state = build_root_node_input_state(edge_count);
+    root_input_state.add_vi_35 = options.node_cg_options.add_root_vi_35;
+    root_input_state.add_vi_36_combined = options.node_cg_options.add_root_vi_36_combined;
+    root_input_state.vi_36_subset_max_size =
+        options.node_cg_options.root_vi_36_subset_max_size;
+    root_input_state.add_vi_request_block_sec =
+        options.node_cg_options.add_root_vi_request_block_sec;
+    root_input_state.vi_request_block_sec_max_size =
+        options.node_cg_options.root_vi_request_block_sec_max_size;
+    root_input_state.add_vi_44 = options.node_cg_options.add_root_vi_44;
     create_and_evaluate_node(
         std::nullopt,
         std::vector<std::uint64_t>(edge_word_count, 0U),
@@ -4227,7 +4297,8 @@ void write_branch_and_price_summary(
 
 void write_branch_and_price_solution(
     std::ostream& out,
-    const BranchAndPriceResult& result
+    const BranchAndPriceResult& result,
+    const MultiDiGraph& graph
 ) {
     out << "Solution:\n";
     if (!result.incumbent_updated) {
@@ -4257,6 +4328,7 @@ void write_branch_and_price_solution(
         }
         out << "]\n";
     }
+    write_active_theta_values(out, result.incumbent_theta_values, graph);
     out << "Solution done \n";
 }
 
