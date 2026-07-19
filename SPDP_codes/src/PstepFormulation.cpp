@@ -1,6 +1,5 @@
 #include "PstepFormulation.h"
-#include "RequestBlockSEC.h"
-#include "VI36LocationSubset.h"
+#include "PstepValidInequality.h"
 
 #include <algorithm>
 #include <cmath>
@@ -76,56 +75,6 @@ void require_condition(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
-}
-
-// [수정] 논문 식 (44)의 flexible-return 하한 k_min을 계산한다.
-int flexible_route_lower_bound_kmin(const SPDPData& data) {
-    require_condition(data.time_limit > 0.0, "Time limit must be positive for VI-44.");
-
-    double pickup_to_treatment_sum = 0.0;
-    double treatment_to_compatible_pickup_sum = 0.0;
-    double total_service_time = 0.0;
-
-    std::map<int, std::vector<int>> pickup_locations_by_container_type;
-    for (const Request& request : data.requests) {
-        pickup_locations_by_container_type[request.container_type].push_back(request.from_id);
-    }
-
-    for (auto& entry : pickup_locations_by_container_type) {
-        std::vector<int>& pickup_locations = entry.second;
-        std::sort(pickup_locations.begin(), pickup_locations.end());
-        pickup_locations.erase(
-            std::unique(pickup_locations.begin(), pickup_locations.end()),
-            pickup_locations.end()
-        );
-    }
-
-    for (const Request& request : data.requests) {
-        pickup_to_treatment_sum += data.time[static_cast<std::size_t>(request.from_id)]
-                                            [static_cast<std::size_t>(request.to_id)];
-
-        const auto found = pickup_locations_by_container_type.find(request.container_type);
-        require_condition(
-            found != pickup_locations_by_container_type.end() && !found->second.empty(),
-            "Each request type must have at least one compatible pickup location for VI-44."
-        );
-
-        double best_compatible_return_time = std::numeric_limits<double>::infinity();
-        for (int compatible_pickup_location : found->second) {
-            best_compatible_return_time = std::min(
-                best_compatible_return_time,
-                data.time[static_cast<std::size_t>(request.to_id)]
-                         [static_cast<std::size_t>(compatible_pickup_location)]
-            );
-        }
-        treatment_to_compatible_pickup_sum += best_compatible_return_time;
-
-        total_service_time += data.time_pickup + data.time_empty + data.time_delivery;
-    }
-
-    const double route_time_lower_bound =
-        0.5 * (pickup_to_treatment_sum + treatment_to_compatible_pickup_sum) + total_service_time;
-    return static_cast<int>(std::ceil(route_time_lower_bound / data.time_limit));
 }
 
 // [수정] 논문 식 (43)의 request equivalence class를 표현하는 key.
@@ -1463,16 +1412,20 @@ CompactMasterProblem build_compact_master_problem(
     }
 
     const bool use_x_for_vi = options.vi_formulation == VIFormulation::X;
-    const auto add_vi_edge_term = [&](GRBLinExpr& expr, std::size_t edge_id) {
+    const auto add_vi_edge_term = [&problem, &artifacts, use_x_for_vi](
+                                      GRBLinExpr& expr,
+                                      std::size_t edge_id,
+                                      double coefficient
+                                  ) {
         // VI를 x_r 기준으로 쓰는 경우, theta_e를 직접 쓰지 않고
         // linking 식 theta_e = sum_r b_{e,r} x_r 로 치환해 같은 의미의 항을 만든다.
         if (use_x_for_vi) {
             for (int pstep_id : artifacts.coefficients.edge_rows[edge_id]) {
-                expr += problem.x_vars[static_cast<std::size_t>(pstep_id)];
+                expr += coefficient * problem.x_vars[static_cast<std::size_t>(pstep_id)];
             }
             return;
         }
-        expr += problem.theta_vars[edge_id];
+        expr += coefficient * problem.theta_vars[edge_id];
     };
 
     // 각 physical node는 정확히 한 번 들어오고 한 번 나가도록 방문 제약을 둔다.
@@ -1536,114 +1489,26 @@ CompactMasterProblem build_compact_master_problem(
         );
     }
 
-    const auto cover_rhs = [](int request_count) -> int {
-        return (request_count + 1) / 2;
+    const PstepValidInequalityOptions vi_options{
+        options.add_vi_35,
+        options.add_vi_36_combined,
+        options.vi_36_subset_max_size,
+        options.add_vi_request_block_sec,
+        options.vi_request_block_sec_max_size,
+        options.add_vi_44,
     };
-
-    const auto edge_has_treatment = [](const EdgeRecord& edge) -> bool {
-        return !edge.data.sequence_pi.empty();
-    };
-
-    // [수정] 논문 식 (35)의 compressed-edge 대응을 theta 변수로 추가한다.
-    if (options.add_vi_35) {
-        const int request_count = static_cast<int>(artifacts.coefficients.physical_nodes.size() / 2);
-        const double rhs = static_cast<double>(cover_rhs(request_count));
-        GRBLinExpr pickup_in_expr = 0.0;
-        GRBLinExpr pickup_out_expr = 0.0;
-        GRBLinExpr treatment_in_expr = 0.0;
-        GRBLinExpr treatment_out_expr = 0.0;
-        GRBLinExpr delivery_in_expr = 0.0;
-        GRBLinExpr delivery_out_expr = 0.0;
-
-        for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
-            const EdgeRecord& edge = graph.edges()[edge_id];
-            const NodeSpec& u = graph.node(edge.u);
-            const NodeSpec& v = graph.node(edge.v);
-            const bool has_treatment = edge_has_treatment(edge);
-
-            if (v.kind == NodeSpec::Kind::Pickup &&
-                (has_treatment || u.kind == NodeSpec::Kind::Start ||
-                 u.kind == NodeSpec::Kind::Delivery)) {
-                add_vi_edge_term(pickup_in_expr, edge_id);
-            }
-            if (u.kind == NodeSpec::Kind::Pickup &&
-                (has_treatment || v.kind == NodeSpec::Kind::Delivery ||
-                 v.kind == NodeSpec::Kind::End)) {
-                add_vi_edge_term(pickup_out_expr, edge_id);
-            }
-            if (has_treatment) {
-                add_vi_edge_term(treatment_in_expr, edge_id);
-                add_vi_edge_term(treatment_out_expr, edge_id);
-            }
-            if (v.kind == NodeSpec::Kind::Delivery &&
-                (has_treatment || u.kind == NodeSpec::Kind::Pickup ||
-                 u.kind == NodeSpec::Kind::Start)) {
-                add_vi_edge_term(delivery_in_expr, edge_id);
-            }
-            if (u.kind == NodeSpec::Kind::Delivery &&
-                (has_treatment || v.kind == NodeSpec::Kind::Pickup ||
-                 v.kind == NodeSpec::Kind::End)) {
-                add_vi_edge_term(delivery_out_expr, edge_id);
-            }
+    const std::vector<PstepValidInequalityRow> vi_rows =
+        build_pstep_valid_inequality_rows(data, graph, vi_options);
+    for (const PstepValidInequalityRow& row : vi_rows) {
+        GRBLinExpr expr = 0.0;
+        for (const auto& term : row.edge_terms) {
+            add_vi_edge_term(expr, term.first, term.second);
         }
-
-        problem.model->addConstr(pickup_in_expr >= rhs, "vi35_pickup_in");
-        problem.model->addConstr(pickup_out_expr >= rhs, "vi35_pickup_out");
-        problem.model->addConstr(treatment_in_expr >= rhs, "vi35_treatment_in");
-        problem.model->addConstr(treatment_out_expr >= rhs, "vi35_treatment_out");
-        problem.model->addConstr(delivery_in_expr >= rhs, "vi35_delivery_in");
-        problem.model->addConstr(delivery_out_expr >= rhs, "vi35_delivery_out");
-    }
-
-    // [수정] 논문 식 (36)의 location-based cover inequality를 theta 변수로 추가한다.
-    if (options.add_vi_36_combined) {
-        const std::vector<VI36CombinedRow> vi36_rows =
-            build_vi36_combined_location_subset_rows(
-                graph,
-                options.vi_36_subset_max_size,
-                options.add_vi_35
-            );
-        for (const VI36CombinedRow& row : vi36_rows) {
-            GRBLinExpr expr = 0.0;
-            for (const auto& term : row.edge_terms) {
-                for (int repeat = 0; repeat < term.second; ++repeat) {
-                    add_vi_edge_term(expr, term.first);
-                }
-            }
+        if (row.sense == PstepValidInequalitySense::GreaterEqual) {
             problem.model->addConstr(expr >= row.rhs, row.name);
-        }
-    }
-
-    if (options.add_vi_request_block_sec) {
-        const std::vector<RequestBlockSECRow> request_block_sec_rows =
-            build_request_block_sec_rows(
-                data,
-                graph,
-                options.vi_request_block_sec_max_size
-            );
-        for (const RequestBlockSECRow& row : request_block_sec_rows) {
-            GRBLinExpr expr = 0.0;
-            for (std::size_t edge_id : row.edge_ids) {
-                add_vi_edge_term(expr, edge_id);
-            }
+        } else {
             problem.model->addConstr(expr <= row.rhs, row.name);
         }
-    }
-
-    // [수정] 논문 식 (44): depot에서 출발하는 route 수의 하한을 theta 변수로 직접 강제한다.
-    if (options.add_vi_44) {
-        const int k_min = flexible_route_lower_bound_kmin(data);
-        GRBLinExpr route_count_expr = 0.0;
-        for (std::size_t edge_id = 0; edge_id < edge_count; ++edge_id) {
-            const EdgeRecord& edge = graph.edges()[edge_id];
-            if (edge.u == 0) {
-                add_vi_edge_term(route_count_expr, edge_id);
-            }
-        }
-        problem.model->addConstr(
-            route_count_expr >= static_cast<double>(k_min),
-            "vi44_route_lower_bound"
-        );
     }
 
     problem.model->set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);

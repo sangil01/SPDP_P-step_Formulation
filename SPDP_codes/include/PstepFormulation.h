@@ -123,9 +123,9 @@ struct CompactMasterBuildOptions {
     std::string log_path;
     bool add_vi_35 = true;
     bool add_vi_36_combined = true;
-    std::size_t vi_36_subset_max_size = 1;
+    std::size_t vi_36_subset_max_size = 1;  // 0 disables VI-36.
     bool add_vi_request_block_sec = false;
-    std::size_t vi_request_block_sec_max_size = 2;
+    std::size_t vi_request_block_sec_max_size = 2;  // 0 disables request-block SEC.
     bool add_vi_44 = true;
     VIFormulation vi_formulation = VIFormulation::Theta;
     EnumerationSOS1Mode enumeration_sos1_mode = EnumerationSOS1Mode::Default;

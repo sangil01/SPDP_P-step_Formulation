@@ -89,9 +89,9 @@ struct NodeCGOptions {
     // Full-tree B&P에서는 child node RMP를 가볍게 유지하기 위해 root input state에만 전달한다.
     bool add_root_vi_35 = false;
     bool add_root_vi_36_combined = false;
-    std::size_t root_vi_36_subset_max_size = 1;
+    std::size_t root_vi_36_subset_max_size = 1;  // 0 disables VI-36.
     bool add_root_vi_request_block_sec = false;
-    std::size_t root_vi_request_block_sec_max_size = 2;
+    std::size_t root_vi_request_block_sec_max_size = 2;  // 0 disables request-block SEC.
     bool add_root_vi_44 = false;
 
     // Phase I에서 node-feasible RMP를 만드는 방식.
@@ -173,9 +173,9 @@ struct NodeCGInputState {
     bool enable_phase_one_seed_generation = true;
     bool add_vi_35 = false;
     bool add_vi_36_combined = false;
-    std::size_t vi_36_subset_max_size = 1;
+    std::size_t vi_36_subset_max_size = 1;  // 0 disables VI-36.
     bool add_vi_request_block_sec = false;
-    std::size_t vi_request_block_sec_max_size = 2;
+    std::size_t vi_request_block_sec_max_size = 2;  // 0 disables request-block SEC.
     bool add_vi_44 = false;
     const FullEnumerationStaticPool* shared_full_enumeration_static_pool = nullptr;
 };

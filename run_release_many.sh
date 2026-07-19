@@ -14,7 +14,7 @@ fi
 # INPUT PARAMETERS
 # ============================================
 P=2
-SOLVER_MODE=enumeration # Options: enumeration, branch-and-price
+SOLVER_MODE=branch-and-price # Options: enumeration, branch-and-price
 ENUMERATION_SOS1_MODE=default # Options: default, sos1-auto, sos1-native (used only with SOLVER_MODE=enumeration)
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
@@ -40,10 +40,10 @@ PRUNE_PICKUP_SYMMETRY_43=1
 PRUNE_DELIVERY_SYMMETRY_43=1
 ADD_VI_35=0
 ADD_VI_36_COMBINED=0
-VI_36_SUBSET_MAX_SIZE=1 # 1이상으로 설정, 1이면 기존 singleton Eq. (36)과 동일, 7이면 현재 instance들에 대해 전체 set까지 포함하는 것
+VI_36_SUBSET_MAX_SIZE=0 # 0이면 비활성화, 1이면 기존 singleton Eq. (36)과 동일, 7이면 현재 instance들에 대해 전체 set까지 포함
 ADD_VI_Request_BLOCK_SEC=0
-VI_Request_BLOCK_SEC_MAX_SIZE=2 # 2이상으로 설정.
-ADD_VI_44=0
+VI_Request_BLOCK_SEC_MAX_SIZE=0 # 0이면 비활성화, 활성화할 때는 2 이상
+ADD_VI_44=1
 CG_MAX_ITERATIONS_PER_PHASE=1000
 EXACT_PRICING_MAX_COLUMNS_PER_START=64
 EXACT_PRICING_MAX_TOTAL_COLUMNS_PER_ROUND=4096
@@ -75,6 +75,7 @@ FULL_ENUMERATION_PARALLEL_STAGE2_BACKEND=custom # Options: custom, onemkl
 FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
 FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
+    #=========Request 20 이하=========#
     "RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
@@ -84,14 +85,16 @@ DATA_LIST=(
     "RecDep_day_A7.dat"
     "RecDep_day_A8.dat"
     "RecDep_day_A9.dat"
-    #"RecDep_day_A10.dat"
-    #"RecDep_day_A11.dat"
+    "RecDep_day_A10.dat"
+    "RecDep_day_A11.dat"
     "RecDep_day_B1.dat"
     "RecDep_day_B2.dat"
     "RecDep_day_C1.dat"
     "RecDep_day_C2.dat"
     "RecDep_day_C3.dat"
     "RecDep_day_C4.dat"
+    #=================================#
+    #=========Request 50 이하=========#
 )
 # Put one data file name per line in DATA_LIST.
 # ============================================

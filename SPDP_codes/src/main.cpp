@@ -993,8 +993,10 @@ CliOptions parse_cli(int argc, char** argv) {
             }
             options.vi_36_subset_max_size =
                 parse_int(argv[++idx], "--vi-36-subset-max-size");
-            if (options.vi_36_subset_max_size < 1) {
-                throw std::runtime_error("--vi-36-subset-max-size must be at least 1.");
+            if (options.vi_36_subset_max_size < 0) {
+                throw std::runtime_error(
+                    "--vi-36-subset-max-size must be nonnegative (0 disables VI-36)."
+                );
             }
             continue;
         }
@@ -1020,9 +1022,10 @@ CliOptions parse_cli(int argc, char** argv) {
             }
             options.vi_request_block_sec_max_size =
                 parse_int(argv[++idx], "--vi-request-block-sec-max-size");
-            if (options.vi_request_block_sec_max_size < 2) {
+            if (options.vi_request_block_sec_max_size < 0 ||
+                options.vi_request_block_sec_max_size == 1) {
                 throw std::runtime_error(
-                    "--vi-request-block-sec-max-size must be at least 2."
+                    "--vi-request-block-sec-max-size must be 0 or at least 2."
                 );
             }
             continue;
