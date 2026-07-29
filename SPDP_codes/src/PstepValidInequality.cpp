@@ -545,7 +545,8 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
     const SPDPData& data,
     const MultiDiGraph& graph,
     double solver_time_limit,
-    bool binary_y
+    bool binary_y,
+    bool add_time_constraints
 ) {
     if (data.time_limit <= 0.0) {
         throw std::runtime_error(
@@ -634,6 +635,7 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
     model.set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
     model.update();
 
+    std::vector<std::set<State>> states_by_node(graph.number_of_nodes());
     for (NodeId node_id = 1; node_id < end_node_id; ++node_id) {
         if (!graph.is_physical_service_node(node_id)) {
             continue;
@@ -663,16 +665,19 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
             "vi44_aux_out_degree_" + std::to_string(node_id)
         );
 
-        std::set<State> states;
         for (std::size_t edge_id : graph.ingoing_edge_indices(node_id)) {
-            states.insert(canonical_auxiliary_state(graph.edges()[edge_id].data.end_state));
+            states_by_node[static_cast<std::size_t>(node_id)].insert(
+                canonical_auxiliary_state(graph.edges()[edge_id].data.end_state)
+            );
         }
         for (std::size_t edge_id : graph.outgoing_edge_indices(node_id)) {
-            states.insert(canonical_auxiliary_state(graph.edges()[edge_id].data.start_state));
+            states_by_node[static_cast<std::size_t>(node_id)].insert(
+                canonical_auxiliary_state(graph.edges()[edge_id].data.start_state)
+            );
         }
 
         std::size_t state_index = 0U;
-        for (const State& state : states) {
+        for (const State& state : states_by_node[static_cast<std::size_t>(node_id)]) {
             GRBLinExpr state_balance = 0.0;
             for (std::size_t edge_id : graph.ingoing_edge_indices(node_id)) {
                 if (canonical_auxiliary_state(graph.edges()[edge_id].data.end_state) == state) {
@@ -688,6 +693,85 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
                 state_balance == 0.0,
                 "vi44_aux_state_" + std::to_string(node_id) + "_" +
                     std::to_string(state_index++)
+            );
+        }
+    }
+
+    if (add_time_constraints) {
+        std::vector<std::map<State, GRBVar>> time_vars_by_node(
+            graph.number_of_nodes()
+        );
+        for (NodeId node_id = 1; node_id < end_node_id; ++node_id) {
+            std::size_t state_index = 0U;
+            for (const State& state :
+                 states_by_node[static_cast<std::size_t>(node_id)]) {
+                time_vars_by_node[static_cast<std::size_t>(node_id)].emplace(
+                    state,
+                    model.addVar(
+                        0.0,
+                        data.time_limit,
+                        0.0,
+                        GRB_CONTINUOUS,
+                        "vi44_aux_B_" + std::to_string(node_id) + "_" +
+                            std::to_string(state_index++)
+                    )
+                );
+            }
+        }
+        model.update();
+
+        const auto time_var = [&](NodeId node_id, const State& state) -> GRBVar {
+            const State canonical_state = canonical_auxiliary_state(state);
+            const auto& variables =
+                time_vars_by_node.at(static_cast<std::size_t>(node_id));
+            const auto found = variables.find(canonical_state);
+            if (found == variables.end()) {
+                throw std::runtime_error(
+                    "The auxiliary VI-44 subproblem found no time variable for an "
+                    "edge endpoint state."
+                );
+            }
+            return found->second;
+        };
+
+        for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
+            const EdgeRecord& edge = graph.edges()[edge_id];
+            if (edge.u == start_node_id && edge.v == end_node_id) {
+                continue;
+            }
+
+            const std::string constraint_name =
+                "vi44_aux_time_" + std::to_string(edge_id);
+            if (edge.u == start_node_id) {
+                const GRBVar end_time =
+                    time_var(edge.v, edge.data.end_state);
+                model.addConstr(
+                    end_time >= edge.data.time * y_vars[edge_id],
+                    constraint_name
+                );
+                continue;
+            }
+            if (edge.v == end_node_id) {
+                const GRBVar start_time =
+                    time_var(edge.u, edge.data.start_state);
+                model.addConstr(
+                    start_time + edge.data.time * y_vars[edge_id] <=
+                        data.time_limit,
+                    constraint_name
+                );
+                continue;
+            }
+
+            const GRBVar start_time =
+                time_var(edge.u, edge.data.start_state);
+            const GRBVar end_time =
+                time_var(edge.v, edge.data.end_state);
+            const double big_m = data.time_limit + edge.data.time;
+            model.addConstr(
+                end_time >=
+                    start_time + edge.data.time -
+                    big_m * (1.0 - y_vars[edge_id]),
+                constraint_name
             );
         }
     }
@@ -792,7 +876,8 @@ VI44KMinResult compute_vi44_k_min(
     const SPDPData& data,
     const MultiDiGraph& graph,
     VI44KMinMode mode,
-    double sub_lp_time_limit
+    double sub_lp_time_limit,
+    bool add_time_constraints
 ) {
     if (!std::isfinite(sub_lp_time_limit) || sub_lp_time_limit < 0.0) {
         throw std::runtime_error(
@@ -814,7 +899,8 @@ VI44KMinResult compute_vi44_k_min(
             data,
             graph,
             sub_lp_time_limit,
-            mode == VI44KMinMode::SubIP
+            mode == VI44KMinMode::SubIP,
+            add_time_constraints
         );
     result.sub_lp_status = auxiliary.status;
     result.sub_lp_hit_time_limit = auxiliary.hit_time_limit;
@@ -880,7 +966,8 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
                 data,
                 graph,
                 options.vi_44_k_min_mode,
-                options.vi_44_sub_lp_time_limit
+                options.vi_44_sub_lp_time_limit,
+                options.vi_44_subproblem_add_time_constraints
             );
         rows.push_back(build_vi44_row(graph, result.selected_k_min));
         if (options.log_stream != nullptr) {
@@ -892,6 +979,8 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
             if (options.vi_44_k_min_mode != VI44KMinMode::COR) {
                 message << " sub_lp_status=" << result.sub_lp_status
                         << " sub_lp_time_limit=" << options.vi_44_sub_lp_time_limit
+                        << " subproblem_time_constraints="
+                        << (options.vi_44_subproblem_add_time_constraints ? 1 : 0)
                         << " sub_lp_hit_time_limit="
                         << (result.sub_lp_hit_time_limit ? 1 : 0)
                         << " sub_lp_has_certified_bound="

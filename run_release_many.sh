@@ -44,8 +44,9 @@ VI_36_SUBSET_MAX_SIZE=0 # 0이면 비활성화, 1이면 기존 singleton Eq. (36
 ADD_VI_Request_BLOCK_SEC=0
 VI_Request_BLOCK_SEC_MAX_SIZE=0 # 0이면 비활성화, 활성화할 때는 2 이상
 ADD_VI_44=1
-VI_44_K_MIN_MODE=sub-ip # Options: cor, sub-lp, sub-ip
+VI_44_K_MIN_MODE=sub-lp # Options: cor, sub-lp, sub-ip
 VI_44_SUB_LP_TIME_LIMIT=60 # seconds; 0 means no time limit (applies to sub-lp and sub-ip)
+VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS=1 # 1 adds state-time B variables and route-duration constraints
 CG_MAX_ITERATIONS_PER_PHASE=1000
 EXACT_PRICING_MAX_COLUMNS_PER_START=64
 EXACT_PRICING_MAX_TOTAL_COLUMNS_PER_ROUND=4096
@@ -229,6 +230,7 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "add-vi-44: $ADD_VI_44"
         echo "vi-44-k-min-mode: $VI_44_K_MIN_MODE"
         echo "vi-44-sub-lp-time-limit: $VI_44_SUB_LP_TIME_LIMIT"
+        echo "vi-44-subproblem-add-time-constraints: $VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS"
         echo "----------------------------------------"
     } >> "$RUNNER_LOG"
 
@@ -266,6 +268,7 @@ for data_name in "${DATA_LIST[@]}"; do
         --add-vi-44 "$ADD_VI_44" \
         --vi-44-k-min-mode "$VI_44_K_MIN_MODE" \
         --vi-44-sub-lp-time-limit "$VI_44_SUB_LP_TIME_LIMIT" \
+        --vi-44-subproblem-add-time-constraints "$VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS" \
         --cg-max-iterations-per-phase "$CG_MAX_ITERATIONS_PER_PHASE" \
         --exact-pricing-max-columns-per-start "$EXACT_PRICING_MAX_COLUMNS_PER_START" \
         --exact-pricing-max-total-columns-per-round "$EXACT_PRICING_MAX_TOTAL_COLUMNS_PER_ROUND" \

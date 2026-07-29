@@ -3324,6 +3324,7 @@ NodeCGResult solve_node_column_generation(
         input_state.add_vi_44,
         options.vi_44_k_min_mode,
         options.vi_44_sub_lp_time_limit,
+        options.vi_44_subproblem_add_time_constraints,
         log_stream,
     };
     CGMasterProblem master_problem =

@@ -53,6 +53,7 @@ struct CGMasterOptions {
     bool add_vi_44 = false;
     VI44KMinMode vi_44_k_min_mode = VI44KMinMode::COR;
     double vi_44_sub_lp_time_limit = 0.0;  // 0 means no time limit.
+    bool vi_44_subproblem_add_time_constraints = false;
     std::ostream* vi_log_stream = nullptr;
 };
 

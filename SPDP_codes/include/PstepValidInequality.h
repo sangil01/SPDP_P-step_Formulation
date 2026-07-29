@@ -54,6 +54,7 @@ struct PstepValidInequalityOptions {
     VI44KMinMode vi_44_k_min_mode = VI44KMinMode::COR;
     // Applied to either auxiliary mode; 0 means no time limit.
     double vi_44_sub_lp_time_limit = 0.0;
+    bool vi_44_subproblem_add_time_constraints = false;
     std::ostream* log_stream = nullptr;
 };
 
@@ -61,7 +62,8 @@ VI44KMinResult compute_vi44_k_min(
     const SPDPData& data,
     const MultiDiGraph& graph,
     VI44KMinMode mode,
-    double sub_lp_time_limit
+    double sub_lp_time_limit,
+    bool add_time_constraints
 );
 
 // Builds every enabled p-step valid inequality as a sparse edge row.

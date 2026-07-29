@@ -56,6 +56,7 @@ struct CliOptions {
     int add_vi_44 = 0;
     std::string vi_44_k_min_mode = "cor";
     double vi_44_sub_lp_time_limit = 0.0;
+    int vi_44_subproblem_add_time_constraints = 0;
     int cg_max_iterations_per_phase = 1000;
     int exact_pricing_max_columns_per_start = 16;
     int exact_pricing_max_total_columns_per_round = 1024;
@@ -114,6 +115,7 @@ void print_usage(const char* executable) {
               << " [--vi-request-block-sec-max-size N]"
               << " [--add-vi-44 0|1] [--vi-44-k-min-mode cor|sub-lp|sub-ip]"
               << " [--vi-44-sub-lp-time-limit T]"
+              << " [--vi-44-subproblem-add-time-constraints 0|1]"
               << " [--cg-max-iterations-per-phase N]"
               << " [--exact-pricing-max-columns-per-start N]"
               << " [--exact-pricing-max-total-columns-per-round N]"
@@ -1095,6 +1097,20 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--vi-44-subproblem-add-time-constraints") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--vi-44-subproblem-add-time-constraints requires a value."
+                );
+            }
+            options.vi_44_subproblem_add_time_constraints =
+                parse_binary_flag(
+                    argv[++idx],
+                    "--vi-44-subproblem-add-time-constraints"
+                );
+            continue;
+        }
+
         if (!arg.empty() && arg[0] == '-') {
             throw std::runtime_error("Unknown option: " + arg);
         }
@@ -1215,6 +1231,8 @@ void print_instance_summary(
     out << "[main] vi_44_k_min_mode: " << args.vi_44_k_min_mode << '\n';
     out << "[main] vi_44_sub_lp_time_limit: "
         << args.vi_44_sub_lp_time_limit << '\n';
+    out << "[main] vi_44_subproblem_add_time_constraints: "
+        << args.vi_44_subproblem_add_time_constraints << '\n';
     out << "[main] cg_max_iterations_per_phase: " << args.cg_max_iterations_per_phase << '\n';
     out << "[main] exact_pricing_max_columns_per_start: "
         << args.exact_pricing_max_columns_per_start << '\n';
@@ -1476,6 +1494,8 @@ int main(int argc, char** argv) {
                     to_vi_44_k_min_mode(args.vi_44_k_min_mode);
                 cg_options.vi_44_sub_lp_time_limit =
                     args.vi_44_sub_lp_time_limit;
+                cg_options.vi_44_subproblem_add_time_constraints =
+                    args.vi_44_subproblem_add_time_constraints == 1;
                 cg_options.gurobi_log_path = gurobi_log_path.string();
                 if (args.node_cg_phase_one_mode == "exact-cg") {
                     cg_options.phase_one_mode = spdp::NodeCGPhaseOneMode::ExactCG;
@@ -1607,6 +1627,7 @@ int main(int argc, char** argv) {
                 args.add_vi_44 == 1,
                 to_vi_44_k_min_mode(args.vi_44_k_min_mode),
                 args.vi_44_sub_lp_time_limit,
+                args.vi_44_subproblem_add_time_constraints == 1,
                 to_vi_formulation(args.vi_formulation),
                 to_enumeration_sos1_mode(args.enumeration_sos1_mode),
                 &output_file,

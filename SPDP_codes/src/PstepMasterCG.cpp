@@ -122,6 +122,8 @@ void add_root_theta_valid_inequalities(
     vi_options.add_vi_44 = options.add_vi_44;
     vi_options.vi_44_k_min_mode = options.vi_44_k_min_mode;
     vi_options.vi_44_sub_lp_time_limit = options.vi_44_sub_lp_time_limit;
+    vi_options.vi_44_subproblem_add_time_constraints =
+        options.vi_44_subproblem_add_time_constraints;
     vi_options.log_stream = options.vi_log_stream;
     const std::vector<PstepValidInequalityRow> vi_rows =
         build_pstep_valid_inequality_rows(data, graph, vi_options);
