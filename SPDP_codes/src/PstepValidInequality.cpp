@@ -2,20 +2,28 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <ostream>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "gurobi_c++.h"
+
 namespace spdp {
 namespace {
 
 constexpr double kTolerance = 1e-9;
+constexpr double kAuxiliaryLPSolverTolerance = 1e-9;
 
 enum class LocationFamily {
     Pickup,
@@ -474,7 +482,7 @@ std::vector<PstepValidInequalityRow> build_request_block_sec_rows(
     return rows;
 }
 
-int flexible_route_lower_bound_kmin(const SPDPData& data) {
+int cor_route_lower_bound_kmin(const SPDPData& data) {
     if (data.time_limit <= 0.0) {
         throw std::runtime_error("Time limit must be positive for VI-44.");
     }
@@ -517,23 +525,324 @@ int flexible_route_lower_bound_kmin(const SPDPData& data) {
     );
 }
 
-std::vector<PstepValidInequalityRow> build_vi44_rows(
+State canonical_auxiliary_state(State state) {
+    if (state[1] < state[0]) {
+        std::swap(state[0], state[1]);
+    }
+    return state;
+}
+
+struct AuxiliaryDurationSubproblemResult {
+    int status = 0;
+    bool hit_time_limit = false;
+    bool has_certified_bound = false;
+    double objective_value = -1.0;
+    double objective_bound = -1.0;
+    double runtime_seconds = 0.0;
+};
+
+AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
     const SPDPData& data,
-    const MultiDiGraph& graph
+    const MultiDiGraph& graph,
+    double solver_time_limit,
+    bool binary_y
+) {
+    if (data.time_limit <= 0.0) {
+        throw std::runtime_error(
+            "The auxiliary VI-44 subproblem requires a positive route-duration limit."
+        );
+    }
+    if (!std::isfinite(solver_time_limit) || solver_time_limit < 0.0) {
+        throw std::runtime_error(
+            "The auxiliary VI-44 subproblem time limit must be finite and nonnegative."
+        );
+    }
+    if (graph.number_of_nodes() != 2U * data.requests.size() + 2U) {
+        throw std::runtime_error(
+            "The auxiliary VI-44 subproblem requires exactly two action nodes per request."
+        );
+    }
+
+    const NodeId start_node_id = 0;
+    const NodeId end_node_id = graph.end_node_id();
+    if (graph.node(start_node_id).kind != NodeSpec::Kind::Start ||
+        graph.node(end_node_id).kind != NodeSpec::Kind::End) {
+        throw std::runtime_error(
+            "The auxiliary VI-44 subproblem requires node 0 and the last node to be the depots."
+        );
+    }
+
+    std::size_t dummy_edge_count = 0U;
+    for (const EdgeRecord& edge : graph.edges()) {
+        if (!std::isfinite(edge.data.time) || edge.data.time < -kTolerance) {
+            throw std::runtime_error(
+                "The auxiliary VI-44 subproblem requires finite, nonnegative edge durations."
+            );
+        }
+        if (edge.u == start_node_id && edge.v == end_node_id) {
+            ++dummy_edge_count;
+            if (std::abs(edge.data.time) > kTolerance) {
+                throw std::runtime_error(
+                    "The auxiliary VI-44 subproblem requires zero-duration dummy depot edges."
+                );
+            }
+        }
+        if (edge.u == start_node_id && edge.v != end_node_id &&
+            graph.node(edge.v).kind != NodeSpec::Kind::Pickup) {
+            throw std::runtime_error(
+                "An auxiliary VI-44 subproblem departure edge must enter a pickup node."
+            );
+        }
+        if (edge.v == end_node_id && edge.u != start_node_id &&
+            graph.node(edge.u).kind != NodeSpec::Kind::Delivery) {
+            throw std::runtime_error(
+                "An auxiliary VI-44 subproblem return edge must leave a delivery node."
+            );
+        }
+    }
+    if (dummy_edge_count == 0U) {
+        throw std::runtime_error(
+            "The auxiliary VI-44 subproblem graph has no start-to-end dummy edge."
+        );
+    }
+
+    GRBEnv environment(true);
+    environment.set(GRB_IntParam_OutputFlag, 0);
+    environment.start();
+    GRBModel model(environment);
+    model.set(GRB_IntParam_OutputFlag, 0);
+    model.set(GRB_IntParam_Threads, 1);
+    model.set(GRB_DoubleParam_FeasibilityTol, kAuxiliaryLPSolverTolerance);
+    model.set(GRB_DoubleParam_OptimalityTol, kAuxiliaryLPSolverTolerance);
+    if (solver_time_limit > 0.0) {
+        model.set(GRB_DoubleParam_TimeLimit, solver_time_limit);
+    }
+
+    std::vector<GRBVar> y_vars;
+    y_vars.reserve(graph.number_of_edges());
+    for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        const bool is_dummy = edge.u == start_node_id && edge.v == end_node_id;
+        y_vars.push_back(model.addVar(
+            0.0,
+            is_dummy ? 0.0 : 1.0,
+            edge.data.time,
+            binary_y ? GRB_BINARY : GRB_CONTINUOUS,
+            "vi44_aux_y_" + std::to_string(edge_id)
+        ));
+    }
+    model.set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
+    model.update();
+
+    for (NodeId node_id = 1; node_id < end_node_id; ++node_id) {
+        if (!graph.is_physical_service_node(node_id)) {
+            continue;
+        }
+        const NodeSpec::Kind node_kind = graph.node(node_id).kind;
+        if (node_kind != NodeSpec::Kind::Pickup && node_kind != NodeSpec::Kind::Delivery) {
+            throw std::runtime_error(
+                "The auxiliary VI-44 subproblem found a non-service physical node."
+            );
+        }
+
+        GRBLinExpr incoming_degree = 0.0;
+        for (std::size_t edge_id : graph.ingoing_edge_indices(node_id)) {
+            incoming_degree += y_vars[edge_id];
+        }
+        model.addConstr(
+            incoming_degree == 1.0,
+            "vi44_aux_in_degree_" + std::to_string(node_id)
+        );
+
+        GRBLinExpr outgoing_degree = 0.0;
+        for (std::size_t edge_id : graph.outgoing_edge_indices(node_id)) {
+            outgoing_degree += y_vars[edge_id];
+        }
+        model.addConstr(
+            outgoing_degree == 1.0,
+            "vi44_aux_out_degree_" + std::to_string(node_id)
+        );
+
+        std::set<State> states;
+        for (std::size_t edge_id : graph.ingoing_edge_indices(node_id)) {
+            states.insert(canonical_auxiliary_state(graph.edges()[edge_id].data.end_state));
+        }
+        for (std::size_t edge_id : graph.outgoing_edge_indices(node_id)) {
+            states.insert(canonical_auxiliary_state(graph.edges()[edge_id].data.start_state));
+        }
+
+        std::size_t state_index = 0U;
+        for (const State& state : states) {
+            GRBLinExpr state_balance = 0.0;
+            for (std::size_t edge_id : graph.ingoing_edge_indices(node_id)) {
+                if (canonical_auxiliary_state(graph.edges()[edge_id].data.end_state) == state) {
+                    state_balance += y_vars[edge_id];
+                }
+            }
+            for (std::size_t edge_id : graph.outgoing_edge_indices(node_id)) {
+                if (canonical_auxiliary_state(graph.edges()[edge_id].data.start_state) == state) {
+                    state_balance -= y_vars[edge_id];
+                }
+            }
+            model.addConstr(
+                state_balance == 0.0,
+                "vi44_aux_state_" + std::to_string(node_id) + "_" +
+                    std::to_string(state_index++)
+            );
+        }
+    }
+
+    GRBLinExpr actual_departures = 0.0;
+    GRBLinExpr actual_returns = 0.0;
+    for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        if (edge.u == start_node_id &&
+            graph.node(edge.v).kind == NodeSpec::Kind::Pickup) {
+            actual_departures += y_vars[edge_id];
+        }
+        if (graph.node(edge.u).kind == NodeSpec::Kind::Delivery &&
+            edge.v == end_node_id) {
+            actual_returns += y_vars[edge_id];
+        }
+    }
+    model.addConstr(actual_departures == actual_returns, "vi44_aux_depot_balance");
+
+    const auto solve_start = std::chrono::steady_clock::now();
+    model.optimize();
+    const auto solve_end = std::chrono::steady_clock::now();
+
+    AuxiliaryDurationSubproblemResult result;
+    result.status = model.get(GRB_IntAttr_Status);
+    result.hit_time_limit = result.status == GRB_TIME_LIMIT;
+    result.runtime_seconds =
+        std::chrono::duration<double>(solve_end - solve_start).count();
+
+    if (model.get(GRB_IntAttr_SolCount) > 0) {
+        try {
+            const double objective_value = model.get(GRB_DoubleAttr_ObjVal);
+            if (std::isfinite(objective_value) &&
+                std::abs(objective_value) < 0.5 * GRB_INFINITY) {
+                result.objective_value = objective_value;
+            }
+        } catch (const GRBException& error) {
+            if (error.getErrorCode() != GRB_ERROR_DATA_NOT_AVAILABLE) {
+                throw;
+            }
+        }
+    }
+
+    try {
+        const double objective_bound = model.get(GRB_DoubleAttr_ObjBound);
+        if (std::isfinite(objective_bound) &&
+            std::abs(objective_bound) < 0.5 * GRB_INFINITY) {
+            result.objective_bound = objective_bound;
+            result.has_certified_bound = true;
+        }
+    } catch (const GRBException& error) {
+        if (error.getErrorCode() != GRB_ERROR_DATA_NOT_AVAILABLE) {
+            throw;
+        }
+    }
+
+    if (result.status != GRB_OPTIMAL && result.status != GRB_TIME_LIMIT) {
+        throw std::runtime_error(
+            "The auxiliary VI-44 subproblem stopped with an unsupported status (" +
+            std::to_string(result.status) + ")."
+        );
+    }
+    if (result.status == GRB_OPTIMAL && !result.has_certified_bound) {
+        throw std::runtime_error(
+            "The optimal auxiliary VI-44 subproblem returned no finite certified bound."
+        );
+    }
+    return result;
+}
+
+const char* vi44_k_min_mode_name(VI44KMinMode mode) {
+    switch (mode) {
+        case VI44KMinMode::COR:
+            return "cor";
+        case VI44KMinMode::SubLP:
+            return "sub-lp";
+        case VI44KMinMode::SubIP:
+            return "sub-ip";
+    }
+    throw std::runtime_error("Unknown VI-44 k_min mode.");
+}
+
+PstepValidInequalityRow build_vi44_row(
+    const MultiDiGraph& graph,
+    int k_min
 ) {
     PstepValidInequalityRow row;
     row.name = "vi44_route_lower_bound";
-    row.rhs = static_cast<double>(flexible_route_lower_bound_kmin(data));
+    row.rhs = static_cast<double>(k_min);
     for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
         const EdgeRecord& edge = graph.edges()[edge_id];
         if (edge.u == 0 && graph.node(edge.v).kind == NodeSpec::Kind::Pickup) {
             add_unit_edge_term(row, edge_id);
         }
     }
-    return {std::move(row)};
+    return row;
 }
 
 }  // namespace
+
+VI44KMinResult compute_vi44_k_min(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    VI44KMinMode mode,
+    double sub_lp_time_limit
+) {
+    if (!std::isfinite(sub_lp_time_limit) || sub_lp_time_limit < 0.0) {
+        throw std::runtime_error(
+            "The auxiliary VI-44 subproblem time limit must be finite and nonnegative."
+        );
+    }
+    VI44KMinResult result;
+    result.cor_k_min = cor_route_lower_bound_kmin(data);
+    result.selected_k_min = result.cor_k_min;
+    if (mode == VI44KMinMode::COR) {
+        return result;
+    }
+    if (mode != VI44KMinMode::SubLP && mode != VI44KMinMode::SubIP) {
+        throw std::runtime_error("Unknown VI-44 k_min mode.");
+    }
+
+    const AuxiliaryDurationSubproblemResult auxiliary =
+        solve_auxiliary_duration_subproblem(
+            data,
+            graph,
+            sub_lp_time_limit,
+            mode == VI44KMinMode::SubIP
+        );
+    result.sub_lp_status = auxiliary.status;
+    result.sub_lp_hit_time_limit = auxiliary.hit_time_limit;
+    result.sub_lp_has_certified_bound = auxiliary.has_certified_bound;
+    result.sub_lp_objective_value = auxiliary.objective_value;
+    result.sub_lp_objective_bound = auxiliary.objective_bound;
+    result.sub_lp_runtime_seconds = auxiliary.runtime_seconds;
+
+    if (!auxiliary.has_certified_bound) {
+        return result;
+    }
+
+    const double scale = std::max(
+        {1.0, data.time_limit, std::abs(auxiliary.objective_bound)}
+    );
+    result.sub_lp_numerical_tolerance =
+        10.0 * kAuxiliaryLPSolverTolerance * scale;
+    result.sub_lp_safe_lower_bound = std::max(
+        0.0,
+        auxiliary.objective_bound - result.sub_lp_numerical_tolerance
+    );
+    result.sub_lp_k_min = std::max(
+        0,
+        static_cast<int>(std::ceil(result.sub_lp_safe_lower_bound / data.time_limit))
+    );
+    result.selected_k_min = std::max(result.cor_k_min, result.sub_lp_k_min);
+    return result;
+}
 
 std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
     const SPDPData& data,
@@ -566,7 +875,37 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
         );
     }
     if (options.add_vi_44) {
-        append_rows(rows, build_vi44_rows(data, graph));
+        const VI44KMinResult result =
+            compute_vi44_k_min(
+                data,
+                graph,
+                options.vi_44_k_min_mode,
+                options.vi_44_sub_lp_time_limit
+            );
+        rows.push_back(build_vi44_row(graph, result.selected_k_min));
+        if (options.log_stream != nullptr) {
+            std::ostringstream message;
+            message << std::setprecision(15)
+                    << "[pstep-vi] VI44 k_min mode="
+                    << vi44_k_min_mode_name(options.vi_44_k_min_mode)
+                    << " cor=" << result.cor_k_min;
+            if (options.vi_44_k_min_mode != VI44KMinMode::COR) {
+                message << " sub_lp_status=" << result.sub_lp_status
+                        << " sub_lp_time_limit=" << options.vi_44_sub_lp_time_limit
+                        << " sub_lp_hit_time_limit="
+                        << (result.sub_lp_hit_time_limit ? 1 : 0)
+                        << " sub_lp_has_certified_bound="
+                        << (result.sub_lp_has_certified_bound ? 1 : 0)
+                        << " sub_lp_objective=" << result.sub_lp_objective_value
+                        << " sub_lp_bound=" << result.sub_lp_objective_bound
+                        << " sub_lp_safe_bound=" << result.sub_lp_safe_lower_bound
+                        << " sub_lp_tolerance=" << result.sub_lp_numerical_tolerance
+                        << " sub_lp_k_min=" << result.sub_lp_k_min
+                        << " sub_lp_runtime_seconds=" << result.sub_lp_runtime_seconds;
+            }
+            message << " selected=" << result.selected_k_min;
+            *options.log_stream << message.str() << '\n';
+        }
     }
     return rows;
 }

@@ -19,7 +19,7 @@ ENUMERATION_SOS1_MODE=default # Options: default, sos1-auto, sos1-native (used o
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=1800 # seconds
+SOLVER_TIME_LIMIT=180 # seconds
 GUROBI_THREADS=0
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
@@ -44,6 +44,8 @@ VI_36_SUBSET_MAX_SIZE=0 # 0이면 비활성화, 1이면 기존 singleton Eq. (36
 ADD_VI_Request_BLOCK_SEC=0
 VI_Request_BLOCK_SEC_MAX_SIZE=0 # 0이면 비활성화, 활성화할 때는 2 이상
 ADD_VI_44=1
+VI_44_K_MIN_MODE=sub-ip # Options: cor, sub-lp, sub-ip
+VI_44_SUB_LP_TIME_LIMIT=60 # seconds; 0 means no time limit (applies to sub-lp and sub-ip)
 CG_MAX_ITERATIONS_PER_PHASE=1000
 EXACT_PRICING_MAX_COLUMNS_PER_START=64
 EXACT_PRICING_MAX_TOTAL_COLUMNS_PER_ROUND=4096
@@ -95,6 +97,38 @@ DATA_LIST=(
     "RecDep_day_C4.dat"
     #=================================#
     #=========Request 50 이하=========#
+    "RecDep_day_A12.dat"
+    "RecDep_day_A13.dat"
+    "RecDep_day_A14.dat"
+    "RecDep_day_A15.dat"
+    "RecDep_day_A16.dat"
+    "RecDep_day_A17.dat"
+    "RecDep_day_A18.dat"
+    "RecDep_day_A19.dat"
+    "RecDep_day_A20.dat"
+    "RecDep_day_B3.dat"
+    "RecDep_day_B4.dat"
+    "RecDep_day_B5.dat"
+    "RecDep_day_B6.dat"
+    "RecDep_day_B7.dat"
+    "RecDep_day_B8.dat"
+    "RecDep_day_B9.dat"
+    "RecDep_day_B10.dat"
+    "RecDep_day_B11.dat"
+    "RecDep_day_B12.dat"
+    "RecDep_day_B13.dat"
+    "RecDep_day_B14.dat"
+    "RecDep_day_C5.dat"
+    "RecDep_day_C6.dat"
+    "RecDep_day_C7.dat"
+    "RecDep_day_C8.dat"
+    "RecDep_day_C9.dat"
+    "RecDep_day_C10.dat"
+    "RecDep_day_C11.dat"
+    "RecDep_day_C12.dat"
+    "RecDep_day_D1.dat"
+    "RecDep_day_D2.dat"
+    #=================================#
 )
 # Put one data file name per line in DATA_LIST.
 # ============================================
@@ -193,6 +227,8 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "add-vi-request-block-sec: $ADD_VI_Request_BLOCK_SEC"
         echo "vi-request-block-sec-max-size: $VI_Request_BLOCK_SEC_MAX_SIZE"
         echo "add-vi-44: $ADD_VI_44"
+        echo "vi-44-k-min-mode: $VI_44_K_MIN_MODE"
+        echo "vi-44-sub-lp-time-limit: $VI_44_SUB_LP_TIME_LIMIT"
         echo "----------------------------------------"
     } >> "$RUNNER_LOG"
 
@@ -228,6 +264,8 @@ for data_name in "${DATA_LIST[@]}"; do
         --add-vi-request-block-sec "$ADD_VI_Request_BLOCK_SEC" \
         --vi-request-block-sec-max-size "$VI_Request_BLOCK_SEC_MAX_SIZE" \
         --add-vi-44 "$ADD_VI_44" \
+        --vi-44-k-min-mode "$VI_44_K_MIN_MODE" \
+        --vi-44-sub-lp-time-limit "$VI_44_SUB_LP_TIME_LIMIT" \
         --cg-max-iterations-per-phase "$CG_MAX_ITERATIONS_PER_PHASE" \
         --exact-pricing-max-columns-per-start "$EXACT_PRICING_MAX_COLUMNS_PER_START" \
         --exact-pricing-max-total-columns-per-round "$EXACT_PRICING_MAX_TOTAL_COLUMNS_PER_ROUND" \

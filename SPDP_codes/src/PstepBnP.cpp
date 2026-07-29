@@ -3322,6 +3322,9 @@ NodeCGResult solve_node_column_generation(
         input_state.add_vi_request_block_sec,
         input_state.vi_request_block_sec_max_size,
         input_state.add_vi_44,
+        options.vi_44_k_min_mode,
+        options.vi_44_sub_lp_time_limit,
+        log_stream,
     };
     CGMasterProblem master_problem =
         build_cg_master_problem(data, graph, master_options);

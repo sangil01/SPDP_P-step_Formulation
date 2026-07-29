@@ -13,6 +13,7 @@
 #include "gurobi_c++.h"
 #include "GenMultiGraph.h"
 #include "PstepPricing.h"
+#include "PstepValidInequality.h"
 #include "ReadData.h"
 
 namespace spdp {
@@ -50,6 +51,9 @@ struct CGMasterOptions {
     bool add_vi_request_block_sec = false;
     std::size_t vi_request_block_sec_max_size = 2;  // 0 disables request-block SEC.
     bool add_vi_44 = false;
+    VI44KMinMode vi_44_k_min_mode = VI44KMinMode::COR;
+    double vi_44_sub_lp_time_limit = 0.0;  // 0 means no time limit.
+    std::ostream* vi_log_stream = nullptr;
 };
 
 // node RMP에서 고정으로 존재하는 모든 row / variable handle 묶음.

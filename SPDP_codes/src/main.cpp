@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -53,6 +54,8 @@ struct CliOptions {
     int add_vi_request_block_sec = 0;
     int vi_request_block_sec_max_size = 2;
     int add_vi_44 = 0;
+    std::string vi_44_k_min_mode = "cor";
+    double vi_44_sub_lp_time_limit = 0.0;
     int cg_max_iterations_per_phase = 1000;
     int exact_pricing_max_columns_per_start = 16;
     int exact_pricing_max_total_columns_per_round = 1024;
@@ -109,7 +112,8 @@ void print_usage(const char* executable) {
               << " [--add-vi-36-combined 0|1] [--vi-36-subset-max-size N]"
               << " [--add-vi-request-block-sec 0|1]"
               << " [--vi-request-block-sec-max-size N]"
-              << " [--add-vi-44 0|1]"
+              << " [--add-vi-44 0|1] [--vi-44-k-min-mode cor|sub-lp|sub-ip]"
+              << " [--vi-44-sub-lp-time-limit T]"
               << " [--cg-max-iterations-per-phase N]"
               << " [--exact-pricing-max-columns-per-start N]"
               << " [--exact-pricing-max-total-columns-per-round N]"
@@ -180,6 +184,16 @@ std::string parse_vi_formulation(const std::string& value) {
         return value;
     }
     throw std::runtime_error("Invalid value for --vi-formulation: " + value + " (expected theta or x)");
+}
+
+std::string parse_vi_44_k_min_mode(const std::string& value) {
+    if (value == "cor" || value == "sub-lp" || value == "sub-ip") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --vi-44-k-min-mode: " + value +
+        " (expected cor, sub-lp, or sub-ip)"
+    );
 }
 
 std::string parse_solver_mode(const std::string& value) {
@@ -332,6 +346,19 @@ spdp::VIFormulation to_vi_formulation(const std::string& value) {
         return spdp::VIFormulation::X;
     }
     throw std::runtime_error("Unsupported VI formulation: " + value);
+}
+
+spdp::VI44KMinMode to_vi_44_k_min_mode(const std::string& value) {
+    if (value == "cor") {
+        return spdp::VI44KMinMode::COR;
+    }
+    if (value == "sub-lp") {
+        return spdp::VI44KMinMode::SubLP;
+    }
+    if (value == "sub-ip") {
+        return spdp::VI44KMinMode::SubIP;
+    }
+    throw std::runtime_error("Unsupported VI-44 k_min mode: " + value);
 }
 
 spdp::EnumerationSOS1Mode to_enumeration_sos1_mode(const std::string& value) {
@@ -1042,6 +1069,32 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--vi-44-k-min-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--vi-44-k-min-mode requires a value.");
+            }
+            options.vi_44_k_min_mode = parse_vi_44_k_min_mode(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--vi-44-sub-lp-time-limit") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--vi-44-sub-lp-time-limit requires a value."
+                );
+            }
+            options.vi_44_sub_lp_time_limit =
+                parse_double(argv[++idx], "--vi-44-sub-lp-time-limit");
+            if (!std::isfinite(options.vi_44_sub_lp_time_limit) ||
+                options.vi_44_sub_lp_time_limit < 0.0) {
+                throw std::runtime_error(
+                    "--vi-44-sub-lp-time-limit must be finite and nonnegative "
+                    "(0 means no time limit)."
+                );
+            }
+            continue;
+        }
+
         if (!arg.empty() && arg[0] == '-') {
             throw std::runtime_error("Unknown option: " + arg);
         }
@@ -1159,6 +1212,9 @@ void print_instance_summary(
     out << "[main] vi_request_block_sec_max_size: "
         << args.vi_request_block_sec_max_size << '\n';
     out << "[main] add_vi_44: " << args.add_vi_44 << '\n';
+    out << "[main] vi_44_k_min_mode: " << args.vi_44_k_min_mode << '\n';
+    out << "[main] vi_44_sub_lp_time_limit: "
+        << args.vi_44_sub_lp_time_limit << '\n';
     out << "[main] cg_max_iterations_per_phase: " << args.cg_max_iterations_per_phase << '\n';
     out << "[main] exact_pricing_max_columns_per_start: "
         << args.exact_pricing_max_columns_per_start << '\n';
@@ -1416,6 +1472,10 @@ int main(int argc, char** argv) {
                 cg_options.root_vi_request_block_sec_max_size =
                     static_cast<std::size_t>(args.vi_request_block_sec_max_size);
                 cg_options.add_root_vi_44 = args.add_vi_44 == 1;
+                cg_options.vi_44_k_min_mode =
+                    to_vi_44_k_min_mode(args.vi_44_k_min_mode);
+                cg_options.vi_44_sub_lp_time_limit =
+                    args.vi_44_sub_lp_time_limit;
                 cg_options.gurobi_log_path = gurobi_log_path.string();
                 if (args.node_cg_phase_one_mode == "exact-cg") {
                     cg_options.phase_one_mode = spdp::NodeCGPhaseOneMode::ExactCG;
@@ -1545,8 +1605,11 @@ int main(int argc, char** argv) {
                 args.add_vi_request_block_sec == 1,
                 static_cast<std::size_t>(args.vi_request_block_sec_max_size),
                 args.add_vi_44 == 1,
+                to_vi_44_k_min_mode(args.vi_44_k_min_mode),
+                args.vi_44_sub_lp_time_limit,
                 to_vi_formulation(args.vi_formulation),
                 to_enumeration_sos1_mode(args.enumeration_sos1_mode),
+                &output_file,
             };
             spdp::CompactMasterProblem problem = spdp::build_compact_master_problem(
                 data,

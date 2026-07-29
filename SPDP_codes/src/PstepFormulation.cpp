@@ -1489,14 +1489,16 @@ CompactMasterProblem build_compact_master_problem(
         );
     }
 
-    const PstepValidInequalityOptions vi_options{
-        options.add_vi_35,
-        options.add_vi_36_combined,
-        options.vi_36_subset_max_size,
-        options.add_vi_request_block_sec,
-        options.vi_request_block_sec_max_size,
-        options.add_vi_44,
-    };
+    PstepValidInequalityOptions vi_options;
+    vi_options.add_vi_35 = options.add_vi_35;
+    vi_options.add_vi_36_combined = options.add_vi_36_combined;
+    vi_options.vi_36_subset_max_size = options.vi_36_subset_max_size;
+    vi_options.add_vi_request_block_sec = options.add_vi_request_block_sec;
+    vi_options.vi_request_block_sec_max_size = options.vi_request_block_sec_max_size;
+    vi_options.add_vi_44 = options.add_vi_44;
+    vi_options.vi_44_k_min_mode = options.vi_44_k_min_mode;
+    vi_options.vi_44_sub_lp_time_limit = options.vi_44_sub_lp_time_limit;
+    vi_options.log_stream = options.vi_log_stream;
     const std::vector<PstepValidInequalityRow> vi_rows =
         build_pstep_valid_inequality_rows(data, graph, vi_options);
     for (const PstepValidInequalityRow& row : vi_rows) {
