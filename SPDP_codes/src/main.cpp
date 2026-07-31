@@ -54,9 +54,15 @@ struct CliOptions {
     int add_vi_request_block_sec = 0;
     int vi_request_block_sec_max_size = 2;
     int add_vi_44 = 0;
-    std::string vi_44_k_min_mode = "cor";
-    double vi_44_sub_lp_time_limit = 0.0;
+    int vi_44_k_min_use_cor = 1;
+    int vi_44_k_min_use_subproblem = 0;
+    int vi_44_k_min_use_vehicle_assignment = 0;
+    std::string vi_44_subproblem_type = "lp";
+    double vi_44_subproblem_time_limit = 0.0;
     int vi_44_subproblem_add_time_constraints = 0;
+    int vi_44_vehicle_assignment_add_tsp_bound = 0;
+    int vi_44_vehicle_assignment_add_container_bound = 0;
+    double vi_44_vehicle_assignment_time_limit = 0.0;
     int cg_max_iterations_per_phase = 1000;
     int exact_pricing_max_columns_per_start = 16;
     int exact_pricing_max_total_columns_per_round = 1024;
@@ -113,9 +119,16 @@ void print_usage(const char* executable) {
               << " [--add-vi-36-combined 0|1] [--vi-36-subset-max-size N]"
               << " [--add-vi-request-block-sec 0|1]"
               << " [--vi-request-block-sec-max-size N]"
-              << " [--add-vi-44 0|1] [--vi-44-k-min-mode cor|sub-lp|sub-ip]"
-              << " [--vi-44-sub-lp-time-limit T]"
+              << " [--add-vi-44 0|1]"
+              << " [--vi-44-k-min-use-cor 0|1]"
+              << " [--vi-44-k-min-use-subproblem 0|1]"
+              << " [--vi-44-k-min-use-vehicle-assignment 0|1]"
+              << " [--vi-44-subproblem-type lp|ip]"
+              << " [--vi-44-subproblem-time-limit T]"
               << " [--vi-44-subproblem-add-time-constraints 0|1]"
+              << " [--vi-44-vehicle-assignment-add-tsp-bound 0|1]"
+              << " [--vi-44-vehicle-assignment-add-container-bound 0|1]"
+              << " [--vi-44-vehicle-assignment-time-limit T]"
               << " [--cg-max-iterations-per-phase N]"
               << " [--exact-pricing-max-columns-per-start N]"
               << " [--exact-pricing-max-total-columns-per-round N]"
@@ -188,13 +201,13 @@ std::string parse_vi_formulation(const std::string& value) {
     throw std::runtime_error("Invalid value for --vi-formulation: " + value + " (expected theta or x)");
 }
 
-std::string parse_vi_44_k_min_mode(const std::string& value) {
-    if (value == "cor" || value == "sub-lp" || value == "sub-ip") {
+std::string parse_vi_44_subproblem_type(const std::string& value) {
+    if (value == "lp" || value == "ip") {
         return value;
     }
     throw std::runtime_error(
-        "Invalid value for --vi-44-k-min-mode: " + value +
-        " (expected cor, sub-lp, or sub-ip)"
+        "Invalid value for --vi-44-subproblem-type: " + value +
+        " (expected lp or ip)"
     );
 }
 
@@ -350,17 +363,34 @@ spdp::VIFormulation to_vi_formulation(const std::string& value) {
     throw std::runtime_error("Unsupported VI formulation: " + value);
 }
 
-spdp::VI44KMinMode to_vi_44_k_min_mode(const std::string& value) {
-    if (value == "cor") {
-        return spdp::VI44KMinMode::COR;
+spdp::VI44SubproblemType to_vi_44_subproblem_type(const std::string& value) {
+    if (value == "lp") {
+        return spdp::VI44SubproblemType::LP;
     }
-    if (value == "sub-lp") {
-        return spdp::VI44KMinMode::SubLP;
+    if (value == "ip") {
+        return spdp::VI44SubproblemType::IP;
     }
-    if (value == "sub-ip") {
-        return spdp::VI44KMinMode::SubIP;
-    }
-    throw std::runtime_error("Unsupported VI-44 k_min mode: " + value);
+    throw std::runtime_error("Unsupported VI-44 subproblem type: " + value);
+}
+
+spdp::VI44KMinOptions make_vi_44_k_min_options(const CliOptions& args) {
+    spdp::VI44KMinOptions options;
+    options.use_cor = args.vi_44_k_min_use_cor == 1;
+    options.use_subproblem = args.vi_44_k_min_use_subproblem == 1;
+    options.use_vehicle_assignment =
+        args.vi_44_k_min_use_vehicle_assignment == 1;
+    options.subproblem.type =
+        to_vi_44_subproblem_type(args.vi_44_subproblem_type);
+    options.subproblem.add_time_constraints =
+        args.vi_44_subproblem_add_time_constraints == 1;
+    options.subproblem.time_limit = args.vi_44_subproblem_time_limit;
+    options.vehicle_assignment.add_tsp_bound =
+        args.vi_44_vehicle_assignment_add_tsp_bound == 1;
+    options.vehicle_assignment.add_container_bound =
+        args.vi_44_vehicle_assignment_add_container_bound == 1;
+    options.vehicle_assignment.time_limit =
+        args.vi_44_vehicle_assignment_time_limit;
+    return options;
 }
 
 spdp::EnumerationSOS1Mode to_enumeration_sos1_mode(const std::string& value) {
@@ -1071,26 +1101,60 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
-        if (arg == "--vi-44-k-min-mode") {
+        if (arg == "--vi-44-k-min-use-cor") {
             if (idx + 1 >= argc) {
-                throw std::runtime_error("--vi-44-k-min-mode requires a value.");
+                throw std::runtime_error("--vi-44-k-min-use-cor requires a value.");
             }
-            options.vi_44_k_min_mode = parse_vi_44_k_min_mode(argv[++idx]);
+            options.vi_44_k_min_use_cor =
+                parse_binary_flag(argv[++idx], "--vi-44-k-min-use-cor");
             continue;
         }
 
-        if (arg == "--vi-44-sub-lp-time-limit") {
+        if (arg == "--vi-44-k-min-use-subproblem") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(
-                    "--vi-44-sub-lp-time-limit requires a value."
+                    "--vi-44-k-min-use-subproblem requires a value."
                 );
             }
-            options.vi_44_sub_lp_time_limit =
-                parse_double(argv[++idx], "--vi-44-sub-lp-time-limit");
-            if (!std::isfinite(options.vi_44_sub_lp_time_limit) ||
-                options.vi_44_sub_lp_time_limit < 0.0) {
+            options.vi_44_k_min_use_subproblem =
+                parse_binary_flag(argv[++idx], "--vi-44-k-min-use-subproblem");
+            continue;
+        }
+
+        if (arg == "--vi-44-k-min-use-vehicle-assignment") {
+            if (idx + 1 >= argc) {
                 throw std::runtime_error(
-                    "--vi-44-sub-lp-time-limit must be finite and nonnegative "
+                    "--vi-44-k-min-use-vehicle-assignment requires a value."
+                );
+            }
+            options.vi_44_k_min_use_vehicle_assignment = parse_binary_flag(
+                argv[++idx],
+                "--vi-44-k-min-use-vehicle-assignment"
+            );
+            continue;
+        }
+
+        if (arg == "--vi-44-subproblem-type") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--vi-44-subproblem-type requires a value.");
+            }
+            options.vi_44_subproblem_type =
+                parse_vi_44_subproblem_type(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--vi-44-subproblem-time-limit") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--vi-44-subproblem-time-limit requires a value."
+                );
+            }
+            options.vi_44_subproblem_time_limit =
+                parse_double(argv[++idx], "--vi-44-subproblem-time-limit");
+            if (!std::isfinite(options.vi_44_subproblem_time_limit) ||
+                options.vi_44_subproblem_time_limit < 0.0) {
+                throw std::runtime_error(
+                    "--vi-44-subproblem-time-limit must be finite and nonnegative "
                     "(0 means no time limit)."
                 );
             }
@@ -1107,7 +1171,54 @@ CliOptions parse_cli(int argc, char** argv) {
                 parse_binary_flag(
                     argv[++idx],
                     "--vi-44-subproblem-add-time-constraints"
+            );
+            continue;
+        }
+
+        if (arg == "--vi-44-vehicle-assignment-add-tsp-bound") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--vi-44-vehicle-assignment-add-tsp-bound requires a value."
                 );
+            }
+            options.vi_44_vehicle_assignment_add_tsp_bound = parse_binary_flag(
+                argv[++idx],
+                "--vi-44-vehicle-assignment-add-tsp-bound"
+            );
+            continue;
+        }
+
+        if (arg == "--vi-44-vehicle-assignment-add-container-bound") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--vi-44-vehicle-assignment-add-container-bound requires a value."
+                );
+            }
+            options.vi_44_vehicle_assignment_add_container_bound =
+                parse_binary_flag(
+                    argv[++idx],
+                    "--vi-44-vehicle-assignment-add-container-bound"
+                );
+            continue;
+        }
+
+        if (arg == "--vi-44-vehicle-assignment-time-limit") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--vi-44-vehicle-assignment-time-limit requires a value."
+                );
+            }
+            options.vi_44_vehicle_assignment_time_limit = parse_double(
+                argv[++idx],
+                "--vi-44-vehicle-assignment-time-limit"
+            );
+            if (!std::isfinite(options.vi_44_vehicle_assignment_time_limit) ||
+                options.vi_44_vehicle_assignment_time_limit < 0.0) {
+                throw std::runtime_error(
+                    "--vi-44-vehicle-assignment-time-limit must be finite and "
+                    "nonnegative (0 means no time limit)."
+                );
+            }
             continue;
         }
 
@@ -1121,6 +1232,24 @@ CliOptions parse_cli(int argc, char** argv) {
         } else {
             throw std::runtime_error("Too many positional arguments.");
         }
+    }
+
+    if (options.add_vi_44 == 1 &&
+        options.vi_44_k_min_use_cor == 0 &&
+        options.vi_44_k_min_use_subproblem == 0 &&
+        options.vi_44_k_min_use_vehicle_assignment == 0) {
+        throw std::runtime_error(
+            "VI-44 is enabled, but all VI-44 k_min methods are disabled."
+        );
+    }
+    if (options.add_vi_44 == 1 &&
+        options.vi_44_k_min_use_vehicle_assignment == 1 &&
+        options.vi_44_vehicle_assignment_add_tsp_bound == 0 &&
+        options.vi_44_vehicle_assignment_add_container_bound == 0) {
+        throw std::runtime_error(
+            "VI-44 vehicle assignment requires the TSP bound, the container "
+            "bound, or both."
+        );
     }
 
     return options;
@@ -1228,11 +1357,23 @@ void print_instance_summary(
     out << "[main] vi_request_block_sec_max_size: "
         << args.vi_request_block_sec_max_size << '\n';
     out << "[main] add_vi_44: " << args.add_vi_44 << '\n';
-    out << "[main] vi_44_k_min_mode: " << args.vi_44_k_min_mode << '\n';
-    out << "[main] vi_44_sub_lp_time_limit: "
-        << args.vi_44_sub_lp_time_limit << '\n';
+    out << "[main] vi_44_k_min_use_cor: " << args.vi_44_k_min_use_cor << '\n';
+    out << "[main] vi_44_k_min_use_subproblem: "
+        << args.vi_44_k_min_use_subproblem << '\n';
+    out << "[main] vi_44_k_min_use_vehicle_assignment: "
+        << args.vi_44_k_min_use_vehicle_assignment << '\n';
+    out << "[main] vi_44_subproblem_type: "
+        << args.vi_44_subproblem_type << '\n';
+    out << "[main] vi_44_subproblem_time_limit: "
+        << args.vi_44_subproblem_time_limit << '\n';
     out << "[main] vi_44_subproblem_add_time_constraints: "
         << args.vi_44_subproblem_add_time_constraints << '\n';
+    out << "[main] vi_44_vehicle_assignment_add_tsp_bound: "
+        << args.vi_44_vehicle_assignment_add_tsp_bound << '\n';
+    out << "[main] vi_44_vehicle_assignment_add_container_bound: "
+        << args.vi_44_vehicle_assignment_add_container_bound << '\n';
+    out << "[main] vi_44_vehicle_assignment_time_limit: "
+        << args.vi_44_vehicle_assignment_time_limit << '\n';
     out << "[main] cg_max_iterations_per_phase: " << args.cg_max_iterations_per_phase << '\n';
     out << "[main] exact_pricing_max_columns_per_start: "
         << args.exact_pricing_max_columns_per_start << '\n';
@@ -1490,12 +1631,8 @@ int main(int argc, char** argv) {
                 cg_options.root_vi_request_block_sec_max_size =
                     static_cast<std::size_t>(args.vi_request_block_sec_max_size);
                 cg_options.add_root_vi_44 = args.add_vi_44 == 1;
-                cg_options.vi_44_k_min_mode =
-                    to_vi_44_k_min_mode(args.vi_44_k_min_mode);
-                cg_options.vi_44_sub_lp_time_limit =
-                    args.vi_44_sub_lp_time_limit;
-                cg_options.vi_44_subproblem_add_time_constraints =
-                    args.vi_44_subproblem_add_time_constraints == 1;
+                cg_options.vi_44_k_min_options =
+                    make_vi_44_k_min_options(args);
                 cg_options.gurobi_log_path = gurobi_log_path.string();
                 if (args.node_cg_phase_one_mode == "exact-cg") {
                     cg_options.phase_one_mode = spdp::NodeCGPhaseOneMode::ExactCG;
@@ -1625,9 +1762,7 @@ int main(int argc, char** argv) {
                 args.add_vi_request_block_sec == 1,
                 static_cast<std::size_t>(args.vi_request_block_sec_max_size),
                 args.add_vi_44 == 1,
-                to_vi_44_k_min_mode(args.vi_44_k_min_mode),
-                args.vi_44_sub_lp_time_limit,
-                args.vi_44_subproblem_add_time_constraints == 1,
+                make_vi_44_k_min_options(args),
                 to_vi_formulation(args.vi_formulation),
                 to_enumeration_sos1_mode(args.enumeration_sos1_mode),
                 &output_file,

@@ -128,9 +128,7 @@ struct CompactMasterBuildOptions {
     bool add_vi_request_block_sec = false;
     std::size_t vi_request_block_sec_max_size = 2;  // 0 disables request-block SEC.
     bool add_vi_44 = true;
-    VI44KMinMode vi_44_k_min_mode = VI44KMinMode::COR;
-    double vi_44_sub_lp_time_limit = 0.0;  // 0 means no time limit.
-    bool vi_44_subproblem_add_time_constraints = false;
+    VI44KMinOptions vi_44_k_min_options;
     VIFormulation vi_formulation = VIFormulation::Theta;
     EnumerationSOS1Mode enumeration_sos1_mode = EnumerationSOS1Mode::Default;
     std::ostream* vi_log_stream = nullptr;

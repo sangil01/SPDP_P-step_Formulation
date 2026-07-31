@@ -93,9 +93,7 @@ struct NodeCGOptions {
     bool add_root_vi_request_block_sec = false;
     std::size_t root_vi_request_block_sec_max_size = 2;  // 0 disables request-block SEC.
     bool add_root_vi_44 = false;
-    VI44KMinMode vi_44_k_min_mode = VI44KMinMode::COR;
-    double vi_44_sub_lp_time_limit = 0.0;  // 0 means no time limit.
-    bool vi_44_subproblem_add_time_constraints = false;
+    VI44KMinOptions vi_44_k_min_options;
 
     // Phase I에서 node-feasible RMP를 만드는 방식.
     NodeCGPhaseOneMode phase_one_mode = NodeCGPhaseOneMode::ExactCG;

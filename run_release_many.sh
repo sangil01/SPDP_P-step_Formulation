@@ -19,7 +19,7 @@ ENUMERATION_SOS1_MODE=default # Options: default, sos1-auto, sos1-native (used o
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=180 # seconds
+SOLVER_TIME_LIMIT=120 # seconds
 GUROBI_THREADS=0
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
@@ -44,9 +44,15 @@ VI_36_SUBSET_MAX_SIZE=0 # 0이면 비활성화, 1이면 기존 singleton Eq. (36
 ADD_VI_Request_BLOCK_SEC=0
 VI_Request_BLOCK_SEC_MAX_SIZE=0 # 0이면 비활성화, 활성화할 때는 2 이상
 ADD_VI_44=1
-VI_44_K_MIN_MODE=sub-lp # Options: cor, sub-lp, sub-ip
-VI_44_SUB_LP_TIME_LIMIT=60 # seconds; 0 means no time limit (applies to sub-lp and sub-ip)
+VI_44_K_MIN_USE_COR=1
+VI_44_K_MIN_USE_SUBPROBLEM=1
+VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT=1
+VI_44_SUBPROBLEM_TYPE=ip # Options: lp, ip
+VI_44_SUBPROBLEM_TIME_LIMIT=300 # seconds; 0 means no time limit
 VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS=1 # 1 adds state-time B variables and route-duration constraints
+VI_44_VEHICLE_ASSIGNMENT_ADD_TSP_BOUND=1
+VI_44_VEHICLE_ASSIGNMENT_ADD_CONTAINER_BOUND=1
+VI_44_VEHICLE_ASSIGNMENT_TIME_LIMIT=120 # seconds; 0 means no time limit
 CG_MAX_ITERATIONS_PER_PHASE=1000
 EXACT_PRICING_MAX_COLUMNS_PER_START=64
 EXACT_PRICING_MAX_TOTAL_COLUMNS_PER_ROUND=4096
@@ -228,9 +234,15 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "add-vi-request-block-sec: $ADD_VI_Request_BLOCK_SEC"
         echo "vi-request-block-sec-max-size: $VI_Request_BLOCK_SEC_MAX_SIZE"
         echo "add-vi-44: $ADD_VI_44"
-        echo "vi-44-k-min-mode: $VI_44_K_MIN_MODE"
-        echo "vi-44-sub-lp-time-limit: $VI_44_SUB_LP_TIME_LIMIT"
+        echo "vi-44-k-min-use-cor: $VI_44_K_MIN_USE_COR"
+        echo "vi-44-k-min-use-subproblem: $VI_44_K_MIN_USE_SUBPROBLEM"
+        echo "vi-44-k-min-use-vehicle-assignment: $VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT"
+        echo "vi-44-subproblem-type: $VI_44_SUBPROBLEM_TYPE"
+        echo "vi-44-subproblem-time-limit: $VI_44_SUBPROBLEM_TIME_LIMIT"
         echo "vi-44-subproblem-add-time-constraints: $VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS"
+        echo "vi-44-vehicle-assignment-add-tsp-bound: $VI_44_VEHICLE_ASSIGNMENT_ADD_TSP_BOUND"
+        echo "vi-44-vehicle-assignment-add-container-bound: $VI_44_VEHICLE_ASSIGNMENT_ADD_CONTAINER_BOUND"
+        echo "vi-44-vehicle-assignment-time-limit: $VI_44_VEHICLE_ASSIGNMENT_TIME_LIMIT"
         echo "----------------------------------------"
     } >> "$RUNNER_LOG"
 
@@ -266,9 +278,15 @@ for data_name in "${DATA_LIST[@]}"; do
         --add-vi-request-block-sec "$ADD_VI_Request_BLOCK_SEC" \
         --vi-request-block-sec-max-size "$VI_Request_BLOCK_SEC_MAX_SIZE" \
         --add-vi-44 "$ADD_VI_44" \
-        --vi-44-k-min-mode "$VI_44_K_MIN_MODE" \
-        --vi-44-sub-lp-time-limit "$VI_44_SUB_LP_TIME_LIMIT" \
+        --vi-44-k-min-use-cor "$VI_44_K_MIN_USE_COR" \
+        --vi-44-k-min-use-subproblem "$VI_44_K_MIN_USE_SUBPROBLEM" \
+        --vi-44-k-min-use-vehicle-assignment "$VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT" \
+        --vi-44-subproblem-type "$VI_44_SUBPROBLEM_TYPE" \
+        --vi-44-subproblem-time-limit "$VI_44_SUBPROBLEM_TIME_LIMIT" \
         --vi-44-subproblem-add-time-constraints "$VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS" \
+        --vi-44-vehicle-assignment-add-tsp-bound "$VI_44_VEHICLE_ASSIGNMENT_ADD_TSP_BOUND" \
+        --vi-44-vehicle-assignment-add-container-bound "$VI_44_VEHICLE_ASSIGNMENT_ADD_CONTAINER_BOUND" \
+        --vi-44-vehicle-assignment-time-limit "$VI_44_VEHICLE_ASSIGNMENT_TIME_LIMIT" \
         --cg-max-iterations-per-phase "$CG_MAX_ITERATIONS_PER_PHASE" \
         --exact-pricing-max-columns-per-start "$EXACT_PRICING_MAX_COLUMNS_PER_START" \
         --exact-pricing-max-total-columns-per-round "$EXACT_PRICING_MAX_TOTAL_COLUMNS_PER_ROUND" \
