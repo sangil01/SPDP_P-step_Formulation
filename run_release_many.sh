@@ -13,13 +13,14 @@ fi
 # ============================================
 # INPUT PARAMETERS
 # ============================================
-P=2
-SOLVER_MODE=branch-and-price # Options: enumeration, branch-and-price
+P=2 # 0 uses the direct binary two-index IP when SOLVER_MODE=enumeration
+SOLVER_MODE=enumeration # Options: enumeration, branch-and-price
 ENUMERATION_SOS1_MODE=default # Options: default, sos1-auto, sos1-native (used only with SOLVER_MODE=enumeration)
+ENUMERATION_OBJECTIVE=original-cost # Options: original-cost, duration (used only with SOLVER_MODE=enumeration)
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=120 # seconds
+SOLVER_TIME_LIMIT=1800 # seconds
 GUROBI_THREADS=0
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
@@ -104,7 +105,7 @@ DATA_LIST=(
     "RecDep_day_C4.dat"
     #=================================#
     #=========Request 50 이하=========#
-    "RecDep_day_A12.dat"
+    '''"RecDep_day_A12.dat"
     "RecDep_day_A13.dat"
     "RecDep_day_A14.dat"
     "RecDep_day_A15.dat"
@@ -134,7 +135,7 @@ DATA_LIST=(
     "RecDep_day_C11.dat"
     "RecDep_day_C12.dat"
     "RecDep_day_D1.dat"
-    "RecDep_day_D2.dat"
+    "RecDep_day_D2.dat"'''
     #=================================#
 )
 # Put one data file name per line in DATA_LIST.
@@ -143,7 +144,7 @@ DATA_LIST=(
 RUN_TAG_SUFFIX="${RUN_TAG_SUFFIX:-}"
 ENUMERATION_SOS1_TAG=""
 if [[ "$SOLVER_MODE" == "enumeration" ]]; then
-    ENUMERATION_SOS1_TAG="_${ENUMERATION_SOS1_MODE}"
+    ENUMERATION_SOS1_TAG="_${ENUMERATION_SOS1_MODE}_${ENUMERATION_OBJECTIVE}"
 fi
 RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}${ENUMERATION_SOS1_TAG}${RUN_TAG_SUFFIX}"
 RUNNER_LOG="$SCRIPT_DIR/${RUN_TAG}.log"
@@ -185,6 +186,7 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "p: $P"
         echo "solver-mode: $SOLVER_MODE"
         echo "enumeration-sos1-mode: $ENUMERATION_SOS1_MODE"
+        echo "enumeration-objective: $ENUMERATION_OBJECTIVE"
         echo "bnp-tree-mode: $BNP_TREE_MODE"
         echo "node-cg-phase1-mode: $NODE_CG_PHASE1_MODE"
         echo "node-cg-phase2-pricing-mode: $NODE_CG_PHASE2_PRICING_MODE"
@@ -250,6 +252,7 @@ for data_name in "${DATA_LIST[@]}"; do
         --p "$P" \
         --solver-mode "$SOLVER_MODE" \
         --enumeration-sos1-mode "$ENUMERATION_SOS1_MODE" \
+        --enumeration-objective "$ENUMERATION_OBJECTIVE" \
         --bnp-tree-mode "$BNP_TREE_MODE" \
         --node-cg-phase1-mode "$NODE_CG_PHASE1_MODE" \
         --node-cg-phase2-pricing-mode "$NODE_CG_PHASE2_PRICING_MODE" \

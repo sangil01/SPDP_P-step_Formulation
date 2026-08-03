@@ -119,6 +119,11 @@ enum class EnumerationSOS1Mode {
     Native,
 };
 
+enum class CompactMasterObjective {
+    OriginalCost,
+    Duration,
+};
+
 // [수정] master problem 생성 시 사용할 valid inequality 옵션.
 struct CompactMasterBuildOptions {
     std::string log_path;
@@ -131,6 +136,7 @@ struct CompactMasterBuildOptions {
     VI44KMinOptions vi_44_k_min_options;
     VIFormulation vi_formulation = VIFormulation::Theta;
     EnumerationSOS1Mode enumeration_sos1_mode = EnumerationSOS1Mode::Default;
+    CompactMasterObjective objective = CompactMasterObjective::OriginalCost;
     std::ostream* vi_log_stream = nullptr;
 };
 

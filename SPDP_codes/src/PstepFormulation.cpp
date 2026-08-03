@@ -1325,11 +1325,15 @@ CompactMasterProblem build_compact_master_problem(
     problem.x_vars.reserve(compact_pstep_count);
     // 각 compact p-step에 대해 연속 변수 x_r를 생성한다.
     for (const CompactPStep& pstep : artifacts.compact_psteps) {
+        const double objective_coefficient =
+            options.objective == CompactMasterObjective::Duration
+                ? pstep.total_time
+                : pstep.total_cost;
         problem.x_vars.push_back(
             problem.model->addVar(
                 0.0,
                 GRB_INFINITY,
-                pstep.total_cost,
+                objective_coefficient,
                 GRB_CONTINUOUS,
                 "x_" + std::to_string(pstep.id)
             )
@@ -1910,14 +1914,18 @@ void write_recovered_solution(std::ostream& out, const RecoveredSolution& soluti
         return;
     }
 
-    // route별 비용은 이미 복원되어 있으므로 전체 비용은 route cost 합으로 출력한다.
+    // route별 비용과 시간을 합산하여 objective와 별도로 모두 출력한다.
     double total_route_cost = 0.0;
+    double total_route_time = 0.0;
     for (const RecoveredRouteSolution& route : solution.routes) {
         total_route_cost += route.total_cost;
+        total_route_time += route.total_time;
     }
 
     out << "  Number of routes " << solution.routes.size() << '\n';
+    out << "  Objective value " << format_solution_value(solution.objective_value) << '\n';
     out << "  Total cost " << format_solution_value(total_route_cost) << '\n';
+    out << "  Total time " << format_solution_value(total_route_time) << '\n';
 
     // 각 route를 Path, Loc, Patt, Load 형식으로 정리해 출력한다.
     for (const RecoveredRouteSolution& route : solution.routes) {

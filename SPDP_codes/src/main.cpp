@@ -28,6 +28,7 @@ struct CliOptions {
     int gurobi_threads = -1;
     std::string solver_mode = "enumeration";
     std::string enumeration_sos1_mode = "default";
+    std::string enumeration_objective = "original-cost";
     std::string bnp_tree_mode = "root-only";
     std::string node_cg_phase_one_mode = "exact-cg";
     std::string node_cg_phase_two_pricing_mode = "exact-pricing";
@@ -100,6 +101,7 @@ void print_usage(const char* executable) {
               << " [instance] [--p N] [--solver-time-limit T] [--gurobi-threads N]"
               << " [--solver-mode enumeration|branch-and-price]"
               << " [--enumeration-sos1-mode default|sos1-auto|sos1-native]"
+              << " [--enumeration-objective original-cost|duration]"
               << " [--bnp-tree-mode root-only|full-tree]"
               << " [--node-cg-phase1-mode exact-cg|heuristic-cg|heuristic-cg-3-step]"
               << " [--node-cg-phase2-pricing-mode exact-pricing|heuristic-pricing-then-exact|full-enumeration]"
@@ -228,6 +230,16 @@ std::string parse_enumeration_sos1_mode(const std::string& value) {
     throw std::runtime_error(
         "Invalid value for --enumeration-sos1-mode: " + value +
         " (expected default, sos1-auto, or sos1-native)"
+    );
+}
+
+std::string parse_enumeration_objective(const std::string& value) {
+    if (value == "original-cost" || value == "duration") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --enumeration-objective: " + value +
+        " (expected original-cost or duration)"
     );
 }
 
@@ -406,6 +418,30 @@ spdp::EnumerationSOS1Mode to_enumeration_sos1_mode(const std::string& value) {
     throw std::runtime_error("Unsupported enumeration SOS1 mode: " + value);
 }
 
+spdp::CompactMasterObjective to_compact_master_objective(
+    const std::string& value
+) {
+    if (value == "original-cost") {
+        return spdp::CompactMasterObjective::OriginalCost;
+    }
+    if (value == "duration") {
+        return spdp::CompactMasterObjective::Duration;
+    }
+    throw std::runtime_error("Unsupported enumeration objective: " + value);
+}
+
+spdp::DirectTwoIndexObjective to_direct_two_index_objective(
+    const std::string& value
+) {
+    if (value == "original-cost") {
+        return spdp::DirectTwoIndexObjective::OriginalCost;
+    }
+    if (value == "duration") {
+        return spdp::DirectTwoIndexObjective::Duration;
+    }
+    throw std::runtime_error("Unsupported direct two-index objective: " + value);
+}
+
 CliOptions parse_cli(int argc, char** argv) {
     CliOptions options;
     bool instance_set = false;
@@ -440,6 +476,15 @@ CliOptions parse_cli(int argc, char** argv) {
             }
             options.enumeration_sos1_mode =
                 parse_enumeration_sos1_mode(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--enumeration-objective") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--enumeration-objective requires a value.");
+            }
+            options.enumeration_objective =
+                parse_enumeration_objective(argv[++idx]);
             continue;
         }
 
@@ -1324,6 +1369,7 @@ void print_instance_summary(
     out << "[main] p: " << args.p << '\n';
     out << "[main] Solver mode: " << args.solver_mode << '\n';
     out << "[main] Enumeration SOS1 mode: " << args.enumeration_sos1_mode << '\n';
+    out << "[main] Enumeration objective: " << args.enumeration_objective << '\n';
     out << "[main] BnP tree mode: " << args.bnp_tree_mode << '\n';
     out << "[main] Node CG phase-1 mode: " << args.node_cg_phase_one_mode << '\n';
     out << "[main] Node CG phase-2 pricing mode: "
@@ -1535,11 +1581,103 @@ void print_solution_summary(
     out << "[main] Active theta_e count: " << active_theta_count << '\n';
 }
 
+void print_direct_two_index_summary(
+    std::ostream& out,
+    const spdp::DirectTwoIndexResult& result
+) {
+    out << "[main] Direct two-index Gurobi status: " << result.status << '\n';
+    out << "[main] Direct two-index solved to optimality: "
+        << (result.solved_to_optimality ? 1 : 0) << '\n';
+    out << "[main] Direct two-index hit time limit: "
+        << (result.hit_time_limit ? 1 : 0) << '\n';
+    out << "[main] Direct two-index variable count: "
+        << result.variable_count << '\n';
+    out << "[main] Direct two-index constraint count: "
+        << result.constraint_count << '\n';
+    out << "[main] Direct two-index valid inequality count: "
+        << result.valid_inequality_count << '\n';
+    out << "[main] Direct two-index solver runtime (sec): "
+        << format_double(result.runtime_seconds) << '\n';
+    if (!result.has_feasible_solution) {
+        out << "[main] Direct two-index feasible solution: 0\n";
+        if (result.has_certified_bound) {
+            out << "[main] Direct two-index lower bound: "
+                << format_double(result.objective_bound) << '\n';
+        }
+        return;
+    }
+
+    out << "[main] Direct two-index feasible solution: 1\n";
+    out << "[main] Direct two-index objective value: "
+        << format_double(result.objective_value) << '\n';
+    if (result.has_certified_bound) {
+        out << "[main] Direct two-index lower bound: "
+            << format_double(result.objective_bound) << '\n';
+        out << "[main] Direct two-index gap (%): "
+            << format_double(result.gap_percent) << '\n';
+    }
+    out << "[main] Direct two-index total duration: "
+        << format_double(result.total_duration) << '\n';
+    out << "[main] Direct two-index total original cost: "
+        << format_double(result.total_original_cost) << '\n';
+    out << "[main] Direct two-index vehicle count: "
+        << result.vehicle_count << '\n';
+}
+
+void write_direct_two_index_solution(
+    std::ostream& out,
+    const spdp::DirectTwoIndexResult& result,
+    const spdp::MultiDiGraph& graph
+) {
+    out << "Solution:\n";
+    out << "  Model direct-two-index-IP\n";
+    if (!result.has_feasible_solution) {
+        out << "  No feasible solution available\n";
+        out << "Solution done \n";
+        return;
+    }
+
+    out << "  Objective value " << format_double(result.objective_value) << '\n';
+    out << "  Total cost " << format_double(result.total_original_cost) << '\n';
+    out << "  Total time " << format_double(result.total_duration) << '\n';
+    out << "  Number of routes " << result.vehicle_count << '\n';
+    out << "  Active y_e:\n";
+    for (std::size_t edge_id = 0; edge_id < result.edge_values.size(); ++edge_id) {
+        const double value = result.edge_values[edge_id];
+        if (value <= 0.5) {
+            continue;
+        }
+        const spdp::EdgeRecord& edge = graph.edges()[edge_id];
+        out << "    y_" << edge_id << " " << format_double(value)
+            << " u=" << edge.u
+            << " v=" << edge.v
+            << " time=" << format_double(edge.data.time)
+            << " cost=" << format_double(edge.data.cost)
+            << " start=" << spdp::state_to_str(edge.data.start_state)
+            << " end=" << spdp::state_to_str(edge.data.end_state)
+            << '\n';
+    }
+    out << "Solution done \n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
         const CliOptions args = parse_cli(argc, argv);
+        if (args.p < 0) {
+            throw std::runtime_error("--p must be nonnegative.");
+        }
+        if (args.p == 0 && args.solver_mode != "enumeration") {
+            throw std::runtime_error(
+                "--p 0 is supported only with --solver-mode enumeration."
+            );
+        }
+        if (args.p == 0 && args.vi_formulation != "theta") {
+            throw std::runtime_error(
+                "The P=0 direct two-index IP supports only --vi-formulation theta."
+            );
+        }
         const spdp::SPDPData data = spdp::read_spdp_data(args.instance);
 
         const std::filesystem::path log_output_path = build_log_output_path(args.instance, args.p);
@@ -1732,6 +1870,58 @@ int main(int argc, char** argv) {
                 solution_file << "  Solve skipped by CLI option\n";
                 solution_file << "Solution done \n";
             }
+        } else if (args.p == 0) {
+            output_file << "[main] Model type: direct-two-index-IP\n";
+            output_file << "[main] P-step variables: disabled\n";
+            output_file << "[main] Edge selection variables: y_e (binary)\n";
+            output_file << "[main] Effective VI formulation: edge-y\n";
+            output_file << "[main] Direct two-index objective: "
+                        << args.enumeration_objective << '\n';
+            output_file << "[main] Direct two-index time constraints: "
+                        << args.vi_44_subproblem_add_time_constraints << '\n';
+
+            if (args.solve_model == 1) {
+                spdp::PstepValidInequalityOptions vi_options;
+                vi_options.add_vi_35 = args.add_vi_35 == 1;
+                vi_options.add_vi_36_combined = args.add_vi_36_combined == 1;
+                vi_options.vi_36_subset_max_size =
+                    static_cast<std::size_t>(args.vi_36_subset_max_size);
+                vi_options.add_vi_request_block_sec =
+                    args.add_vi_request_block_sec == 1;
+                vi_options.vi_request_block_sec_max_size =
+                    static_cast<std::size_t>(args.vi_request_block_sec_max_size);
+                vi_options.add_vi_44 = args.add_vi_44 == 1;
+                vi_options.vi_44_k_min_options = make_vi_44_k_min_options(args);
+                vi_options.log_stream = &output_file;
+
+                spdp::DirectTwoIndexOptions direct_options;
+                direct_options.objective =
+                    to_direct_two_index_objective(args.enumeration_objective);
+                direct_options.add_time_constraints =
+                    args.vi_44_subproblem_add_time_constraints == 1;
+                direct_options.solver_time_limit = args.solver_time_limit;
+                direct_options.gurobi_threads = args.gurobi_threads;
+                direct_options.gurobi_log_path = gurobi_log_path.string();
+                direct_options.valid_inequalities = std::move(vi_options);
+
+                const spdp::DirectTwoIndexResult direct_result =
+                    spdp::solve_direct_two_index_ip(
+                        data,
+                        graph,
+                        direct_options
+                    );
+                print_direct_two_index_summary(output_file, direct_result);
+                write_direct_two_index_solution(
+                    solution_file,
+                    direct_result,
+                    graph
+                );
+            } else {
+                output_file << "[main] Solve skipped by CLI option.\n";
+                solution_file << "Solution:\n";
+                solution_file << "  Solve skipped by CLI option\n";
+                solution_file << "Solution done \n";
+            }
         } else {
             const spdp::CompactPStepOptions options{
                 args.p,
@@ -1765,6 +1955,7 @@ int main(int argc, char** argv) {
                 make_vi_44_k_min_options(args),
                 to_vi_formulation(args.vi_formulation),
                 to_enumeration_sos1_mode(args.enumeration_sos1_mode),
+                to_compact_master_objective(args.enumeration_objective),
                 &output_file,
             };
             spdp::CompactMasterProblem problem = spdp::build_compact_master_problem(

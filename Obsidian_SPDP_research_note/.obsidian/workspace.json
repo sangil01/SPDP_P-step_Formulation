@@ -4,11 +4,33 @@
     "type": "split",
     "children": [
       {
-        "id": "e3fa98d7e1b2fac7",
+        "id": "5b4569e2f57c5e3d",
         "type": "tabs",
+        "dimension": 69.0897597977244,
         "children": [
           {
-            "id": "d429bcf8022ffeae",
+            "id": "98eb82926eaeef36",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "9_1. Valid inequalities for tightening LP bound.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "9_1. Valid inequalities for tightening LP bound"
+            }
+          }
+        ]
+      },
+      {
+        "id": "b41ba6dec264e003",
+        "type": "tabs",
+        "dimension": 30.910240202275602,
+        "children": [
+          {
+            "id": "de6f0448290109fd",
             "type": "leaf",
             "state": {
               "type": "markdown",
@@ -22,34 +44,21 @@
             }
           },
           {
-            "id": "d08ddd738fb76d1b",
+            "id": "610094c0d065ccb5",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "5. Column Generation for root node.md",
+                "file": "9_3. Dual-feasible functions for strengthening the route lower bound.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "5. Column Generation for root node"
-            }
-          },
-          {
-            "id": "43ee70e8f4c7e76f",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "2. Skip Pick-up and Delivery Problem (SPDP).md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "2. Skip Pick-up and Delivery Problem (SPDP)"
+              "title": "9_3. Dual-feasible functions for strengthening the route lower bound"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "vertical"
@@ -69,7 +78,9 @@
               "type": "file-explorer",
               "state": {
                 "sortOrder": "alphabetical",
-                "autoReveal": false
+                "autoReveal": false,
+                "showSearch": false,
+                "searchQuery": ""
               },
               "icon": "lucide-folder-closed",
               "title": "Files"
@@ -106,7 +117,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 256.5
+    "width": 293.5
   },
   "right": {
     "id": "b90d585d0fa44aa9",
@@ -211,18 +222,19 @@
       "bases:Create new base": false
     }
   },
-  "active": "d429bcf8022ffeae",
+  "active": "98eb82926eaeef36",
   "lastOpenFiles": [
-    "3. P-step Formulation for SPDP-flexible.md",
-    "9_1. Valid inequalities for tightening LP bound.md",
-    "9_2. Dual-feasible functions for strengthening the route lower bound.md",
-    "8. Valid inequalities for tightening LP bound.md",
-    "11. Arc elimination at Multi Graph.md",
+    "9_2. 2-index formulation on multigraph.md",
     "8. Branching rule on multiple edges.md",
-    "9. Branching rule on multiple edges.md",
-    "10. Route enumeration using LP bound.md",
+    "9_1. Valid inequalities for tightening LP bound.md",
+    "9_3. Dual-feasible functions for strengthening the route lower bound.md",
     "2. Skip Pick-up and Delivery Problem (SPDP).md",
     "5. Column Generation for root node.md",
+    "9. Branching rule on multiple edges.md",
+    "3. P-step Formulation for SPDP-flexible.md",
+    "8. Valid inequalities for tightening LP bound.md",
+    "11. Arc elimination at Multi Graph.md",
+    "10. Route enumeration using LP bound.md",
     "100. p-step labeling efficiency.md",
     "7. Branch and Price algorithm.md",
     "TS (2025) A p-step Formulation for the Capacitated Vehicle Routing Problem_초안.pdf",
@@ -241,7 +253,6 @@
     "meeting/260520_meeting.md",
     "0. For efficient pricing.md",
     "meeting/260618_meeting.md",
-    "meeting/260427_forward dominance issue & problem complexity analysis per setting.md",
     "images/proposition1_for_compact_P-step_formulation.png",
     "Untitled",
     "Pasted image 20260512160705.png",

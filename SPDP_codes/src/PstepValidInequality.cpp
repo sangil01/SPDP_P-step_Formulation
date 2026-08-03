@@ -9,6 +9,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <ostream>
 #include <set>
 #include <sstream>
@@ -541,26 +542,46 @@ struct AuxiliaryDurationSubproblemResult {
     double runtime_seconds = 0.0;
 };
 
-AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
+enum class TwoIndexCoreObjective {
+    OriginalCost,
+    Duration,
+};
+
+struct TwoIndexCoreOptions {
+    TwoIndexCoreObjective objective = TwoIndexCoreObjective::Duration;
+    bool binary_y = false;
+    bool add_time_constraints = false;
+    double solver_time_limit = 0.0;
+    int gurobi_threads = 1;
+    bool output_enabled = false;
+    std::string gurobi_log_path;
+    std::string name_prefix = "two_index";
+};
+
+struct TwoIndexCoreModel {
+    std::unique_ptr<GRBEnv> environment;
+    std::unique_ptr<GRBModel> model;
+    std::vector<GRBVar> y_vars;
+};
+
+void validate_two_index_inputs(
     const SPDPData& data,
     const MultiDiGraph& graph,
-    double solver_time_limit,
-    bool binary_y,
-    bool add_time_constraints
+    double solver_time_limit
 ) {
     if (data.time_limit <= 0.0) {
         throw std::runtime_error(
-            "The auxiliary VI-44 subproblem requires a positive route-duration limit."
+            "The two-index formulation requires a positive route-duration limit."
         );
     }
     if (!std::isfinite(solver_time_limit) || solver_time_limit < 0.0) {
         throw std::runtime_error(
-            "The auxiliary VI-44 subproblem time limit must be finite and nonnegative."
+            "The two-index formulation time limit must be finite and nonnegative."
         );
     }
     if (graph.number_of_nodes() != 2U * data.requests.size() + 2U) {
         throw std::runtime_error(
-            "The auxiliary VI-44 subproblem requires exactly two action nodes per request."
+            "The two-index formulation requires exactly two action nodes per request."
         );
     }
 
@@ -569,71 +590,97 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
     if (graph.node(start_node_id).kind != NodeSpec::Kind::Start ||
         graph.node(end_node_id).kind != NodeSpec::Kind::End) {
         throw std::runtime_error(
-            "The auxiliary VI-44 subproblem requires node 0 and the last node to be the depots."
+            "The two-index formulation requires node 0 and the last node to be the depots."
         );
     }
 
     std::size_t dummy_edge_count = 0U;
     for (const EdgeRecord& edge : graph.edges()) {
-        if (!std::isfinite(edge.data.time) || edge.data.time < -kTolerance) {
+        if (!std::isfinite(edge.data.time) || edge.data.time < -kTolerance ||
+            !std::isfinite(edge.data.cost)) {
             throw std::runtime_error(
-                "The auxiliary VI-44 subproblem requires finite, nonnegative edge durations."
+                "The two-index formulation requires finite costs and nonnegative durations."
             );
         }
         if (edge.u == start_node_id && edge.v == end_node_id) {
             ++dummy_edge_count;
             if (std::abs(edge.data.time) > kTolerance) {
                 throw std::runtime_error(
-                    "The auxiliary VI-44 subproblem requires zero-duration dummy depot edges."
+                    "The two-index formulation requires zero-duration dummy depot edges."
                 );
             }
         }
         if (edge.u == start_node_id && edge.v != end_node_id &&
             graph.node(edge.v).kind != NodeSpec::Kind::Pickup) {
             throw std::runtime_error(
-                "An auxiliary VI-44 subproblem departure edge must enter a pickup node."
+                "A two-index departure edge must enter a pickup node."
             );
         }
         if (edge.v == end_node_id && edge.u != start_node_id &&
             graph.node(edge.u).kind != NodeSpec::Kind::Delivery) {
             throw std::runtime_error(
-                "An auxiliary VI-44 subproblem return edge must leave a delivery node."
+                "A two-index return edge must leave a delivery node."
             );
         }
     }
     if (dummy_edge_count == 0U) {
         throw std::runtime_error(
-            "The auxiliary VI-44 subproblem graph has no start-to-end dummy edge."
+            "The two-index formulation graph has no start-to-end dummy edge."
         );
     }
+}
 
-    GRBEnv environment(true);
-    environment.set(GRB_IntParam_OutputFlag, 0);
-    environment.start();
-    GRBModel model(environment);
-    model.set(GRB_IntParam_OutputFlag, 0);
-    model.set(GRB_IntParam_Threads, 1);
-    model.set(GRB_DoubleParam_FeasibilityTol, kAuxiliaryLPSolverTolerance);
-    model.set(GRB_DoubleParam_OptimalityTol, kAuxiliaryLPSolverTolerance);
-    if (solver_time_limit > 0.0) {
-        model.set(GRB_DoubleParam_TimeLimit, solver_time_limit);
+TwoIndexCoreModel build_two_index_model_core(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const TwoIndexCoreOptions& options
+) {
+    validate_two_index_inputs(data, graph, options.solver_time_limit);
+
+    TwoIndexCoreModel core;
+    core.environment = std::make_unique<GRBEnv>(true);
+    core.environment->set(
+        GRB_IntParam_OutputFlag,
+        options.output_enabled ? 1 : 0
+    );
+    if (!options.gurobi_log_path.empty()) {
+        core.environment->set(GRB_StringParam_LogFile, options.gurobi_log_path);
+    }
+    core.environment->start();
+    core.model = std::make_unique<GRBModel>(*core.environment);
+    core.model->set(
+        GRB_IntParam_OutputFlag,
+        options.output_enabled ? 1 : 0
+    );
+    if (options.gurobi_threads >= 0) {
+        core.model->set(GRB_IntParam_Threads, options.gurobi_threads);
+    }
+    core.model->set(GRB_DoubleParam_FeasibilityTol, kAuxiliaryLPSolverTolerance);
+    core.model->set(GRB_DoubleParam_OptimalityTol, kAuxiliaryLPSolverTolerance);
+    if (options.solver_time_limit > 0.0) {
+        core.model->set(GRB_DoubleParam_TimeLimit, options.solver_time_limit);
     }
 
-    std::vector<GRBVar> y_vars;
-    y_vars.reserve(graph.number_of_edges());
+    const NodeId start_node_id = 0;
+    const NodeId end_node_id = graph.end_node_id();
+    core.y_vars.reserve(graph.number_of_edges());
     for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
         const EdgeRecord& edge = graph.edges()[edge_id];
         const bool is_dummy = edge.u == start_node_id && edge.v == end_node_id;
-        y_vars.push_back(model.addVar(
+        const double objective_coefficient =
+            options.objective == TwoIndexCoreObjective::Duration
+                ? edge.data.time
+                : edge.data.cost;
+        core.y_vars.push_back(core.model->addVar(
             0.0,
             is_dummy ? 0.0 : 1.0,
-            edge.data.time,
-            binary_y ? GRB_BINARY : GRB_CONTINUOUS,
-            "vi44_aux_y_" + std::to_string(edge_id)
+            objective_coefficient,
+            options.binary_y ? GRB_BINARY : GRB_CONTINUOUS,
+            options.name_prefix + "_y_" + std::to_string(edge_id)
         ));
     }
-    model.set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
-    model.update();
+    core.model->set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
+    core.model->update();
 
     std::vector<std::set<State>> states_by_node(graph.number_of_nodes());
     for (NodeId node_id = 1; node_id < end_node_id; ++node_id) {
@@ -641,28 +688,29 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
             continue;
         }
         const NodeSpec::Kind node_kind = graph.node(node_id).kind;
-        if (node_kind != NodeSpec::Kind::Pickup && node_kind != NodeSpec::Kind::Delivery) {
+        if (node_kind != NodeSpec::Kind::Pickup &&
+            node_kind != NodeSpec::Kind::Delivery) {
             throw std::runtime_error(
-                "The auxiliary VI-44 subproblem found a non-service physical node."
+                "The two-index formulation found a non-service physical node."
             );
         }
 
         GRBLinExpr incoming_degree = 0.0;
         for (std::size_t edge_id : graph.ingoing_edge_indices(node_id)) {
-            incoming_degree += y_vars[edge_id];
+            incoming_degree += core.y_vars[edge_id];
         }
-        model.addConstr(
+        core.model->addConstr(
             incoming_degree == 1.0,
-            "vi44_aux_in_degree_" + std::to_string(node_id)
+            options.name_prefix + "_in_degree_" + std::to_string(node_id)
         );
 
         GRBLinExpr outgoing_degree = 0.0;
         for (std::size_t edge_id : graph.outgoing_edge_indices(node_id)) {
-            outgoing_degree += y_vars[edge_id];
+            outgoing_degree += core.y_vars[edge_id];
         }
-        model.addConstr(
+        core.model->addConstr(
             outgoing_degree == 1.0,
-            "vi44_aux_out_degree_" + std::to_string(node_id)
+            options.name_prefix + "_out_degree_" + std::to_string(node_id)
         );
 
         for (std::size_t edge_id : graph.ingoing_edge_indices(node_id)) {
@@ -680,24 +728,26 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
         for (const State& state : states_by_node[static_cast<std::size_t>(node_id)]) {
             GRBLinExpr state_balance = 0.0;
             for (std::size_t edge_id : graph.ingoing_edge_indices(node_id)) {
-                if (canonical_auxiliary_state(graph.edges()[edge_id].data.end_state) == state) {
-                    state_balance += y_vars[edge_id];
+                if (canonical_auxiliary_state(graph.edges()[edge_id].data.end_state) ==
+                    state) {
+                    state_balance += core.y_vars[edge_id];
                 }
             }
             for (std::size_t edge_id : graph.outgoing_edge_indices(node_id)) {
-                if (canonical_auxiliary_state(graph.edges()[edge_id].data.start_state) == state) {
-                    state_balance -= y_vars[edge_id];
+                if (canonical_auxiliary_state(graph.edges()[edge_id].data.start_state) ==
+                    state) {
+                    state_balance -= core.y_vars[edge_id];
                 }
             }
-            model.addConstr(
+            core.model->addConstr(
                 state_balance == 0.0,
-                "vi44_aux_state_" + std::to_string(node_id) + "_" +
+                options.name_prefix + "_state_" + std::to_string(node_id) + "_" +
                     std::to_string(state_index++)
             );
         }
     }
 
-    if (add_time_constraints) {
+    if (options.add_time_constraints) {
         std::vector<std::map<State, GRBVar>> time_vars_by_node(
             graph.number_of_nodes()
         );
@@ -707,18 +757,18 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
                  states_by_node[static_cast<std::size_t>(node_id)]) {
                 time_vars_by_node[static_cast<std::size_t>(node_id)].emplace(
                     state,
-                    model.addVar(
+                    core.model->addVar(
                         0.0,
                         data.time_limit,
                         0.0,
                         GRB_CONTINUOUS,
-                        "vi44_aux_B_" + std::to_string(node_id) + "_" +
+                        options.name_prefix + "_B_" + std::to_string(node_id) + "_" +
                             std::to_string(state_index++)
                     )
                 );
             }
         }
-        model.update();
+        core.model->update();
 
         const auto time_var = [&](NodeId node_id, const State& state) -> GRBVar {
             const State canonical_state = canonical_auxiliary_state(state);
@@ -727,8 +777,8 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
             const auto found = variables.find(canonical_state);
             if (found == variables.end()) {
                 throw std::runtime_error(
-                    "The auxiliary VI-44 subproblem found no time variable for an "
-                    "edge endpoint state."
+                    "The two-index formulation found no time variable for an edge "
+                    "endpoint state."
                 );
             }
             return found->second;
@@ -741,36 +791,31 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
             }
 
             const std::string constraint_name =
-                "vi44_aux_time_" + std::to_string(edge_id);
+                options.name_prefix + "_time_" + std::to_string(edge_id);
             if (edge.u == start_node_id) {
-                const GRBVar end_time =
-                    time_var(edge.v, edge.data.end_state);
-                model.addConstr(
-                    end_time >= edge.data.time * y_vars[edge_id],
+                const GRBVar end_time = time_var(edge.v, edge.data.end_state);
+                core.model->addConstr(
+                    end_time >= edge.data.time * core.y_vars[edge_id],
                     constraint_name
                 );
                 continue;
             }
             if (edge.v == end_node_id) {
-                const GRBVar start_time =
-                    time_var(edge.u, edge.data.start_state);
-                model.addConstr(
-                    start_time + edge.data.time * y_vars[edge_id] <=
+                const GRBVar start_time = time_var(edge.u, edge.data.start_state);
+                core.model->addConstr(
+                    start_time + edge.data.time * core.y_vars[edge_id] <=
                         data.time_limit,
                     constraint_name
                 );
                 continue;
             }
 
-            const GRBVar start_time =
-                time_var(edge.u, edge.data.start_state);
-            const GRBVar end_time =
-                time_var(edge.v, edge.data.end_state);
+            const GRBVar start_time = time_var(edge.u, edge.data.start_state);
+            const GRBVar end_time = time_var(edge.v, edge.data.end_state);
             const double big_m = data.time_limit + edge.data.time;
-            model.addConstr(
-                end_time >=
-                    start_time + edge.data.time -
-                    big_m * (1.0 - y_vars[edge_id]),
+            core.model->addConstr(
+                end_time >= start_time + edge.data.time -
+                    big_m * (1.0 - core.y_vars[edge_id]),
                 constraint_name
             );
         }
@@ -782,28 +827,51 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
         const EdgeRecord& edge = graph.edges()[edge_id];
         if (edge.u == start_node_id &&
             graph.node(edge.v).kind == NodeSpec::Kind::Pickup) {
-            actual_departures += y_vars[edge_id];
+            actual_departures += core.y_vars[edge_id];
         }
         if (graph.node(edge.u).kind == NodeSpec::Kind::Delivery &&
             edge.v == end_node_id) {
-            actual_returns += y_vars[edge_id];
+            actual_returns += core.y_vars[edge_id];
         }
     }
-    model.addConstr(actual_departures == actual_returns, "vi44_aux_depot_balance");
+    core.model->addConstr(
+        actual_departures == actual_returns,
+        options.name_prefix + "_depot_balance"
+    );
+    core.model->update();
+    return core;
+}
+
+AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    double solver_time_limit,
+    bool binary_y,
+    bool add_time_constraints
+) {
+    TwoIndexCoreOptions core_options;
+    core_options.objective = TwoIndexCoreObjective::Duration;
+    core_options.binary_y = binary_y;
+    core_options.add_time_constraints = add_time_constraints;
+    core_options.solver_time_limit = solver_time_limit;
+    core_options.gurobi_threads = 1;
+    core_options.output_enabled = false;
+    core_options.name_prefix = "vi44_aux";
+    TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
 
     const auto solve_start = std::chrono::steady_clock::now();
-    model.optimize();
+    core.model->optimize();
     const auto solve_end = std::chrono::steady_clock::now();
 
     AuxiliaryDurationSubproblemResult result;
-    result.status = model.get(GRB_IntAttr_Status);
+    result.status = core.model->get(GRB_IntAttr_Status);
     result.hit_time_limit = result.status == GRB_TIME_LIMIT;
     result.runtime_seconds =
         std::chrono::duration<double>(solve_end - solve_start).count();
 
-    if (model.get(GRB_IntAttr_SolCount) > 0) {
+    if (core.model->get(GRB_IntAttr_SolCount) > 0) {
         try {
-            const double objective_value = model.get(GRB_DoubleAttr_ObjVal);
+            const double objective_value = core.model->get(GRB_DoubleAttr_ObjVal);
             if (std::isfinite(objective_value) &&
                 std::abs(objective_value) < 0.5 * GRB_INFINITY) {
                 result.objective_value = objective_value;
@@ -816,7 +884,7 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
     }
 
     try {
-        const double objective_bound = model.get(GRB_DoubleAttr_ObjBound);
+        const double objective_bound = core.model->get(GRB_DoubleAttr_ObjBound);
         if (std::isfinite(objective_bound) &&
             std::abs(objective_bound) < 0.5 * GRB_INFINITY) {
             result.objective_bound = objective_bound;
@@ -1794,6 +1862,104 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
         }
     }
     return rows;
+}
+
+DirectTwoIndexResult solve_direct_two_index_ip(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const DirectTwoIndexOptions& options
+) {
+    TwoIndexCoreOptions core_options;
+    core_options.objective =
+        options.objective == DirectTwoIndexObjective::Duration
+            ? TwoIndexCoreObjective::Duration
+            : TwoIndexCoreObjective::OriginalCost;
+    core_options.binary_y = true;
+    core_options.add_time_constraints = options.add_time_constraints;
+    core_options.solver_time_limit = options.solver_time_limit;
+    core_options.gurobi_threads = options.gurobi_threads;
+    core_options.output_enabled = true;
+    core_options.gurobi_log_path = options.gurobi_log_path;
+    core_options.name_prefix = "direct_two_index";
+    TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
+
+    const std::vector<PstepValidInequalityRow> vi_rows =
+        build_pstep_valid_inequality_rows(
+            data,
+            graph,
+            options.valid_inequalities
+        );
+    for (const PstepValidInequalityRow& row : vi_rows) {
+        GRBLinExpr expression = 0.0;
+        for (const auto& term : row.edge_terms) {
+            if (term.first >= core.y_vars.size()) {
+                throw std::runtime_error(
+                    "A direct two-index valid inequality references an invalid edge."
+                );
+            }
+            expression += term.second * core.y_vars[term.first];
+        }
+        if (row.sense == PstepValidInequalitySense::GreaterEqual) {
+            core.model->addConstr(expression >= row.rhs, row.name);
+        } else {
+            core.model->addConstr(expression <= row.rhs, row.name);
+        }
+    }
+    core.model->update();
+
+    DirectTwoIndexResult result;
+    result.variable_count = core.model->get(GRB_IntAttr_NumVars);
+    result.constraint_count = core.model->get(GRB_IntAttr_NumConstrs);
+    result.valid_inequality_count = static_cast<int>(vi_rows.size());
+
+    core.model->optimize();
+    result.status = core.model->get(GRB_IntAttr_Status);
+    result.hit_time_limit = result.status == GRB_TIME_LIMIT;
+    result.solved_to_optimality = result.status == GRB_OPTIMAL;
+    result.runtime_seconds = core.model->get(GRB_DoubleAttr_Runtime);
+    result.has_feasible_solution = core.model->get(GRB_IntAttr_SolCount) > 0;
+
+    try {
+        const double objective_bound = core.model->get(GRB_DoubleAttr_ObjBound);
+        if (std::isfinite(objective_bound) &&
+            std::abs(objective_bound) < 0.5 * GRB_INFINITY) {
+            result.objective_bound = objective_bound;
+            result.has_certified_bound = true;
+        }
+    } catch (const GRBException& error) {
+        if (error.getErrorCode() != GRB_ERROR_DATA_NOT_AVAILABLE) {
+            throw;
+        }
+    }
+
+    if (!result.has_feasible_solution) {
+        return result;
+    }
+
+    result.objective_value = core.model->get(GRB_DoubleAttr_ObjVal);
+    if (result.has_certified_bound && std::abs(result.objective_value) > kTolerance) {
+        result.gap_percent =
+            100.0 * std::abs(result.objective_value - result.objective_bound) /
+            std::abs(result.objective_value);
+    } else if (result.has_certified_bound) {
+        result.gap_percent = 0.0;
+    }
+
+    result.total_duration = 0.0;
+    result.total_original_cost = 0.0;
+    result.edge_values.resize(graph.number_of_edges(), 0.0);
+    for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
+        const double value = core.y_vars[edge_id].get(GRB_DoubleAttr_X);
+        result.edge_values[edge_id] = value;
+        result.total_duration += graph.edges()[edge_id].data.time * value;
+        result.total_original_cost += graph.edges()[edge_id].data.cost * value;
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        if (value > 0.5 && edge.u == 0 &&
+            graph.node(edge.v).kind == NodeSpec::Kind::Pickup) {
+            ++result.vehicle_count;
+        }
+    }
+    return result;
 }
 
 }  // namespace spdp
