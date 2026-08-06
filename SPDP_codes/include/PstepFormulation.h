@@ -243,6 +243,17 @@ RecoveredSolution recover_incumbent_solution(
     const CompactMasterProblem& problem
 );
 
+// 선택된 multigraph edge들을 depot-to-end route들로 분해하고, compressed
+// edge의 treatment sequence를 펼쳐 공통 route 출력 형식으로 복원한다.
+// P=0 direct two-index 해처럼 compact-master 객체가 없는 경우에 사용한다.
+RecoveredSolution recover_selected_edge_solution(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const std::vector<int>& active_edge_ids,
+    double objective_value,
+    double runtime_seconds
+);
+
 // 복원된 incumbent 해를 읽기 쉬운 텍스트 형식으로 출력한다.
 void write_recovered_solution(std::ostream& out, const RecoveredSolution& solution);
 

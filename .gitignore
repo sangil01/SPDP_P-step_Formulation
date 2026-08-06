@@ -36,6 +36,7 @@ out/
 SPDP_solution_benchmark/
 SPDP_data/
 SPDP_output*/
+SPDP_solution/
 SPDP_optimal/
 SPDP_benchmark*/
 Obsidian_SPDP_research_notes/
@@ -43,9 +44,10 @@ Obsidian_SPDP_research_notes/
 *.xlsx
 context.md
 generate_root_cg_summary_xlsx.py
-
+time_distance_calculator.py
 
 # [OS 및 시스템]
 .DS_Store
 Thumbs.db
 desktop.ini
+

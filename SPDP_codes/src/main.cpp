@@ -1626,38 +1626,34 @@ void print_direct_two_index_summary(
 
 void write_direct_two_index_solution(
     std::ostream& out,
+    const spdp::SPDPData& data,
     const spdp::DirectTwoIndexResult& result,
     const spdp::MultiDiGraph& graph
 ) {
-    out << "Solution:\n";
-    out << "  Model direct-two-index-IP\n";
     if (!result.has_feasible_solution) {
-        out << "  No feasible solution available\n";
-        out << "Solution done \n";
+        spdp::write_recovered_solution(out, spdp::RecoveredSolution{});
         return;
     }
 
-    out << "  Objective value " << format_double(result.objective_value) << '\n';
-    out << "  Total cost " << format_double(result.total_original_cost) << '\n';
-    out << "  Total time " << format_double(result.total_duration) << '\n';
-    out << "  Number of routes " << result.vehicle_count << '\n';
-    out << "  Active y_e:\n";
+    std::vector<int> active_edge_ids;
+    active_edge_ids.reserve(result.edge_values.size());
     for (std::size_t edge_id = 0; edge_id < result.edge_values.size(); ++edge_id) {
-        const double value = result.edge_values[edge_id];
-        if (value <= 0.5) {
-            continue;
+        if (result.edge_values[edge_id] > 0.5) {
+            active_edge_ids.push_back(static_cast<int>(edge_id));
         }
-        const spdp::EdgeRecord& edge = graph.edges()[edge_id];
-        out << "    y_" << edge_id << " " << format_double(value)
-            << " u=" << edge.u
-            << " v=" << edge.v
-            << " time=" << format_double(edge.data.time)
-            << " cost=" << format_double(edge.data.cost)
-            << " start=" << spdp::state_to_str(edge.data.start_state)
-            << " end=" << spdp::state_to_str(edge.data.end_state)
-            << '\n';
     }
-    out << "Solution done \n";
+
+    const spdp::RecoveredSolution recovered_solution =
+        spdp::recover_selected_edge_solution(
+            // The direct and compact formulations use the same multigraph edges.
+            // Route reconstruction therefore also validates the selected y support.
+            data,
+            graph,
+            active_edge_ids,
+            result.objective_value,
+            result.runtime_seconds
+        );
+    spdp::write_recovered_solution(out, recovered_solution);
 }
 
 }  // namespace
@@ -1913,6 +1909,7 @@ int main(int argc, char** argv) {
                 print_direct_two_index_summary(output_file, direct_result);
                 write_direct_two_index_solution(
                     solution_file,
+                    data,
                     direct_result,
                     graph
                 );
@@ -1968,7 +1965,6 @@ int main(int argc, char** argv) {
                 problem.model->set(GRB_IntParam_Threads, args.gurobi_threads);
             }
             problem.model->set(GRB_DoubleParam_TimeLimit, args.solver_time_limit);
-
             output_file << "[main] Compact master model built successfully.\n";
             output_file << "[main] Parallel-edge SOS1 count: "
                         << problem.parallel_edge_sos1_count << '\n';

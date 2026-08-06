@@ -799,6 +799,123 @@ RecoveredRouteSolution build_route_solution(
     return route;
 }
 
+RecoveredSolution recover_solution_from_active_edges(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const std::vector<int>& active_edge_ids,
+    double objective_value,
+    double runtime_seconds
+) {
+    RecoveredSolution solution;
+    solution.has_incumbent = true;
+    solution.objective_value = objective_value;
+    solution.runtime_seconds = runtime_seconds;
+    solution.active_edge_ids = active_edge_ids;
+
+    const NodeId end_node_id = graph.end_node_id();
+    const std::vector<EdgeRecord>& all_edges = graph.edges();
+    std::map<NodeId, std::vector<int>> active_outgoing_edges;
+    for (int edge_id : solution.active_edge_ids) {
+        require_condition(edge_id >= 0, "Selected edge id must be nonnegative.");
+        require_condition(
+            static_cast<std::size_t>(edge_id) < all_edges.size(),
+            "Selected edge id is out of range."
+        );
+        active_outgoing_edges[all_edges[static_cast<std::size_t>(edge_id)].u]
+            .push_back(edge_id);
+    }
+    for (auto& entry : active_outgoing_edges) {
+        std::sort(entry.second.begin(), entry.second.end());
+    }
+
+    std::vector<bool> is_edge_consumed(all_edges.size(), true);
+    for (int edge_id : solution.active_edge_ids) {
+        is_edge_consumed[static_cast<std::size_t>(edge_id)] = false;
+    }
+
+    std::vector<std::vector<int>> route_edge_sets;
+    const bool decomposed = decompose_selected_edges(
+        data,
+        graph,
+        all_edges,
+        active_outgoing_edges,
+        is_edge_consumed,
+        route_edge_sets,
+        end_node_id
+    );
+    if (!decomposed) {
+        std::ostringstream debug;
+        debug << "The selected edge set could not be decomposed into feasible routes.";
+        debug << " Active edges: ";
+        for (std::size_t idx = 0; idx < solution.active_edge_ids.size(); ++idx) {
+            if (idx > 0U) {
+                debug << " || ";
+            }
+            const int edge_id = solution.active_edge_ids[idx];
+            debug << format_debug_edge(
+                edge_id,
+                all_edges[static_cast<std::size_t>(edge_id)]
+            );
+        }
+        throw std::runtime_error(debug.str());
+    }
+
+    int next_route_id = 0;
+    std::set<int> recovered_edge_ids;
+    std::set<NodeId> recovered_service_nodes;
+    for (const std::vector<int>& route_edge_ids : route_edge_sets) {
+        for (int edge_id : route_edge_ids) {
+            const auto inserted_edge = recovered_edge_ids.insert(edge_id);
+            require_condition(
+                inserted_edge.second,
+                "A selected edge was assigned to more than one recovered route."
+            );
+
+            const NodeId arrival_node_id =
+                all_edges[static_cast<std::size_t>(edge_id)].v;
+            if (graph.is_physical_service_node(arrival_node_id)) {
+                const auto inserted_node = recovered_service_nodes.insert(arrival_node_id);
+                require_condition(
+                    inserted_node.second,
+                    "Recovered solution visits the same service node more than once."
+                );
+            }
+        }
+
+        RecoveredRouteSolution route =
+            build_route_solution(next_route_id, route_edge_ids, data, graph);
+        if (!route.actions.empty()) {
+            route.route_id = next_route_id++;
+            solution.routes.push_back(std::move(route));
+        }
+    }
+
+    for (int edge_id : solution.active_edge_ids) {
+        require_condition(
+            is_edge_consumed[static_cast<std::size_t>(edge_id)],
+            "The selected edge set could not be fully decomposed into routes."
+        );
+    }
+    require_condition(
+        recovered_edge_ids.size() == solution.active_edge_ids.size(),
+        "Recovered route edges do not match the selected edge support size."
+    );
+    for (int edge_id : solution.active_edge_ids) {
+        require_condition(
+            recovered_edge_ids.find(edge_id) != recovered_edge_ids.end(),
+            "Recovered route edges do not match the selected edge support."
+        );
+    }
+    for (NodeId node_id = 1; node_id < end_node_id; ++node_id) {
+        require_condition(
+            recovered_service_nodes.find(node_id) != recovered_service_nodes.end(),
+            "Recovered solution does not cover every service node."
+        );
+    }
+
+    return solution;
+}
+
 }  // namespace
 
 bool NodeStateKey::operator<(const NodeStateKey& other) const {
@@ -1792,50 +1909,19 @@ RecoveredSolution recover_incumbent_solution(
         return solution;
     }
 
-    solution.has_incumbent = true;
-    solution.objective_value = problem.model->get(GRB_DoubleAttr_ObjVal);
-    solution.active_edge_ids = collect_active_edge_ids(problem);
-    const NodeId end_node_id = graph.end_node_id();
-    const std::vector<EdgeRecord>& all_edges = graph.edges();
-    std::map<NodeId, std::vector<int>> active_outgoing_edges;
-    for (int edge_id : solution.active_edge_ids) {
-        active_outgoing_edges[all_edges[static_cast<std::size_t>(edge_id)].u].push_back(edge_id);
-    }
-    for (auto& entry : active_outgoing_edges) {
-        std::sort(entry.second.begin(), entry.second.end());
-    }
-
-    // active theta support 위에서 아직 어떤 edge가 route에 배정되지 않았는지 추적한다.
-    std::vector<bool> is_edge_consumed(all_edges.size(), true);
-    for (int edge_id : solution.active_edge_ids) {
-        is_edge_consumed[static_cast<std::size_t>(edge_id)] = false;
-    }
-
-    // 활성 theta edge들을 실제 feasible route들로 분해해 본다.
-    // 이 단계가 성공해야 binary theta 해가 실제 route 집합과 모순 없이 대응된다고 볼 수 있다.
-    std::vector<std::vector<int>> route_edge_sets;
-    const bool decomposed = decompose_selected_edges(
-        data,
-        graph,
-        all_edges,
-        active_outgoing_edges,
-        is_edge_consumed,
-        route_edge_sets,
-        end_node_id
-    );
-    if (!decomposed) {
-        // 분해 실패 시 활성 theta와 양의 x 값을 함께 남겨 디버깅 가능하게 한다.
+    const std::vector<int> active_edge_ids = collect_active_edge_ids(problem);
+    try {
+        return recover_solution_from_active_edges(
+            data,
+            graph,
+            active_edge_ids,
+            problem.model->get(GRB_DoubleAttr_ObjVal),
+            solution.runtime_seconds
+        );
+    } catch (const std::runtime_error& error) {
+        // Compact-master 복원 실패 시 양의 x 값도 함께 남겨 진단 정보를 보존한다.
         std::ostringstream debug;
-        debug << "The selected theta-edge set could not be decomposed into feasible routes.";
-        debug << " Active theta: ";
-        for (std::size_t idx = 0; idx < solution.active_edge_ids.size(); ++idx) {
-            if (idx > 0U) {
-                debug << " || ";
-            }
-            const int edge_id = solution.active_edge_ids[idx];
-            debug << format_debug_edge(edge_id, all_edges[static_cast<std::size_t>(edge_id)]);
-        }
-        debug << " Positive x: ";
+        debug << error.what() << " Positive x: ";
         bool has_positive_x = false;
         for (std::size_t idx = 0; idx < artifacts.compact_psteps.size(); ++idx) {
             const double value = problem.x_vars[idx].get(GRB_DoubleAttr_X);
@@ -1850,59 +1936,22 @@ RecoveredSolution recover_incumbent_solution(
         }
         throw std::runtime_error(debug.str());
     }
+}
 
-    // edge 단위 route를 사람이 읽을 수 있는 route 출력 형식으로 변환한다.
-    int next_route_id = 0;
-    std::set<int> recovered_edge_ids;
-    std::set<NodeId> recovered_service_nodes;
-    for (const std::vector<int>& route_edge_ids : route_edge_sets) {
-        for (int edge_id : route_edge_ids) {
-            recovered_edge_ids.insert(edge_id);
-
-            const NodeId arrival_node_id = all_edges[static_cast<std::size_t>(edge_id)].v;
-            if (graph.is_physical_service_node(arrival_node_id)) {
-                const auto inserted = recovered_service_nodes.insert(arrival_node_id);
-                require_condition(
-                    inserted.second,
-                    "Recovered solution visits the same service node more than once."
-                );
-            }
-        }
-
-        RecoveredRouteSolution route = build_route_solution(next_route_id, route_edge_ids, data, graph);
-        if (!route.actions.empty()) {
-            route.route_id = next_route_id++;
-            solution.routes.push_back(std::move(route));
-        }
-    }
-
-    // 복원된 route들이 활성 theta support와 정확히 일치하는지 마지막으로 확인한다.
-    // 일부 edge가 누락되거나 중복 사용되면 복원 실패로 간주한다.
-    for (int edge_id : solution.active_edge_ids) {
-        require_condition(
-            is_edge_consumed[static_cast<std::size_t>(edge_id)],
-            "The selected theta-edge set could not be fully decomposed into routes."
-        );
-    }
-
-    require_condition(
-        recovered_edge_ids.size() == solution.active_edge_ids.size(),
-        "Recovered route edges do not match the active theta support size."
+RecoveredSolution recover_selected_edge_solution(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const std::vector<int>& active_edge_ids,
+    double objective_value,
+    double runtime_seconds
+) {
+    return recover_solution_from_active_edges(
+        data,
+        graph,
+        active_edge_ids,
+        objective_value,
+        runtime_seconds
     );
-    for (int edge_id : solution.active_edge_ids) {
-        require_condition(
-            recovered_edge_ids.find(edge_id) != recovered_edge_ids.end(),
-            "Recovered route edges do not match the active theta support."
-        );
-    }
-    for (NodeId node_id = 1; node_id < end_node_id; ++node_id) {
-        require_condition(
-            recovered_service_nodes.find(node_id) != recovered_service_nodes.end(),
-            "Recovered solution does not cover every service node."
-        );
-    }
-
-    return solution;
 }
 
 void write_recovered_solution(std::ostream& out, const RecoveredSolution& solution) {
