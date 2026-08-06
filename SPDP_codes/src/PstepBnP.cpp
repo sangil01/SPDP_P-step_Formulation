@@ -3921,6 +3921,40 @@ double sum_node_phase_pricing_runtime_seconds(
 
 }  // namespace
 
+std::vector<CGColumn> build_initial_incumbent_cg_columns(
+    const MultiDiGraph& graph,
+    int p,
+    double time_limit,
+    const RecoveredSolution& incumbent
+) {
+    if (!incumbent.has_incumbent) {
+        return {};
+    }
+    if (p < 1) {
+        throw std::runtime_error("Initial incumbent CG columns require p >= 1.");
+    }
+
+    NodeCGOptions decomposition_options;
+    decomposition_options.p = p;
+    decomposition_options.time_limit = time_limit;
+    std::unordered_map<std::string, std::size_t> seen_columns;
+    std::vector<CGColumn> columns;
+    for (const RecoveredRouteSolution& recovered_route : incumbent.routes) {
+        SeedRoute route;
+        route.edge_ids = recovered_route.edge_ids;
+        route.total_time = recovered_route.total_time;
+        route.total_cost = recovered_route.total_cost;
+        append_backward_decomposed_route_columns(
+            graph,
+            decomposition_options,
+            route,
+            seen_columns,
+            columns
+        );
+    }
+    return columns;
+}
+
 BranchAndPriceResult solve_branch_and_price(
     const SPDPData& data,
     const MultiDiGraph& graph,
@@ -3938,7 +3972,24 @@ BranchAndPriceResult solve_branch_and_price(
             ? options.initial_upper_bound
             : lookup_baseline_upper_bound(options.instance_name);
 
+    if (options.initial_incumbent_solution.has_value() &&
+        options.initial_incumbent_solution->has_incumbent &&
+        options.initial_incumbent_value >= 0.0 &&
+        std::isfinite(options.initial_incumbent_value)) {
+        result.initial_incumbent_used = true;
+        if (!std::isfinite(incumbent_value) ||
+            options.initial_incumbent_value < incumbent_value - kTolerance) {
+            incumbent_value = options.initial_incumbent_value;
+            result.incumbent_recovered_solution =
+                options.initial_incumbent_solution;
+        }
+    }
+
     const bool has_initial_upper_bound = std::isfinite(incumbent_value);
+    result.has_incumbent = has_initial_upper_bound;
+    if (has_initial_upper_bound) {
+        result.incumbent_value = incumbent_value;
+    }
     const std::size_t edge_count = graph.number_of_edges();
     const std::size_t edge_word_count = bit_word_count_for_edges(edge_count);
 
@@ -4094,8 +4145,10 @@ BranchAndPriceResult solve_branch_and_price(
             if (nodes[node_id].is_integer) {
                 if (nodes[node_id].lower_bound < incumbent_value) {
                     incumbent_value = nodes[node_id].lower_bound;
+                    result.has_incumbent = true;
                     result.incumbent_updated = true;
                     result.incumbent_value = incumbent_value;
+                    result.incumbent_recovered_solution.reset();
                     result.incumbent_theta_values = nodes[node_id].theta_values;
                     result.incumbent_columns = nodes[node_id].master_columns;
                     result.incumbent_column_values = nodes[node_id].column_values;
@@ -4124,6 +4177,7 @@ BranchAndPriceResult solve_branch_and_price(
     root_input_state.vi_request_block_sec_max_size =
         options.node_cg_options.root_vi_request_block_sec_max_size;
     root_input_state.add_vi_44 = options.node_cg_options.add_root_vi_44;
+    root_input_state.initial_columns = options.initial_incumbent_columns;
     create_and_evaluate_node(
         std::nullopt,
         std::vector<std::uint64_t>(edge_word_count, 0U),
@@ -4271,6 +4325,9 @@ void write_branch_and_price_summary(
     out << "[bnp-summary] tree_mode=" << to_string(result.tree_mode) << '\n';
     out << "[bnp-summary] solved_to_optimality=" << (result.solved_to_optimality ? 1 : 0) << '\n';
     out << "[bnp-summary] hit_time_limit=" << (result.hit_time_limit ? 1 : 0) << '\n';
+    out << "[bnp-summary] has_incumbent=" << (result.has_incumbent ? 1 : 0) << '\n';
+    out << "[bnp-summary] initial_incumbent_used="
+        << (result.initial_incumbent_used ? 1 : 0) << '\n';
     out << "[bnp-summary] incumbent_updated=" << (result.incumbent_updated ? 1 : 0) << '\n';
     out << "[bnp-summary] incumbent_value=" << format_double(result.incumbent_value) << '\n';
     out << "[bnp-summary] best_global_lower_bound="
@@ -4302,8 +4359,12 @@ void write_branch_and_price_solution(
     const BranchAndPriceResult& result,
     const MultiDiGraph& graph
 ) {
+    if (result.incumbent_recovered_solution.has_value()) {
+        write_recovered_solution(out, result.incumbent_recovered_solution.value());
+        return;
+    }
     out << "Solution:\n";
-    if (!result.incumbent_updated) {
+    if (!result.has_incumbent || !result.incumbent_updated) {
         out << "  No incumbent decomposition was found during branch-and-price\n";
         out << "Solution done \n";
         return;

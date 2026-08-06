@@ -262,12 +262,17 @@ struct BranchAndPriceOptions {
     double gap_tolerance = 1e-6;
     std::string instance_name;
     double initial_upper_bound = -1.0;
+    std::vector<CGColumn> initial_incumbent_columns;
+    std::optional<RecoveredSolution> initial_incumbent_solution;
+    double initial_incumbent_value = -1.0;
 };
 
 struct BranchAndPriceResult {
     BnPTreeMode tree_mode = BnPTreeMode::FullTree;
     bool solved_to_optimality = false;
     bool hit_time_limit = false;
+    bool has_incumbent = false;
+    bool initial_incumbent_used = false;
     bool incumbent_updated = false;
 
     double incumbent_value = 0.0;
@@ -293,7 +298,17 @@ struct BranchAndPriceResult {
     std::vector<double> incumbent_theta_values;
     std::vector<CGColumn> incumbent_columns;
     std::vector<double> incumbent_column_values;
+    std::optional<RecoveredSolution> incumbent_recovered_solution;
 };
+
+// Uses the same backward route decomposition and extreme-tau construction as
+// heuristic-cg to turn complete incumbent routes into root-RMP seed columns.
+std::vector<CGColumn> build_initial_incumbent_cg_columns(
+    const MultiDiGraph& graph,
+    int p,
+    double time_limit,
+    const RecoveredSolution& incumbent
+);
 
 // two-phase column generation으로 한 B&P node의 LP relaxation을 푼다.
 NodeCGResult solve_node_column_generation(

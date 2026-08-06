@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iomanip>
 #include <ios>
 #include <limits>
@@ -248,6 +249,28 @@ std::vector<double> extreme_tau_values(
     return tau_values;
 }
 
+CompactPStep make_compact_pstep(
+    int pstep_id,
+    const RawPStepPath& raw_path,
+    double tau
+) {
+    CompactPStep pstep;
+    pstep.id = pstep_id;
+    pstep.raw_path_id = raw_path.id;
+    pstep.edge_ids = raw_path.edge_ids;
+    pstep.q = raw_path.q;
+    pstep.start_node_id = raw_path.start_node_id;
+    pstep.last_node_id = raw_path.last_node_id;
+    pstep.start_state = canonicalize_state(raw_path.start_state);
+    pstep.last_state = canonicalize_state(raw_path.last_state);
+    pstep.total_time = raw_path.total_time;
+    pstep.total_cost = raw_path.total_cost;
+    pstep.tau = tau;
+    pstep.node_sequence = raw_path.node_sequence;
+    pstep.state_sequence = raw_path.state_sequence;
+    return pstep;
+}
+
 // edge id 목록을 디버깅용 문자열로 바꾼다.
 std::string format_edge_sequence(const std::vector<int>& edge_ids) {
     std::ostringstream out;
@@ -369,6 +392,111 @@ std::map<NodeStateKey, double> calculated_time_coefficients(
     }
 
     return coefficients;
+}
+
+void insert_sigma_if_missing(
+    CompactPStepCoefficients& coefficients,
+    NodeId node_id,
+    const State& state
+) {
+    const State canonical_state = canonicalize_state(state);
+    std::vector<State>& sigma_values = coefficients.sigma_by_node[node_id];
+    const auto position = std::lower_bound(
+        sigma_values.begin(),
+        sigma_values.end(),
+        canonical_state,
+        state_less
+    );
+    if (position == sigma_values.end() ||
+        !same_state(*position, canonical_state)) {
+        sigma_values.insert(position, canonical_state);
+    }
+}
+
+void append_compact_pstep_coefficients(
+    const MultiDiGraph& graph,
+    const std::vector<CompactPStep>& compact_psteps,
+    std::size_t first_pstep_index,
+    bool update_sigma_by_node,
+    CompactPStepCoefficients& coefficients
+) {
+    require_condition(
+        coefficients.visit_coefficients_by_pstep.size() == first_pstep_index &&
+            coefficients.state_coefficients_by_pstep.size() == first_pstep_index &&
+            coefficients.time_coefficients_by_pstep.size() == first_pstep_index &&
+            coefficients.edge_incidence_by_pstep.size() == first_pstep_index,
+        "Incremental compact coefficient append starts at an inconsistent index."
+    );
+    require_condition(
+        coefficients.edge_rows.size() == graph.number_of_edges(),
+        "Incremental compact coefficient append has an invalid edge-row table."
+    );
+
+    for (std::size_t pstep_index = first_pstep_index;
+         pstep_index < compact_psteps.size();
+         ++pstep_index) {
+        const CompactPStep& pstep = compact_psteps[pstep_index];
+        require_condition(
+            pstep.id == static_cast<int>(pstep_index),
+            "Compact p-step id must equal its coefficient-table index."
+        );
+
+        if (update_sigma_by_node &&
+            graph.is_physical_service_node(pstep.start_node_id)) {
+            insert_sigma_if_missing(
+                coefficients,
+                pstep.start_node_id,
+                pstep.start_state
+            );
+        }
+        if (update_sigma_by_node &&
+            graph.is_physical_service_node(pstep.last_node_id)) {
+            insert_sigma_if_missing(
+                coefficients,
+                pstep.last_node_id,
+                pstep.last_state
+            );
+        }
+
+        const std::map<NodeId, int> visit_coefficients =
+            calculated_visit_coefficients(pstep, graph);
+        const std::map<NodeStateKey, int> state_coefficients =
+            calculated_state_coefficients(pstep, graph);
+        const std::map<NodeStateKey, double> time_coefficients =
+            calculated_time_coefficients(pstep, graph);
+
+        coefficients.visit_coefficients_by_pstep.push_back(visit_coefficients);
+        coefficients.state_coefficients_by_pstep.push_back(state_coefficients);
+        coefficients.time_coefficients_by_pstep.push_back(time_coefficients);
+        coefficients.edge_incidence_by_pstep.push_back(pstep.edge_ids);
+
+        for (const auto& entry : visit_coefficients) {
+            coefficients.visit_rows[entry.first].push_back(
+                {pstep.id, entry.second}
+            );
+        }
+        for (const auto& entry : state_coefficients) {
+            coefficients.state_rows[entry.first].push_back(
+                {pstep.id, entry.second}
+            );
+        }
+        for (const auto& entry : time_coefficients) {
+            coefficients.time_rows[entry.first].push_back(
+                {pstep.id, entry.second}
+            );
+        }
+        for (int edge_id : pstep.edge_ids) {
+            require_condition(
+                edge_id >= 0 &&
+                    static_cast<std::size_t>(edge_id) <
+                        coefficients.edge_rows.size(),
+                "Compact p-step coefficient references an invalid edge id."
+            );
+            coefficients.edge_rows[static_cast<std::size_t>(edge_id)].push_back(
+                pstep.id
+            );
+        }
+    }
 }
 
 // 해 복원 과정에서 차량에 실린 요청 상태를 추적하기 위한 내부 구조체.
@@ -1285,21 +1413,9 @@ std::vector<CompactPStep> build_compact_psteps(
         // 각 raw path마다 허용되는 극단 tau 값만 사용해 compact p-step을 만든다.
         const std::vector<double> tau_values = extreme_tau_values(raw_path, time_limit, end_node_id);
         for (double tau_value : tau_values) {
-            CompactPStep pstep;
-            pstep.id = next_pstep_id++;
-            pstep.raw_path_id = raw_path.id;
-            pstep.edge_ids = raw_path.edge_ids;
-            pstep.q = raw_path.q;
-            pstep.start_node_id = raw_path.start_node_id;
-            pstep.last_node_id = raw_path.last_node_id;
-            pstep.start_state = canonicalize_state(raw_path.start_state);
-            pstep.last_state = canonicalize_state(raw_path.last_state);
-            pstep.total_time = raw_path.total_time;
-            pstep.total_cost = raw_path.total_cost;
-            pstep.tau = tau_value;
-            pstep.node_sequence = raw_path.node_sequence;
-            pstep.state_sequence = raw_path.state_sequence;
-            compact_psteps.push_back(std::move(pstep));
+            compact_psteps.push_back(
+                make_compact_pstep(next_pstep_id++, raw_path, tau_value)
+            );
         }
     }
 
@@ -1319,10 +1435,12 @@ CompactPStepCoefficients build_compact_pstep_coefficients(
         coefficients.physical_nodes.push_back(node_id);
     }
 
-    // 각 physical node에서 실제로 등장하는 상태 집합 sigma를 먼저 수집한다.
     std::map<NodeId, std::set<State, decltype(&state_less)>> sigma_sets;
     for (NodeId node_id : coefficients.physical_nodes) {
-        sigma_sets.emplace(node_id, std::set<State, decltype(&state_less)>(state_less));
+        sigma_sets.emplace(
+            node_id,
+            std::set<State, decltype(&state_less)>(state_less)
+        );
     }
 
     coefficients.visit_coefficients_by_pstep.reserve(compact_psteps.size());
@@ -1332,46 +1450,30 @@ CompactPStepCoefficients build_compact_pstep_coefficients(
 
     for (const CompactPStep& pstep : compact_psteps) {
         if (graph.is_physical_service_node(pstep.start_node_id)) {
-            sigma_sets[pstep.start_node_id].insert(canonicalize_state(pstep.start_state));
+            sigma_sets[pstep.start_node_id].insert(
+                canonicalize_state(pstep.start_state)
+            );
         }
         if (graph.is_physical_service_node(pstep.last_node_id)) {
-            sigma_sets[pstep.last_node_id].insert(canonicalize_state(pstep.last_state));
+            sigma_sets[pstep.last_node_id].insert(
+                canonicalize_state(pstep.last_state)
+            );
         }
     }
-
     for (const auto& entry : sigma_sets) {
-        const NodeId node_id = entry.first;
-        const std::set<State, decltype(&state_less)>& state_set = entry.second;
-        coefficients.sigma_by_node[node_id] = std::vector<State>(state_set.begin(), state_set.end());
+        coefficients.sigma_by_node[entry.first] = std::vector<State>(
+            entry.second.begin(),
+            entry.second.end()
+        );
     }
 
-    for (const CompactPStep& pstep : compact_psteps) {
-        std::map<NodeId, int> visit_coefficients = calculated_visit_coefficients(pstep, graph);
-        std::map<NodeStateKey, int> state_coefficients =
-            calculated_state_coefficients(pstep, graph);
-        std::map<NodeStateKey, double> time_coefficients =
-            calculated_time_coefficients(pstep, graph);
-
-        // p-step별 계수와 행 기준 희소 표현을 동시에 구성한다.
-        coefficients.visit_coefficients_by_pstep.push_back(visit_coefficients);
-        coefficients.state_coefficients_by_pstep.push_back(state_coefficients);
-        coefficients.time_coefficients_by_pstep.push_back(time_coefficients);
-        coefficients.edge_incidence_by_pstep.push_back(pstep.edge_ids);
-        
-        //pstep.id는 현재 iteration_num과 동일해서 위에서는 그냥 push_back 하는 것
-        for (const auto& entry : visit_coefficients) {
-            coefficients.visit_rows[entry.first].push_back({pstep.id, entry.second});
-        }
-        for (const auto& entry : state_coefficients) {
-            coefficients.state_rows[entry.first].push_back({pstep.id, entry.second});
-        }
-        for (const auto& entry : time_coefficients) {
-            coefficients.time_rows[entry.first].push_back({pstep.id, entry.second});
-        }
-        for (int edge_id : pstep.edge_ids) {
-            coefficients.edge_rows[static_cast<std::size_t>(edge_id)].push_back(pstep.id);
-        }
-    }
+    append_compact_pstep_coefficients(
+        graph,
+        compact_psteps,
+        0U,
+        false,
+        coefficients
+    );
 
     return coefficients;
 }
@@ -1952,6 +2054,359 @@ RecoveredSolution recover_selected_edge_solution(
         objective_value,
         runtime_seconds
     );
+}
+
+CompactIncumbentSeedResult augment_compact_psteps_with_incumbent(
+    const MultiDiGraph& graph,
+    const RecoveredSolution& incumbent,
+    CompactPStepArtifacts& artifacts
+) {
+    require_condition(
+        incumbent.has_incumbent,
+        "Cannot build compact p-step seeds from an empty incumbent."
+    );
+    require_condition(artifacts.p >= 1, "Incumbent p-step seeding requires p >= 1.");
+    require_condition(
+        double_greater_or_equal(artifacts.time_limit, 0.0),
+        "Incumbent p-step seeding requires a nonnegative time limit."
+    );
+
+    struct SeedSegment {
+        int raw_path_id = -1;
+        double actual_start_time = 0.0;
+    };
+
+    std::map<std::vector<int>, int> raw_id_by_edge_sequence;
+    for (const RawPStepPath& raw_path : artifacts.raw_paths) {
+        raw_id_by_edge_sequence.emplace(raw_path.edge_ids, raw_path.id);
+    }
+
+    CompactIncumbentSeedResult result;
+    std::vector<SeedSegment> seed_segments;
+    const std::size_t first_added_raw_path_index = artifacts.raw_paths.size();
+    const std::size_t first_added_compact_pstep_index =
+        artifacts.compact_psteps.size();
+    int next_raw_path_id = static_cast<int>(artifacts.raw_paths.size());
+    int next_compact_pstep_id = static_cast<int>(artifacts.compact_psteps.size());
+
+    for (const RecoveredRouteSolution& route : incumbent.routes) {
+        require_condition(
+            !route.edge_ids.empty(),
+            "An incumbent route cannot be decomposed from an empty edge sequence."
+        );
+
+        std::vector<double> prefix_time(route.edge_ids.size() + 1U, 0.0);
+        for (std::size_t edge_pos = 0; edge_pos < route.edge_ids.size(); ++edge_pos) {
+            const int edge_id = route.edge_ids[edge_pos];
+            require_condition(
+                edge_id >= 0 &&
+                    static_cast<std::size_t>(edge_id) < graph.number_of_edges(),
+                "Incumbent p-step seeding references an invalid graph edge."
+            );
+            prefix_time[edge_pos + 1U] =
+                prefix_time[edge_pos] +
+                graph.edges()[static_cast<std::size_t>(edge_id)].data.time;
+        }
+        require_condition(
+            double_less_or_equal(prefix_time.back(), artifacts.time_limit),
+            "Incumbent route exceeds the p-step time limit."
+        );
+
+        std::size_t end = route.edge_ids.size();
+        std::vector<std::pair<std::size_t, std::size_t>> ranges_reversed;
+        while (end > static_cast<std::size_t>(artifacts.p)) {
+            const std::size_t start =
+                end - static_cast<std::size_t>(artifacts.p);
+            ranges_reversed.push_back({start, end});
+            end = start;
+        }
+        ranges_reversed.push_back({0U, end});
+
+        for (auto range = ranges_reversed.rbegin();
+             range != ranges_reversed.rend();
+             ++range) {
+            const std::vector<int> segment_edges(
+                route.edge_ids.begin() + static_cast<long>(range->first),
+                route.edge_ids.begin() + static_cast<long>(range->second)
+            );
+            ++result.segment_count;
+
+            int raw_path_id = -1;
+            const auto existing = raw_id_by_edge_sequence.find(segment_edges);
+            if (existing != raw_id_by_edge_sequence.end()) {
+                raw_path_id = existing->second;
+                ++result.reused_segment_count;
+            } else {
+                RawPStepPath raw_path = make_raw_path(
+                    next_raw_path_id++,
+                    segment_edges,
+                    graph.edges()
+                );
+                require_condition(
+                    is_valid_raw_length(
+                        raw_path.start_node_id,
+                        raw_path.last_node_id,
+                        raw_path.q,
+                        artifacts.p,
+                        graph.end_node_id()
+                    ),
+                    "The backward incumbent decomposition produced an invalid p-step length."
+                );
+                require_condition(
+                    double_less_or_equal(raw_path.total_time, artifacts.time_limit),
+                    "A restored incumbent p-step exceeds the time limit."
+                );
+
+                raw_path_id = raw_path.id;
+                raw_id_by_edge_sequence.emplace(raw_path.edge_ids, raw_path.id);
+                artifacts.raw_paths.push_back(raw_path);
+                ++result.added_raw_pstep_count;
+
+                const std::vector<double> tau_values = extreme_tau_values(
+                    raw_path,
+                    artifacts.time_limit,
+                    graph.end_node_id()
+                );
+                require_condition(
+                    !tau_values.empty(),
+                    "A restored incumbent p-step has no feasible extreme-tau variant."
+                );
+                for (double tau : tau_values) {
+                    artifacts.compact_psteps.push_back(
+                        make_compact_pstep(
+                            next_compact_pstep_id++,
+                            raw_path,
+                            tau
+                        )
+                    );
+                    ++result.added_compact_column_count;
+                }
+            }
+
+            seed_segments.push_back(
+                SeedSegment{raw_path_id, prefix_time[range->first]}
+            );
+        }
+    }
+
+    require_condition(
+        result.segment_count > 0U,
+        "The recovered incumbent contains no p-step segment."
+    );
+
+    if (result.added_raw_pstep_count > 0U) {
+        const std::vector<RawPStepPath> added_raw_paths(
+            artifacts.raw_paths.begin() +
+                static_cast<long>(first_added_raw_path_index),
+            artifacts.raw_paths.end()
+        );
+        const std::vector<CompactPStep> added_compact_psteps(
+            artifacts.compact_psteps.begin() +
+                static_cast<long>(first_added_compact_pstep_index),
+            artifacts.compact_psteps.end()
+        );
+        validate_raw_psteps(
+            graph,
+            added_raw_paths,
+            artifacts.p,
+            artifacts.time_limit
+        );
+        validate_compact_psteps(
+            added_compact_psteps,
+            artifacts.time_limit,
+            graph.end_node_id()
+        );
+        append_compact_pstep_coefficients(
+            graph,
+            artifacts.compact_psteps,
+            first_added_compact_pstep_index,
+            true,
+            artifacts.coefficients
+        );
+    }
+
+    std::map<int, const RawPStepPath*> raw_path_by_id;
+    for (const RawPStepPath& raw_path : artifacts.raw_paths) {
+        raw_path_by_id.emplace(raw_path.id, &raw_path);
+    }
+    std::map<int, std::vector<std::size_t>> compact_ids_by_raw_path;
+    for (std::size_t pstep_id = 0;
+         pstep_id < artifacts.compact_psteps.size();
+         ++pstep_id) {
+        compact_ids_by_raw_path[
+            artifacts.compact_psteps[pstep_id].raw_path_id
+        ].push_back(pstep_id);
+    }
+
+    result.x_start.assign(artifacts.compact_psteps.size(), 0.0);
+    for (const SeedSegment& segment : seed_segments) {
+        const auto raw_found = raw_path_by_id.find(segment.raw_path_id);
+        require_condition(
+            raw_found != raw_path_by_id.end(),
+            "An incumbent segment references an unknown raw p-step."
+        );
+        const RawPStepPath& raw_path = *raw_found->second;
+
+        const auto variants_found =
+            compact_ids_by_raw_path.find(segment.raw_path_id);
+        require_condition(
+            variants_found != compact_ids_by_raw_path.end() &&
+                !variants_found->second.empty(),
+            "An incumbent raw p-step has no compact variant."
+        );
+
+        const auto add_tau_weight = [&](double tau, double weight) {
+            if (weight <= kTolerance) {
+                return;
+            }
+            for (std::size_t pstep_id : variants_found->second) {
+                if (double_equal(artifacts.compact_psteps[pstep_id].tau, tau)) {
+                    result.x_start[pstep_id] += weight;
+                    return;
+                }
+            }
+            throw std::runtime_error(
+                "An incumbent p-step is missing a required extreme-tau variant."
+            );
+        };
+
+        const double latest_start =
+            std::max(0.0, artifacts.time_limit - raw_path.total_time);
+        if (raw_path.start_node_id == 0) {
+            add_tau_weight(0.0, 1.0);
+        } else if (raw_path.last_node_id == graph.end_node_id()) {
+            add_tau_weight(latest_start, 1.0);
+        } else if (latest_start <= kTolerance) {
+            require_condition(
+                segment.actual_start_time <= kTolerance,
+                "An internal incumbent p-step cannot represent its start time."
+            );
+            add_tau_weight(0.0, 1.0);
+        } else {
+            require_condition(
+                double_greater_or_equal(segment.actual_start_time, 0.0) &&
+                    double_less_or_equal(
+                        segment.actual_start_time,
+                        latest_start
+                    ),
+                "An internal incumbent p-step start time lies outside its tau interval."
+            );
+            const double latest_weight = std::clamp(
+                segment.actual_start_time / latest_start,
+                0.0,
+                1.0
+            );
+            add_tau_weight(0.0, 1.0 - latest_weight);
+            add_tau_weight(latest_start, latest_weight);
+        }
+    }
+
+    const double validation_tolerance = 1e-7;
+    std::vector<double> edge_totals(graph.number_of_edges(), 0.0);
+    std::map<NodeId, double> visit_totals;
+    std::map<NodeStateKey, double> state_totals;
+    std::map<NodeStateKey, double> time_totals;
+    for (std::size_t pstep_id = 0;
+         pstep_id < result.x_start.size();
+         ++pstep_id) {
+        const double value = result.x_start[pstep_id];
+        if (value <= kTolerance) {
+            continue;
+        }
+        for (const auto& entry :
+             artifacts.coefficients.visit_coefficients_by_pstep[pstep_id]) {
+            visit_totals[entry.first] +=
+                static_cast<double>(entry.second) * value;
+        }
+        for (const auto& entry :
+             artifacts.coefficients.state_coefficients_by_pstep[pstep_id]) {
+            state_totals[entry.first] +=
+                static_cast<double>(entry.second) * value;
+        }
+        for (const auto& entry :
+             artifacts.coefficients.time_coefficients_by_pstep[pstep_id]) {
+            time_totals[entry.first] += entry.second * value;
+        }
+        for (int edge_id :
+             artifacts.coefficients.edge_incidence_by_pstep[pstep_id]) {
+            edge_totals[static_cast<std::size_t>(edge_id)] += value;
+        }
+    }
+
+    std::vector<std::uint8_t> active_edges(graph.number_of_edges(), 0U);
+    for (int edge_id : incumbent.active_edge_ids) {
+        require_condition(
+            edge_id >= 0 &&
+                static_cast<std::size_t>(edge_id) < active_edges.size(),
+            "The incumbent support contains an invalid edge id."
+        );
+        active_edges[static_cast<std::size_t>(edge_id)] = 1U;
+    }
+    for (std::size_t edge_id = 0; edge_id < edge_totals.size(); ++edge_id) {
+        const double expected = active_edges[edge_id] != 0U ? 1.0 : 0.0;
+        require_condition(
+            std::fabs(edge_totals[edge_id] - expected) <= validation_tolerance,
+            "The complete incumbent x start violates an edge-linking equation."
+        );
+    }
+    for (NodeId node_id : artifacts.coefficients.physical_nodes) {
+        require_condition(
+            std::fabs(visit_totals[node_id] - 2.0) <= validation_tolerance,
+            "The complete incumbent x start violates a visit equation."
+        );
+    }
+    for (const auto& entry : state_totals) {
+        require_condition(
+            std::fabs(entry.second) <= validation_tolerance,
+            "The complete incumbent x start violates a state-balance equation."
+        );
+    }
+    for (const auto& entry : time_totals) {
+        require_condition(
+            entry.second >= -validation_tolerance,
+            "The complete incumbent x start violates a time-balance inequality."
+        );
+    }
+
+    return result;
+}
+
+void set_compact_master_incumbent_mip_start(
+    CompactMasterProblem& problem,
+    const std::vector<int>& active_edge_ids,
+    const std::vector<double>& x_start
+) {
+    require_condition(problem.model != nullptr, "Cannot set a MIP start on an empty model.");
+    require_condition(
+        x_start.size() == problem.x_vars.size(),
+        "The incumbent x start size does not match the compact column count."
+    );
+
+    std::vector<std::uint8_t> active(problem.theta_vars.size(), 0U);
+    for (int edge_id : active_edge_ids) {
+        require_condition(
+            edge_id >= 0 && static_cast<std::size_t>(edge_id) < active.size(),
+            "Theta MIP start references an invalid edge id."
+        );
+        active[static_cast<std::size_t>(edge_id)] = 1U;
+    }
+    for (std::size_t edge_id = 0; edge_id < problem.theta_vars.size(); ++edge_id) {
+        problem.theta_vars[edge_id].set(
+            GRB_DoubleAttr_Start,
+            active[edge_id] != 0U ? 1.0 : 0.0
+        );
+    }
+    for (std::size_t pstep_id = 0; pstep_id < problem.x_vars.size(); ++pstep_id) {
+        require_condition(
+            x_start[pstep_id] >= -kTolerance,
+            "The incumbent x start contains a negative value."
+        );
+        problem.x_vars[pstep_id].set(
+            GRB_DoubleAttr_Start,
+            std::max(0.0, x_start[pstep_id])
+        );
+    }
+    problem.model->update();
 }
 
 void write_recovered_solution(std::ostream& out, const RecoveredSolution& solution) {

@@ -166,6 +166,17 @@ struct RecoveredSolution {
     std::vector<RecoveredRouteSolution> routes;
 };
 
+// Complete compact-master representation of a recovered incumbent. Missing
+// raw p-steps are restored from final-graph edges with all extreme-tau
+// variants, and x_start is a feasible convex combination of those variants.
+struct CompactIncumbentSeedResult {
+    std::size_t segment_count = 0;
+    std::size_t reused_segment_count = 0;
+    std::size_t added_raw_pstep_count = 0;
+    std::size_t added_compact_column_count = 0;
+    std::vector<double> x_start;
+};
+
 // 시간 제한 아래에서 길이 p 이하의 feasible raw p-step 경로를 모두 나열한다.
 std::vector<RawPStepPath> enumerate_feasible_raw_psteps(
     const MultiDiGraph& graph,
@@ -252,6 +263,21 @@ RecoveredSolution recover_selected_edge_solution(
     const std::vector<int>& active_edge_ids,
     double objective_value,
     double runtime_seconds
+);
+
+// Restores any incumbent p-step excluded by symmetry-43 enumeration and
+// constructs a complete x start without changing the recovered graph edges.
+CompactIncumbentSeedResult augment_compact_psteps_with_incumbent(
+    const MultiDiGraph& graph,
+    const RecoveredSolution& incumbent,
+    CompactPStepArtifacts& artifacts
+);
+
+// Applies the complete x/theta incumbent start to a built compact master.
+void set_compact_master_incumbent_mip_start(
+    CompactMasterProblem& problem,
+    const std::vector<int>& active_edge_ids,
+    const std::vector<double>& x_start
 );
 
 // 복원된 incumbent 해를 읽기 쉬운 텍스트 형식으로 출력한다.

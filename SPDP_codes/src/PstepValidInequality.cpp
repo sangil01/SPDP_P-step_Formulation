@@ -1641,6 +1641,9 @@ VI44KMinResult compute_vi44_k_min(
     const MultiDiGraph& graph,
     const VI44KMinOptions& options
 ) {
+    if (options.precomputed_result != nullptr) {
+        return *options.precomputed_result;
+    }
     if (!options.use_cor && !options.use_subproblem &&
         !options.use_vehicle_assignment) {
         throw std::runtime_error(
@@ -1883,6 +1886,20 @@ DirectTwoIndexResult solve_direct_two_index_ip(
     core_options.name_prefix = "direct_two_index";
     TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
 
+    if (!options.initial_edge_start.empty()) {
+        if (options.initial_edge_start.size() != core.y_vars.size()) {
+            throw std::runtime_error(
+                "The direct two-index MIP start size does not match the edge count."
+            );
+        }
+        for (std::size_t edge_id = 0; edge_id < core.y_vars.size(); ++edge_id) {
+            core.y_vars[edge_id].set(
+                GRB_DoubleAttr_Start,
+                options.initial_edge_start[edge_id]
+            );
+        }
+    }
+
     const std::vector<PstepValidInequalityRow> vi_rows =
         build_pstep_valid_inequality_rows(
             data,
@@ -1943,6 +1960,78 @@ DirectTwoIndexResult solve_direct_two_index_ip(
             std::abs(result.objective_value);
     } else if (result.has_certified_bound) {
         result.gap_percent = 0.0;
+    }
+
+    result.total_duration = 0.0;
+    result.total_original_cost = 0.0;
+    result.edge_values.resize(graph.number_of_edges(), 0.0);
+    for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
+        const double value = core.y_vars[edge_id].get(GRB_DoubleAttr_X);
+        result.edge_values[edge_id] = value;
+        result.total_duration += graph.edges()[edge_id].data.time * value;
+        result.total_original_cost += graph.edges()[edge_id].data.cost * value;
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        if (value > 0.5 && edge.u == 0 &&
+            graph.node(edge.v).kind == NodeSpec::Kind::Pickup) {
+            ++result.vehicle_count;
+        }
+    }
+    return result;
+}
+
+InitialIncumbentSolveResult solve_fixed_k_duration_initial_incumbent(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const InitialIncumbentSolveOptions& options
+) {
+    if (options.vehicle_count <= 0) {
+        throw std::runtime_error(
+            "Initial-incumbent generation requires a positive fixed vehicle count."
+        );
+    }
+    if (!std::isfinite(options.solver_time_limit) ||
+        options.solver_time_limit < 0.0) {
+        throw std::runtime_error(
+            "Initial-incumbent time limit must be finite and nonnegative."
+        );
+    }
+
+    TwoIndexCoreOptions core_options;
+    core_options.objective = TwoIndexCoreObjective::Duration;
+    core_options.binary_y = true;
+    core_options.add_time_constraints = true;
+    core_options.solver_time_limit = options.solver_time_limit;
+    core_options.gurobi_threads = options.gurobi_threads;
+    core_options.output_enabled = true;
+    core_options.gurobi_log_path = options.gurobi_log_path;
+    core_options.name_prefix = "initial_incumbent";
+    TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
+
+    GRBLinExpr actual_departures = 0.0;
+    for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        if (edge.u == 0 &&
+            graph.node(edge.v).kind == NodeSpec::Kind::Pickup) {
+            actual_departures += core.y_vars[edge_id];
+        }
+    }
+    core.model->addConstr(
+        actual_departures == static_cast<double>(options.vehicle_count),
+        "initial_incumbent_fixed_vehicle_count"
+    );
+    core.model->set(GRB_IntParam_SolutionLimit, 1);
+    core.model->update();
+    core.model->optimize();
+
+    InitialIncumbentSolveResult result;
+    result.status = core.model->get(GRB_IntAttr_Status);
+    result.hit_time_limit = result.status == GRB_TIME_LIMIT;
+    result.hit_solution_limit = result.status == GRB_SOLUTION_LIMIT;
+    result.infeasible = result.status == GRB_INFEASIBLE;
+    result.runtime_seconds = core.model->get(GRB_DoubleAttr_Runtime);
+    result.has_feasible_solution = core.model->get(GRB_IntAttr_SolCount) > 0;
+    if (!result.has_feasible_solution) {
+        return result;
     }
 
     result.total_duration = 0.0;

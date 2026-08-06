@@ -6,7 +6,7 @@
       {
         "id": "5b4569e2f57c5e3d",
         "type": "tabs",
-        "dimension": 60.49631120053655,
+        "dimension": 49.36284372904091,
         "children": [
           {
             "id": "98eb82926eaeef36",
@@ -28,12 +28,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "9_1. Valid inequalities for tightening LP bound.md",
+                "file": "3. P-step Formulation for SPDP-flexible.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "9_1. Valid inequalities for tightening LP bound"
+              "title": "3. P-step Formulation for SPDP-flexible"
             }
           }
         ],
@@ -42,8 +42,22 @@
       {
         "id": "b41ba6dec264e003",
         "type": "tabs",
-        "dimension": 39.50368879946345,
+        "dimension": 50.63715627095908,
         "children": [
+          {
+            "id": "58edb30f168ff876",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "2. Skip Pick-up and Delivery Problem (SPDP).md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "2. Skip Pick-up and Delivery Problem (SPDP)"
+            }
+          },
           {
             "id": "de6f0448290109fd",
             "type": "leaf",
@@ -72,8 +86,7 @@
               "title": "9_4. Dual-feasible functions for strengthening the route lower bound"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "vertical"
@@ -237,17 +250,17 @@
       "bases:Create new base": false
     }
   },
-  "active": "29227eca31db7148",
+  "active": "58edb30f168ff876",
   "lastOpenFiles": [
-    "9_2 Exact minimum number of vehicles.md",
+    "3. P-step Formulation for SPDP-flexible.md",
     "9_1. Valid inequalities for tightening LP bound.md",
+    "9_2 Exact minimum number of vehicles.md",
     "9_3. 2-index formulation on multigraph.md",
     "9_4. Dual-feasible functions for strengthening the route lower bound.md",
     "8. Branching rule on multiple edges.md",
     "2. Skip Pick-up and Delivery Problem (SPDP).md",
     "5. Column Generation for root node.md",
     "9. Branching rule on multiple edges.md",
-    "3. P-step Formulation for SPDP-flexible.md",
     "8. Valid inequalities for tightening LP bound.md",
     "11. Arc elimination at Multi Graph.md",
     "10. Route enumeration using LP bound.md",

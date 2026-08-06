@@ -13,14 +13,16 @@ fi
 # ============================================
 # INPUT PARAMETERS
 # ============================================
-P=0 # 0 uses the direct binary two-index IP when SOLVER_MODE=enumeration
+P=2 # 0 uses the direct binary two-index IP when SOLVER_MODE=enumeration
 SOLVER_MODE=enumeration # Options: enumeration, branch-and-price
 ENUMERATION_SOS1_MODE=default # Options: default, sos1-auto, sos1-native (used only with SOLVER_MODE=enumeration)
-ENUMERATION_OBJECTIVE=duration # Options: original-cost, duration (used only with SOLVER_MODE=enumeration)
+ENUMERATION_OBJECTIVE=original-cost # Options: original-cost, duration (used only with SOLVER_MODE=enumeration)
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
 SOLVER_TIME_LIMIT=300 # seconds
+INITIAL_INCUMBENT_ENABLE=1
+INITIAL_INCUMBENT_TIME_LIMIT=300 # seconds; 0 means no time limit
 GUROBI_THREADS=0
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
@@ -44,10 +46,10 @@ ADD_VI_36_COMBINED=0
 VI_36_SUBSET_MAX_SIZE=0 # 0이면 비활성화, 1이면 기존 singleton Eq.(36)과 동일, 7이면 현재 instance들에 대해 전체 set까지 포함
 ADD_VI_Request_BLOCK_SEC=0
 VI_Request_BLOCK_SEC_MAX_SIZE=0 # 0이면 비활성화, 활성화할 때는 2 이상
-ADD_VI_44=0
-VI_44_K_MIN_USE_COR=0
-VI_44_K_MIN_USE_SUBPROBLEM=0
-VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT=0
+ADD_VI_44=1
+VI_44_K_MIN_USE_COR=1
+VI_44_K_MIN_USE_SUBPROBLEM=1
+VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT=1
 VI_44_SUBPROBLEM_TYPE=ip # Options: lp, ip
 VI_44_SUBPROBLEM_TIME_LIMIT=300 # seconds; 0 means no time limit
 VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS=1 # 1 adds state-time B variables and route-duration constraints
@@ -105,7 +107,7 @@ DATA_LIST=(
     "RecDep_day_C4.dat"'''
     #=================================#
     #=========Request 50 이하=========#
-    '''"RecDep_day_A12.dat"
+    "RecDep_day_A12.dat"
     "RecDep_day_A13.dat"
     "RecDep_day_A14.dat"
     "RecDep_day_A15.dat"
@@ -128,14 +130,14 @@ DATA_LIST=(
     "RecDep_day_B14.dat"
     "RecDep_day_C5.dat"
     "RecDep_day_C6.dat"
-    "RecDep_day_C7.dat"'''
+    "RecDep_day_C7.dat"
     "RecDep_day_C8.dat"
-    #"RecDep_day_C9.dat"
-    #"RecDep_day_C10.dat"
-    #"RecDep_day_C11.dat"
+    "RecDep_day_C9.dat"
+    "RecDep_day_C10.dat"
+    "RecDep_day_C11.dat"
     #"RecDep_day_C12.dat"
-    #"RecDep_day_D1.dat"
-    #"RecDep_day_D2.dat"
+    "RecDep_day_D1.dat"
+    "RecDep_day_D2.dat"
     #=================================#
 )
 # Put one data file name per line in DATA_LIST.
@@ -147,6 +149,9 @@ if [[ "$SOLVER_MODE" == "enumeration" ]]; then
     ENUMERATION_SOS1_TAG="_${ENUMERATION_SOS1_MODE}_${ENUMERATION_OBJECTIVE}"
 fi
 RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}${ENUMERATION_SOS1_TAG}${RUN_TAG_SUFFIX}"
+if [[ "$INITIAL_INCUMBENT_ENABLE" == "1" ]]; then
+    RUN_TAG+="_initial-incumbent-${INITIAL_INCUMBENT_TIME_LIMIT}s"
+fi
 RUNNER_LOG="$SCRIPT_DIR/${RUN_TAG}.log"
 SUMMARY_XLSX="$SCRIPT_DIR/${RUN_TAG}.xlsx"
 
@@ -197,6 +202,8 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "bnp-theta-integrality-tolerance: $BNP_THETA_INTEGRALITY_TOLERANCE"
         echo "bnp-gap-tolerance: $BNP_GAP_TOLERANCE"
         echo "bnp-initial-upper-bound: $BNP_INITIAL_UPPER_BOUND"
+        echo "initial-incumbent-enable: $INITIAL_INCUMBENT_ENABLE"
+        echo "initial-incumbent-time-limit: $INITIAL_INCUMBENT_TIME_LIMIT"
         echo "vi-formulation: $VI_FORMULATION"
         echo "cg-max-iterations-per-phase: $CG_MAX_ITERATIONS_PER_PHASE"
         echo "exact-pricing-max-columns-per-start: $EXACT_PRICING_MAX_COLUMNS_PER_START"
@@ -264,6 +271,8 @@ for data_name in "${DATA_LIST[@]}"; do
         --bnp-gap-tolerance "$BNP_GAP_TOLERANCE" \
         --bnp-initial-upper-bound "$BNP_INITIAL_UPPER_BOUND" \
         --solver-time-limit "$SOLVER_TIME_LIMIT" \
+        --initial-incumbent-enable "$INITIAL_INCUMBENT_ENABLE" \
+        --initial-incumbent-time-limit "$INITIAL_INCUMBENT_TIME_LIMIT" \
         --gurobi-threads "$GUROBI_THREADS" \
         --vi-formulation "$VI_FORMULATION" \
         --dump-psteps "$DUMP_PSTEPS" \

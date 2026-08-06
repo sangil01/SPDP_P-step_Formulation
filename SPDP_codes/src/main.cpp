@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <ostream>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -25,6 +26,8 @@ struct CliOptions {
     std::string instance = "A0.dat";
     int p = 2;
     double solver_time_limit = 3600.0;
+    int initial_incumbent_enable = 0;
+    double initial_incumbent_time_limit = 60.0;
     int gurobi_threads = -1;
     std::string solver_mode = "enumeration";
     std::string enumeration_sos1_mode = "default";
@@ -99,6 +102,8 @@ struct CliOptions {
 void print_usage(const char* executable) {
     std::cerr << "Usage: " << executable
               << " [instance] [--p N] [--solver-time-limit T] [--gurobi-threads N]"
+              << " [--initial-incumbent-enable 0|1]"
+              << " [--initial-incumbent-time-limit T]"
               << " [--solver-mode enumeration|branch-and-price]"
               << " [--enumeration-sos1-mode default|sos1-auto|sos1-native]"
               << " [--enumeration-objective original-cost|duration]"
@@ -385,7 +390,10 @@ spdp::VI44SubproblemType to_vi_44_subproblem_type(const std::string& value) {
     throw std::runtime_error("Unsupported VI-44 subproblem type: " + value);
 }
 
-spdp::VI44KMinOptions make_vi_44_k_min_options(const CliOptions& args) {
+spdp::VI44KMinOptions make_vi_44_k_min_options(
+    const CliOptions& args,
+    const spdp::VI44KMinResult* precomputed_result = nullptr
+) {
     spdp::VI44KMinOptions options;
     options.use_cor = args.vi_44_k_min_use_cor == 1;
     options.use_subproblem = args.vi_44_k_min_use_subproblem == 1;
@@ -402,6 +410,7 @@ spdp::VI44KMinOptions make_vi_44_k_min_options(const CliOptions& args) {
         args.vi_44_vehicle_assignment_add_container_bound == 1;
     options.vehicle_assignment.time_limit =
         args.vi_44_vehicle_assignment_time_limit;
+    options.precomputed_result = precomputed_result;
     return options;
 }
 
@@ -609,6 +618,30 @@ CliOptions parse_cli(int argc, char** argv) {
                 throw std::runtime_error("--solver-time-limit requires a value.");
             }
             options.solver_time_limit = parse_double(argv[++idx], "--solver-time-limit");
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-enable") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--initial-incumbent-enable requires a value.");
+            }
+            options.initial_incumbent_enable =
+                parse_binary_flag(argv[++idx], "--initial-incumbent-enable");
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-time-limit") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--initial-incumbent-time-limit requires a value.");
+            }
+            options.initial_incumbent_time_limit =
+                parse_double(argv[++idx], "--initial-incumbent-time-limit");
+            if (!std::isfinite(options.initial_incumbent_time_limit) ||
+                options.initial_incumbent_time_limit < 0.0) {
+                throw std::runtime_error(
+                    "--initial-incumbent-time-limit must be finite and nonnegative."
+                );
+            }
             continue;
         }
 
@@ -1279,12 +1312,12 @@ CliOptions parse_cli(int argc, char** argv) {
         }
     }
 
-    if (options.add_vi_44 == 1 &&
+    if ((options.add_vi_44 == 1 || options.initial_incumbent_enable == 1) &&
         options.vi_44_k_min_use_cor == 0 &&
         options.vi_44_k_min_use_subproblem == 0 &&
         options.vi_44_k_min_use_vehicle_assignment == 0) {
         throw std::runtime_error(
-            "VI-44 is enabled, but all VI-44 k_min methods are disabled."
+            "VI-44 or initial-incumbent generation is enabled, but all k_min methods are disabled."
         );
     }
     if (options.add_vi_44 == 1 &&
@@ -1359,6 +1392,14 @@ std::filesystem::path build_gurobi_log_path(const std::string& instance, int p) 
     return project_root_path() / "SPDP_output" / output_name;
 }
 
+std::filesystem::path build_initial_incumbent_gurobi_log_path(
+    const std::string& instance
+) {
+    const std::filesystem::path instance_path(instance);
+    return project_root_path() / "SPDP_output" /
+        (instance_path.stem().string() + "_initial_incumbent_gurobi.log");
+}
+
 void print_instance_summary(
     std::ostream& out,
     const CliOptions& args,
@@ -1375,6 +1416,10 @@ void print_instance_summary(
     out << "[main] Node CG phase-2 pricing mode: "
         << args.node_cg_phase_two_pricing_mode << '\n';
     out << "[main] Solver time limit: " << format_double(args.solver_time_limit) << '\n';
+    out << "[main] initial_incumbent_enable: "
+        << args.initial_incumbent_enable << '\n';
+    out << "[main] initial_incumbent_time_limit: "
+        << format_double(args.initial_incumbent_time_limit) << '\n';
     out << "[main] Gurobi threads: " << format_gurobi_threads(args.gurobi_threads) << '\n';
     out << "[main] VI formulation: " << args.vi_formulation << '\n';
     out << "[main] Locations: " << data.locations << '\n';
@@ -1716,6 +1761,117 @@ int main(int argc, char** argv) {
         }
         gurobi_log_file.close();
 
+        std::optional<spdp::VI44KMinResult> precomputed_k_min_result;
+        std::optional<spdp::RecoveredSolution> initial_incumbent_solution;
+        std::vector<double> initial_edge_start;
+        double initial_incumbent_duration = -1.0;
+        double initial_incumbent_original_cost = -1.0;
+
+        if (args.solve_model == 1 && args.initial_incumbent_enable == 1) {
+            spdp::VI44KMinOptions k_min_options = make_vi_44_k_min_options(args);
+            precomputed_k_min_result =
+                spdp::compute_vi44_k_min(data, graph, k_min_options);
+            const int selected_k_min = precomputed_k_min_result->selected_k_min;
+            if (selected_k_min <= 0) {
+                throw std::runtime_error(
+                    "Initial-incumbent generation obtained a nonpositive k_min."
+                );
+            }
+
+            output_file << "[initial-incumbent] attempted=1\n";
+            output_file << "[initial-incumbent] k_min=" << selected_k_min << '\n';
+            const std::filesystem::path initial_gurobi_log_path =
+                build_initial_incumbent_gurobi_log_path(args.instance);
+            std::ofstream initial_log_file(initial_gurobi_log_path, std::ios::trunc);
+            if (!initial_log_file) {
+                throw std::runtime_error(
+                    "Failed to initialize initial-incumbent Gurobi log file: " +
+                    initial_gurobi_log_path.string()
+                );
+            }
+            initial_log_file.close();
+
+            spdp::InitialIncumbentSolveOptions initial_options;
+            initial_options.vehicle_count = selected_k_min;
+            initial_options.solver_time_limit = args.initial_incumbent_time_limit;
+            initial_options.gurobi_threads = args.gurobi_threads;
+            initial_options.gurobi_log_path = initial_gurobi_log_path.string();
+            const spdp::InitialIncumbentSolveResult initial_result =
+                spdp::solve_fixed_k_duration_initial_incumbent(
+                    data,
+                    graph,
+                    initial_options
+                );
+
+            output_file << "[initial-incumbent] gurobi_status="
+                << initial_result.status << '\n';
+            output_file << "[initial-incumbent] hit_time_limit="
+                << (initial_result.hit_time_limit ? 1 : 0) << '\n';
+            output_file << "[initial-incumbent] hit_solution_limit="
+                << (initial_result.hit_solution_limit ? 1 : 0) << '\n';
+            output_file << "[initial-incumbent] runtime_seconds="
+                << format_double(initial_result.runtime_seconds) << '\n';
+            output_file << "[initial-incumbent] solution_found="
+                << (initial_result.has_feasible_solution ? 1 : 0) << '\n';
+
+            if (initial_result.has_feasible_solution) {
+                std::vector<int> active_edge_ids;
+                for (std::size_t edge_id = 0;
+                     edge_id < initial_result.edge_values.size();
+                     ++edge_id) {
+                    if (initial_result.edge_values[edge_id] > 0.5) {
+                        active_edge_ids.push_back(static_cast<int>(edge_id));
+                    }
+                }
+                spdp::RecoveredSolution recovered =
+                    spdp::recover_selected_edge_solution(
+                        data,
+                        graph,
+                        active_edge_ids,
+                        initial_result.total_duration,
+                        initial_result.runtime_seconds
+                    );
+                if (recovered.routes.size() !=
+                    static_cast<std::size_t>(selected_k_min)) {
+                    throw std::runtime_error(
+                        "Recovered initial incumbent route count differs from k_min."
+                    );
+                }
+
+                initial_incumbent_duration = 0.0;
+                initial_incumbent_original_cost = 0.0;
+                for (const spdp::RecoveredRouteSolution& route : recovered.routes) {
+                    initial_incumbent_duration += route.total_time;
+                    initial_incumbent_original_cost += route.total_cost;
+                }
+                recovered.objective_value = initial_incumbent_original_cost;
+                initial_edge_start.assign(graph.number_of_edges(), 0.0);
+                for (int edge_id : recovered.active_edge_ids) {
+                    initial_edge_start[static_cast<std::size_t>(edge_id)] = 1.0;
+                }
+                initial_incumbent_solution = std::move(recovered);
+
+                output_file << "[initial-incumbent] route_validation=passed\n";
+                output_file << "[initial-incumbent] route_count="
+                    << initial_incumbent_solution->routes.size() << '\n';
+                output_file << "[initial-incumbent] total_duration="
+                    << format_double(initial_incumbent_duration) << '\n';
+                output_file << "[initial-incumbent] original_cost="
+                    << format_double(initial_incumbent_original_cost) << '\n';
+                output_file << "[initial-incumbent] active_edge_count="
+                    << initial_incumbent_solution->active_edge_ids.size() << '\n';
+            } else {
+                output_file << "[initial-incumbent] status=no-solution-continue\n";
+            }
+        } else {
+            output_file << "[initial-incumbent] attempted=0\n";
+        }
+
+        const spdp::VI44KMinResult* cached_k_min =
+            precomputed_k_min_result.has_value()
+                ? &precomputed_k_min_result.value()
+                : nullptr;
+
         if (args.solver_mode == "branch-and-price") {
             if (args.vi_formulation != "theta") {
                 throw std::runtime_error(
@@ -1766,7 +1922,7 @@ int main(int argc, char** argv) {
                     static_cast<std::size_t>(args.vi_request_block_sec_max_size);
                 cg_options.add_root_vi_44 = args.add_vi_44 == 1;
                 cg_options.vi_44_k_min_options =
-                    make_vi_44_k_min_options(args);
+                    make_vi_44_k_min_options(args, cached_k_min);
                 cg_options.gurobi_log_path = gurobi_log_path.string();
                 if (args.node_cg_phase_one_mode == "exact-cg") {
                     cg_options.phase_one_mode = spdp::NodeCGPhaseOneMode::ExactCG;
@@ -1831,11 +1987,63 @@ int main(int argc, char** argv) {
                     static_cast<std::size_t>(args.full_enumeration_rc_update_threads);
                 cg_options.full_enumeration_rc_detail_log =
                     args.full_enumeration_rc_detail_log == 1;
+                std::vector<spdp::CGColumn> initial_cg_columns;
+                if (initial_incumbent_solution.has_value()) {
+                    initial_cg_columns = spdp::build_initial_incumbent_cg_columns(
+                        graph,
+                        args.p,
+                        data.time_limit,
+                        initial_incumbent_solution.value()
+                    );
+                }
+                output_file << "[initial-incumbent] bnp_initial_column_count="
+                    << initial_cg_columns.size() << '\n';
                 if (args.bnp_tree_mode == "root-only") {
+                    spdp::NodeCGInputState root_input;
+                    root_input.initial_columns = initial_cg_columns;
+                    root_input.add_vi_35 = cg_options.add_root_vi_35;
+                    root_input.add_vi_36_combined =
+                        cg_options.add_root_vi_36_combined;
+                    root_input.vi_36_subset_max_size =
+                        cg_options.root_vi_36_subset_max_size;
+                    root_input.add_vi_request_block_sec =
+                        cg_options.add_root_vi_request_block_sec;
+                    root_input.vi_request_block_sec_max_size =
+                        cg_options.root_vi_request_block_sec_max_size;
+                    root_input.add_vi_44 = cg_options.add_root_vi_44;
                     const spdp::NodeCGResult cg_result =
-                        spdp::solve_node_column_generation(data, graph, cg_options, &output_file);
+                        spdp::solve_node_column_generation(
+                            data,
+                            graph,
+                            cg_options,
+                            root_input,
+                            &output_file
+                        );
                     spdp::write_node_cg_summary(output_file, cg_result);
+                    if (initial_incumbent_solution.has_value()) {
+                        const double root_lb = cg_result.phase_two_reached
+                            ? cg_result.phase_two_objective
+                            : cg_result.phase_one_objective;
+                        const double gap_percent =
+                            initial_incumbent_original_cost > 1e-9
+                                ? 100.0 * std::max(
+                                      0.0,
+                                      initial_incumbent_original_cost - root_lb
+                                  ) / initial_incumbent_original_cost
+                                : 0.0;
+                        output_file << "[node-cg-summary] initial_incumbent_value="
+                            << format_double(initial_incumbent_original_cost) << '\n';
+                        output_file << "[node-cg-summary] initial_incumbent_gap_percent="
+                            << format_double(gap_percent) << '\n';
+                    }
                     spdp::write_node_cg_solution(solution_file, cg_result, graph);
+                    if (initial_incumbent_solution.has_value()) {
+                        solution_file << "\nInitial incumbent routes:\n";
+                        spdp::write_recovered_solution(
+                            solution_file,
+                            initial_incumbent_solution.value()
+                        );
+                    }
                 } else {
                     spdp::BranchAndPriceOptions bnp_options;
                     bnp_options.node_cg_options = cg_options;
@@ -1854,6 +2062,12 @@ int main(int argc, char** argv) {
                     bnp_options.instance_name =
                         std::filesystem::path(args.instance).stem().string();
                     bnp_options.initial_upper_bound = args.bnp_initial_upper_bound;
+                    bnp_options.initial_incumbent_columns =
+                        std::move(initial_cg_columns);
+                    bnp_options.initial_incumbent_solution =
+                        initial_incumbent_solution;
+                    bnp_options.initial_incumbent_value =
+                        initial_incumbent_original_cost;
                     const spdp::BranchAndPriceResult bnp_result =
                         spdp::solve_branch_and_price(data, graph, bnp_options, &output_file);
                     spdp::write_branch_and_price_summary(output_file, bnp_result);
@@ -1887,7 +2101,8 @@ int main(int argc, char** argv) {
                 vi_options.vi_request_block_sec_max_size =
                     static_cast<std::size_t>(args.vi_request_block_sec_max_size);
                 vi_options.add_vi_44 = args.add_vi_44 == 1;
-                vi_options.vi_44_k_min_options = make_vi_44_k_min_options(args);
+                vi_options.vi_44_k_min_options =
+                    make_vi_44_k_min_options(args, cached_k_min);
                 vi_options.log_stream = &output_file;
 
                 spdp::DirectTwoIndexOptions direct_options;
@@ -1898,7 +2113,10 @@ int main(int argc, char** argv) {
                 direct_options.solver_time_limit = args.solver_time_limit;
                 direct_options.gurobi_threads = args.gurobi_threads;
                 direct_options.gurobi_log_path = gurobi_log_path.string();
+                direct_options.initial_edge_start = initial_edge_start;
                 direct_options.valid_inequalities = std::move(vi_options);
+                output_file << "[initial-incumbent] direct_y_mip_start_applied="
+                    << (!direct_options.initial_edge_start.empty() ? 1 : 0) << '\n';
 
                 const spdp::DirectTwoIndexResult direct_result =
                     spdp::solve_direct_two_index_ip(
@@ -1929,12 +2147,45 @@ int main(int argc, char** argv) {
                 args.prune_delivery_symmetry_43 == 1,
             };
             const auto compact_pstep_build_start = std::chrono::steady_clock::now();
-            const spdp::CompactPStepArtifacts artifacts =
+            spdp::CompactPStepArtifacts artifacts =
                 spdp::build_compact_pstep_artifacts(graph, options, &output_file);
+            std::optional<spdp::CompactIncumbentSeedResult> compact_seed;
+            if (initial_incumbent_solution.has_value()) {
+                compact_seed = spdp::augment_compact_psteps_with_incumbent(
+                    graph,
+                    initial_incumbent_solution.value(),
+                    artifacts
+                );
+            }
             const auto compact_pstep_build_end = std::chrono::steady_clock::now();
             const double compact_pstep_build_seconds =
                 std::chrono::duration<double>(compact_pstep_build_end - compact_pstep_build_start)
                     .count();
+
+            output_file << "[initial-incumbent] enumeration_seed_restoration_used="
+                << (compact_seed.has_value() &&
+                            compact_seed->added_raw_pstep_count > 0U
+                        ? 1
+                        : 0)
+                << '\n';
+            output_file << "[initial-incumbent] enumeration_seed_segments="
+                << (compact_seed.has_value() ? compact_seed->segment_count : 0U)
+                << '\n';
+            output_file << "[initial-incumbent] enumeration_seed_reused_segments="
+                << (compact_seed.has_value()
+                        ? compact_seed->reused_segment_count
+                        : 0U)
+                << '\n';
+            output_file << "[initial-incumbent] enumeration_seed_raw_psteps_added="
+                << (compact_seed.has_value()
+                        ? compact_seed->added_raw_pstep_count
+                        : 0U)
+                << '\n';
+            output_file << "[initial-incumbent] enumeration_seed_compact_columns_added="
+                << (compact_seed.has_value()
+                        ? compact_seed->added_compact_column_count
+                        : 0U)
+                << '\n';
 
             print_pstep_summary(output_file, artifacts);
             output_file << "[main] Compact p-step set build time (sec): "
@@ -1949,7 +2200,7 @@ int main(int argc, char** argv) {
                 args.add_vi_request_block_sec == 1,
                 static_cast<std::size_t>(args.vi_request_block_sec_max_size),
                 args.add_vi_44 == 1,
-                make_vi_44_k_min_options(args),
+                make_vi_44_k_min_options(args, cached_k_min),
                 to_vi_formulation(args.vi_formulation),
                 to_enumeration_sos1_mode(args.enumeration_sos1_mode),
                 to_compact_master_objective(args.enumeration_objective),
@@ -1961,6 +2212,16 @@ int main(int argc, char** argv) {
                 artifacts,
                 master_build_options
             );
+            if (initial_incumbent_solution.has_value() && compact_seed.has_value()) {
+                spdp::set_compact_master_incumbent_mip_start(
+                    problem,
+                    initial_incumbent_solution->active_edge_ids,
+                    compact_seed->x_start
+                );
+                output_file << "[initial-incumbent] compact_complete_mip_start_applied=1\n";
+            } else {
+                output_file << "[initial-incumbent] compact_complete_mip_start_applied=0\n";
+            }
             if (args.gurobi_threads >= 0) {
                 problem.model->set(GRB_IntParam_Threads, args.gurobi_threads);
             }

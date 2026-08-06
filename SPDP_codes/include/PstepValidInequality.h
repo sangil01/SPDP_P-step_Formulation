@@ -12,6 +12,8 @@
 
 namespace spdp {
 
+struct VI44KMinResult;
+
 enum class PstepValidInequalitySense {
     GreaterEqual,
     LessEqual,
@@ -40,6 +42,9 @@ struct VI44KMinOptions {
     bool use_vehicle_assignment = false;
     VI44SubproblemOptions subproblem;
     VI44VehicleAssignmentOptions vehicle_assignment;
+    // Non-owning cache used by one solver run. When present, VI rows reuse the
+    // k_min computation already performed for initial-incumbent generation.
+    const VI44KMinResult* precomputed_result = nullptr;
 };
 
 struct VI44VehicleAssignmentVehicleResult {
@@ -107,6 +112,7 @@ struct DirectTwoIndexOptions {
     double solver_time_limit = 0.0;  // 0 means no time limit.
     int gurobi_threads = -1;         // Negative means the Gurobi default.
     std::string gurobi_log_path;
+    std::vector<double> initial_edge_start;
     PstepValidInequalityOptions valid_inequalities;
 };
 
@@ -126,6 +132,26 @@ struct DirectTwoIndexResult {
     int variable_count = 0;
     int constraint_count = 0;
     int valid_inequality_count = 0;
+    std::vector<double> edge_values;
+};
+
+struct InitialIncumbentSolveOptions {
+    int vehicle_count = 0;
+    double solver_time_limit = 0.0;  // 0 means no time limit.
+    int gurobi_threads = -1;
+    std::string gurobi_log_path;
+};
+
+struct InitialIncumbentSolveResult {
+    int status = 0;
+    bool hit_time_limit = false;
+    bool hit_solution_limit = false;
+    bool infeasible = false;
+    bool has_feasible_solution = false;
+    double runtime_seconds = 0.0;
+    double total_duration = -1.0;
+    double total_original_cost = -1.0;
+    int vehicle_count = 0;
     std::vector<double> edge_values;
 };
 
@@ -150,6 +176,15 @@ DirectTwoIndexResult solve_direct_two_index_ip(
     const SPDPData& data,
     const MultiDiGraph& graph,
     const DirectTwoIndexOptions& options
+);
+
+// Finds the first feasible duration-model solution using exactly k vehicles.
+// Fixed-K and SolutionLimit are intentionally internal to this preprocessing
+// routine rather than exposed as general enumeration CLI controls.
+InitialIncumbentSolveResult solve_fixed_k_duration_initial_incumbent(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const InitialIncumbentSolveOptions& options
 );
 
 }  // namespace spdp
