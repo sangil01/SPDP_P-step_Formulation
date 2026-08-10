@@ -106,7 +106,7 @@ void print_usage(const char* executable) {
               << " [--initial-incumbent-time-limit T]"
               << " [--solver-mode enumeration|branch-and-price]"
               << " [--enumeration-sos1-mode default|sos1-auto|sos1-native]"
-              << " [--enumeration-objective original-cost|duration]"
+              << " [--enumeration-objective original-cost|travel-cost-only|duration|duration-plus-fixed]"
               << " [--bnp-tree-mode root-only|full-tree]"
               << " [--node-cg-phase1-mode exact-cg|heuristic-cg|heuristic-cg-3-step]"
               << " [--node-cg-phase2-pricing-mode exact-pricing|heuristic-pricing-then-exact|full-enumeration]"
@@ -239,12 +239,13 @@ std::string parse_enumeration_sos1_mode(const std::string& value) {
 }
 
 std::string parse_enumeration_objective(const std::string& value) {
-    if (value == "original-cost" || value == "duration") {
+    if (value == "original-cost" || value == "travel-cost-only" ||
+        value == "duration" || value == "duration-plus-fixed") {
         return value;
     }
     throw std::runtime_error(
         "Invalid value for --enumeration-objective: " + value +
-        " (expected original-cost or duration)"
+        " (expected original-cost, travel-cost-only, duration, or duration-plus-fixed)"
     );
 }
 
@@ -433,8 +434,14 @@ spdp::CompactMasterObjective to_compact_master_objective(
     if (value == "original-cost") {
         return spdp::CompactMasterObjective::OriginalCost;
     }
+    if (value == "travel-cost-only") {
+        return spdp::CompactMasterObjective::TravelCost;
+    }
     if (value == "duration") {
         return spdp::CompactMasterObjective::Duration;
+    }
+    if (value == "duration-plus-fixed") {
+        return spdp::CompactMasterObjective::DurationPlusFixed;
     }
     throw std::runtime_error("Unsupported enumeration objective: " + value);
 }
@@ -445,8 +452,14 @@ spdp::DirectTwoIndexObjective to_direct_two_index_objective(
     if (value == "original-cost") {
         return spdp::DirectTwoIndexObjective::OriginalCost;
     }
+    if (value == "travel-cost-only") {
+        return spdp::DirectTwoIndexObjective::TravelCost;
+    }
     if (value == "duration") {
         return spdp::DirectTwoIndexObjective::Duration;
+    }
+    if (value == "duration-plus-fixed") {
+        return spdp::DirectTwoIndexObjective::DurationPlusFixed;
     }
     throw std::runtime_error("Unsupported direct two-index objective: " + value);
 }
@@ -1663,6 +1676,10 @@ void print_direct_two_index_summary(
     }
     out << "[main] Direct two-index total duration: "
         << format_double(result.total_duration) << '\n';
+    out << "[main] Direct two-index total duration plus fixed cost: "
+        << format_double(result.total_duration_plus_fixed) << '\n';
+    out << "[main] Direct two-index total travel cost only: "
+        << format_double(result.total_travel_cost) << '\n';
     out << "[main] Direct two-index total original cost: "
         << format_double(result.total_original_cost) << '\n';
     out << "[main] Direct two-index vehicle count: "

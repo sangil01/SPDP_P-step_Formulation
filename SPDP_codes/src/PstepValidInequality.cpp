@@ -544,7 +544,9 @@ struct AuxiliaryDurationSubproblemResult {
 
 enum class TwoIndexCoreObjective {
     OriginalCost,
+    TravelCost,
     Duration,
+    DurationPlusFixed,
 };
 
 struct TwoIndexCoreOptions {
@@ -563,6 +565,35 @@ struct TwoIndexCoreModel {
     std::unique_ptr<GRBModel> model;
     std::vector<GRBVar> y_vars;
 };
+
+double two_index_objective_coefficient(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const EdgeRecord& edge,
+    TwoIndexCoreObjective objective
+) {
+    switch (objective) {
+        case TwoIndexCoreObjective::OriginalCost:
+            return edge.data.cost;
+        case TwoIndexCoreObjective::TravelCost: {
+            const bool is_vehicle_departure =
+                edge.u == 0 &&
+                graph.node(edge.v).kind == NodeSpec::Kind::Pickup;
+            return edge.data.cost -
+                (is_vehicle_departure ? data.fixed_vehicle_cost : 0.0);
+        }
+        case TwoIndexCoreObjective::Duration:
+            return edge.data.time;
+        case TwoIndexCoreObjective::DurationPlusFixed: {
+            const bool is_vehicle_departure =
+                edge.u == 0 &&
+                graph.node(edge.v).kind == NodeSpec::Kind::Pickup;
+            return edge.data.time +
+                (is_vehicle_departure ? data.fixed_vehicle_cost : 0.0);
+        }
+    }
+    throw std::runtime_error("Unsupported two-index objective.");
+}
 
 void validate_two_index_inputs(
     const SPDPData& data,
@@ -667,10 +698,12 @@ TwoIndexCoreModel build_two_index_model_core(
     for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
         const EdgeRecord& edge = graph.edges()[edge_id];
         const bool is_dummy = edge.u == start_node_id && edge.v == end_node_id;
-        const double objective_coefficient =
-            options.objective == TwoIndexCoreObjective::Duration
-                ? edge.data.time
-                : edge.data.cost;
+        const double objective_coefficient = two_index_objective_coefficient(
+            data,
+            graph,
+            edge,
+            options.objective
+        );
         core.y_vars.push_back(core.model->addVar(
             0.0,
             is_dummy ? 0.0 : 1.0,
@@ -1873,10 +1906,20 @@ DirectTwoIndexResult solve_direct_two_index_ip(
     const DirectTwoIndexOptions& options
 ) {
     TwoIndexCoreOptions core_options;
-    core_options.objective =
-        options.objective == DirectTwoIndexObjective::Duration
-            ? TwoIndexCoreObjective::Duration
-            : TwoIndexCoreObjective::OriginalCost;
+    switch (options.objective) {
+        case DirectTwoIndexObjective::OriginalCost:
+            core_options.objective = TwoIndexCoreObjective::OriginalCost;
+            break;
+        case DirectTwoIndexObjective::TravelCost:
+            core_options.objective = TwoIndexCoreObjective::TravelCost;
+            break;
+        case DirectTwoIndexObjective::Duration:
+            core_options.objective = TwoIndexCoreObjective::Duration;
+            break;
+        case DirectTwoIndexObjective::DurationPlusFixed:
+            core_options.objective = TwoIndexCoreObjective::DurationPlusFixed;
+            break;
+    }
     core_options.binary_y = true;
     core_options.add_time_constraints = options.add_time_constraints;
     core_options.solver_time_limit = options.solver_time_limit;
@@ -1975,6 +2018,36 @@ DirectTwoIndexResult solve_direct_two_index_ip(
             graph.node(edge.v).kind == NodeSpec::Kind::Pickup) {
             ++result.vehicle_count;
         }
+    }
+    result.total_duration_plus_fixed =
+        result.total_duration +
+        data.fixed_vehicle_cost * static_cast<double>(result.vehicle_count);
+    result.total_travel_cost =
+        result.total_original_cost -
+        data.fixed_vehicle_cost * static_cast<double>(result.vehicle_count);
+
+    double recomputed_objective = 0.0;
+    switch (options.objective) {
+        case DirectTwoIndexObjective::OriginalCost:
+            recomputed_objective = result.total_original_cost;
+            break;
+        case DirectTwoIndexObjective::TravelCost:
+            recomputed_objective = result.total_travel_cost;
+            break;
+        case DirectTwoIndexObjective::Duration:
+            recomputed_objective = result.total_duration;
+            break;
+        case DirectTwoIndexObjective::DurationPlusFixed:
+            recomputed_objective = result.total_duration_plus_fixed;
+            break;
+    }
+    const double objective_scale =
+        std::max({1.0, std::abs(result.objective_value), std::abs(recomputed_objective)});
+    if (std::abs(result.objective_value - recomputed_objective) >
+        1e-7 * objective_scale) {
+        throw std::runtime_error(
+            "The direct two-index objective value is inconsistent with its components."
+        );
     }
     return result;
 }

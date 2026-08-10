@@ -102,8 +102,10 @@ struct PstepValidInequalityOptions {
 };
 
 enum class DirectTwoIndexObjective {
-    OriginalCost,
-    Duration,
+    OriginalCost,       // variable travel cost + fixed vehicle cost
+    TravelCost,         // variable travel cost only
+    Duration,           // total route duration only
+    DurationPlusFixed,  // total route duration + fixed vehicle cost
 };
 
 struct DirectTwoIndexOptions {
@@ -127,6 +129,8 @@ struct DirectTwoIndexResult {
     double gap_percent = -1.0;
     double runtime_seconds = 0.0;
     double total_duration = -1.0;
+    double total_duration_plus_fixed = -1.0;
+    double total_travel_cost = -1.0;
     double total_original_cost = -1.0;
     int vehicle_count = 0;
     int variable_count = 0;

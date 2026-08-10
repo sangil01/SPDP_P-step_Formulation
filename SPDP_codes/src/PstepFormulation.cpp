@@ -1544,10 +1544,39 @@ CompactMasterProblem build_compact_master_problem(
     problem.x_vars.reserve(compact_pstep_count);
     // 각 compact p-step에 대해 연속 변수 x_r를 생성한다.
     for (const CompactPStep& pstep : artifacts.compact_psteps) {
-        const double objective_coefficient =
-            options.objective == CompactMasterObjective::Duration
-                ? pstep.total_time
-                : pstep.total_cost;
+        std::size_t vehicle_departure_count = 0U;
+        if (options.objective == CompactMasterObjective::TravelCost ||
+            options.objective == CompactMasterObjective::DurationPlusFixed) {
+            for (int edge_id : pstep.edge_ids) {
+                const EdgeRecord& edge = graph.edges().at(
+                    static_cast<std::size_t>(edge_id)
+                );
+                if (edge.u == 0 &&
+                    graph.node(edge.v).kind == NodeSpec::Kind::Pickup) {
+                    ++vehicle_departure_count;
+                }
+            }
+        }
+
+        double objective_coefficient = 0.0;
+        switch (options.objective) {
+            case CompactMasterObjective::OriginalCost:
+                objective_coefficient = pstep.total_cost;
+                break;
+            case CompactMasterObjective::TravelCost:
+                objective_coefficient = pstep.total_cost -
+                    static_cast<double>(vehicle_departure_count) *
+                        data.fixed_vehicle_cost;
+                break;
+            case CompactMasterObjective::Duration:
+                objective_coefficient = pstep.total_time;
+                break;
+            case CompactMasterObjective::DurationPlusFixed:
+                objective_coefficient = pstep.total_time +
+                    static_cast<double>(vehicle_departure_count) *
+                        data.fixed_vehicle_cost;
+                break;
+        }
         problem.x_vars.push_back(
             problem.model->addVar(
                 0.0,

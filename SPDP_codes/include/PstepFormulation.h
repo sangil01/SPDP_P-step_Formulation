@@ -120,8 +120,10 @@ enum class EnumerationSOS1Mode {
 };
 
 enum class CompactMasterObjective {
-    OriginalCost,
-    Duration,
+    OriginalCost,       // variable travel cost + fixed vehicle cost
+    TravelCost,         // variable travel cost only
+    Duration,           // total route duration only
+    DurationPlusFixed,  // total route duration + fixed vehicle cost
 };
 
 // [수정] master problem 생성 시 사용할 valid inequality 옵션.
