@@ -13,16 +13,16 @@ fi
 # ============================================
 # INPUT PARAMETERS
 # ============================================
-P=0 # 0 uses the direct binary two-index IP when SOLVER_MODE=enumeration
+P=2 # 0 uses the direct binary two-index IP when SOLVER_MODE=enumeration
 SOLVER_MODE=enumeration # Options: enumeration, branch-and-price
 ENUMERATION_SOS1_MODE=default # Options: default, sos1-auto, sos1-native (used only with SOLVER_MODE=enumeration)
-ENUMERATION_OBJECTIVE=travel-cost-only # Options: original-cost, travel-cost-only, duration, duration-plus-fixed (used only with SOLVER_MODE=enumeration)
+ENUMERATION_OBJECTIVE=original-cost  # Options: original-cost, travel-cost-only, duration, duration-plus-fixed (used only with SOLVER_MODE=enumeration)
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=300 # seconds
-INITIAL_INCUMBENT_ENABLE=0
-INITIAL_INCUMBENT_TIME_LIMIT=600 # seconds; 0 means no time limit
+SOLVER_TIME_LIMIT=600 # seconds
+INITIAL_INCUMBENT_ENABLE=1
+INITIAL_INCUMBENT_TIME_LIMIT=300 # seconds; 0 means no time limit
 GUROBI_THREADS=0
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
@@ -88,7 +88,7 @@ FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
 FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
     #=========Request 20 이하=========#
-    "RecDep_day_A1.dat"
+    '''"RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
     "RecDep_day_A4.dat"
@@ -104,7 +104,7 @@ DATA_LIST=(
     "RecDep_day_C1.dat"
     "RecDep_day_C2.dat"
     "RecDep_day_C3.dat"
-    "RecDep_day_C4.dat"
+    "RecDep_day_C4.dat"'''
     #=================================#
     #=========Request 50 이하=========#
     "RecDep_day_A12.dat"
