@@ -39,7 +39,6 @@ SPDP_output*/
 SPDP_solution/
 SPDP_optimal/
 SPDP_benchmark*/
-Obsidian_SPDP_research_note/
 *.log
 *.xlsx
 context.md
