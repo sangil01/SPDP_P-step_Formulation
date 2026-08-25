@@ -13,16 +13,16 @@ fi
 # ============================================
 # INPUT PARAMETERS
 # ============================================
-P=2 # 0 uses the direct binary two-index IP when SOLVER_MODE=enumeration
+P=0 # 0 uses the direct binary two-index IP when SOLVER_MODE=enumeration
 SOLVER_MODE=enumeration # Options: enumeration, branch-and-price
 ENUMERATION_SOS1_MODE=default # Options: default, sos1-auto, sos1-native (used only with SOLVER_MODE=enumeration)
 ENUMERATION_OBJECTIVE=original-cost  # Options: original-cost, travel-cost-only, duration, duration-plus-fixed (used only with SOLVER_MODE=enumeration)
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=600 # seconds
+SOLVER_TIME_LIMIT=3600 # seconds
 INITIAL_INCUMBENT_ENABLE=1
-INITIAL_INCUMBENT_TIME_LIMIT=300 # seconds; 0 means no time limit
+INITIAL_INCUMBENT_TIME_LIMIT=600 # seconds; 0 means no time limit
 GUROBI_THREADS=0
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
@@ -51,7 +51,7 @@ VI_44_K_MIN_USE_COR=1
 VI_44_K_MIN_USE_SUBPROBLEM=1
 VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT=0
 VI_44_SUBPROBLEM_TYPE=ip # Options: lp, ip
-VI_44_SUBPROBLEM_TIME_LIMIT=300 # seconds; 0 means no time limit
+VI_44_SUBPROBLEM_TIME_LIMIT=600 # seconds; 0 means no time limit
 VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS=1 # 1 adds state-time B variables and route-duration constraints
 VI_44_VEHICLE_ASSIGNMENT_ADD_TSP_BOUND=1
 VI_44_VEHICLE_ASSIGNMENT_ADD_CONTAINER_BOUND=1
@@ -107,7 +107,7 @@ DATA_LIST=(
     "RecDep_day_C4.dat"'''
     #=================================#
     #=========Request 50 이하=========#
-    "RecDep_day_A12.dat"
+    '''"RecDep_day_A12.dat"
     "RecDep_day_A13.dat"
     "RecDep_day_A14.dat"
     "RecDep_day_A15.dat"
@@ -130,14 +130,50 @@ DATA_LIST=(
     "RecDep_day_B14.dat"
     "RecDep_day_C5.dat"
     "RecDep_day_C6.dat"
-    "RecDep_day_C7.dat"
+    "RecDep_day_C7.dat"'''
     "RecDep_day_C8.dat"
-    "RecDep_day_C9.dat"
+    '''"RecDep_day_C9.dat"
     "RecDep_day_C10.dat"
     "RecDep_day_C11.dat"
     "RecDep_day_C12.dat"
     "RecDep_day_D1.dat"
-    "RecDep_day_D2.dat"
+    "RecDep_day_D2.dat"'''
+    #=================================#
+    #=====Request 50 초과 100 이하=====#
+    '''"RecDep_day_B15.dat"
+    "RecDep_day_B16.dat"
+    "RecDep_day_B17.dat"
+    "RecDep_day_B18.dat"
+    "RecDep_day_B19.dat"
+    "RecDep_day_B20.dat"
+    "RecDep_day_C13.dat"
+    "RecDep_day_C14.dat"
+    "RecDep_day_C15.dat"
+    "RecDep_day_C16.dat"
+    "RecDep_day_C17.dat"
+    "RecDep_day_C18.dat"
+    "RecDep_day_C19.dat"
+    "RecDep_day_C20.dat"
+    "RecDep_day_D3.dat"
+    "RecDep_day_D4.dat"
+    "RecDep_day_D5.dat"
+    "RecDep_day_D6.dat"
+    "RecDep_day_D7.dat"'''
+    #=================================#
+    #====Request 100 초과 200 이하====#
+    '''"RecDep_day_D8.dat"
+    "RecDep_day_D9.dat"
+    "RecDep_day_D10.dat"
+    "RecDep_day_D11.dat"
+    "RecDep_day_D12.dat"
+    "RecDep_day_D13.dat"
+    "RecDep_day_D14.dat"
+    "RecDep_day_D15.dat"
+    "RecDep_day_D16.dat"
+    "RecDep_day_D17.dat"
+    "RecDep_day_D18.dat"
+    "RecDep_day_D19.dat"
+    "RecDep_day_D20.dat"'''
     #=================================#
 )
 # Put one data file name per line in DATA_LIST.
