@@ -16,9 +16,12 @@
 #include <vector>
 
 #include "GenMultiGraph.h"
+#include "InitialIncumbent.h"
+#include "KMinComputation.h"
 #include "PstepBnP.h"
 #include "PstepFormulation.h"
 #include "ReadData.h"
+#include "TwoIndexSolver.h"
 
 namespace {
 
@@ -28,6 +31,8 @@ struct CliOptions {
     double solver_time_limit = 3600.0;
     int initial_incumbent_enable = 0;
     double initial_incumbent_time_limit = 60.0;
+    int initial_incumbent_max_k_increments = 0;
+    std::string initial_incumbent_timeout_action = "stop";
     int gurobi_threads = -1;
     std::string solver_mode = "enumeration";
     std::string enumeration_sos1_mode = "default";
@@ -104,6 +109,8 @@ void print_usage(const char* executable) {
               << " [instance] [--p N] [--solver-time-limit T] [--gurobi-threads N]"
               << " [--initial-incumbent-enable 0|1]"
               << " [--initial-incumbent-time-limit T]"
+              << " [--initial-incumbent-max-k-increments N]"
+              << " [--initial-incumbent-timeout-action stop|advance]"
               << " [--solver-mode enumeration|branch-and-price]"
               << " [--enumeration-sos1-mode default|sos1-auto|sos1-native]"
               << " [--enumeration-objective original-cost|travel-cost-only|duration|duration-plus-fixed]"
@@ -215,6 +222,16 @@ std::string parse_vi_44_subproblem_type(const std::string& value) {
     throw std::runtime_error(
         "Invalid value for --vi-44-subproblem-type: " + value +
         " (expected lp or ip)"
+    );
+}
+
+std::string parse_initial_incumbent_timeout_action(const std::string& value) {
+    if (value == "stop" || value == "advance") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --initial-incumbent-timeout-action: " + value +
+        " (expected stop or advance)"
     );
 }
 
@@ -389,6 +406,20 @@ spdp::VI44SubproblemType to_vi_44_subproblem_type(const std::string& value) {
         return spdp::VI44SubproblemType::IP;
     }
     throw std::runtime_error("Unsupported VI-44 subproblem type: " + value);
+}
+
+spdp::InitialIncumbentTimeoutAction to_initial_incumbent_timeout_action(
+    const std::string& value
+) {
+    if (value == "stop") {
+        return spdp::InitialIncumbentTimeoutAction::Stop;
+    }
+    if (value == "advance") {
+        return spdp::InitialIncumbentTimeoutAction::Advance;
+    }
+    throw std::runtime_error(
+        "Unsupported initial-incumbent timeout action: " + value
+    );
 }
 
 spdp::VI44KMinOptions make_vi_44_k_min_options(
@@ -655,6 +686,35 @@ CliOptions parse_cli(int argc, char** argv) {
                     "--initial-incumbent-time-limit must be finite and nonnegative."
                 );
             }
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-max-k-increments") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--initial-incumbent-max-k-increments requires a value."
+                );
+            }
+            options.initial_incumbent_max_k_increments = parse_int(
+                argv[++idx],
+                "--initial-incumbent-max-k-increments"
+            );
+            if (options.initial_incumbent_max_k_increments < 0) {
+                throw std::runtime_error(
+                    "--initial-incumbent-max-k-increments must be nonnegative."
+                );
+            }
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-timeout-action") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--initial-incumbent-timeout-action requires a value."
+                );
+            }
+            options.initial_incumbent_timeout_action =
+                parse_initial_incumbent_timeout_action(argv[++idx]);
             continue;
         }
 
@@ -1433,6 +1493,10 @@ void print_instance_summary(
         << args.initial_incumbent_enable << '\n';
     out << "[main] initial_incumbent_time_limit: "
         << format_double(args.initial_incumbent_time_limit) << '\n';
+    out << "[main] initial_incumbent_max_k_increments: "
+        << args.initial_incumbent_max_k_increments << '\n';
+    out << "[main] initial_incumbent_timeout_action: "
+        << args.initial_incumbent_timeout_action << '\n';
     out << "[main] Gurobi threads: " << format_gurobi_threads(args.gurobi_threads) << '\n';
     out << "[main] VI formulation: " << args.vi_formulation << '\n';
     out << "[main] Locations: " << data.locations << '\n';
@@ -1788,50 +1852,98 @@ int main(int argc, char** argv) {
             spdp::VI44KMinOptions k_min_options = make_vi_44_k_min_options(args);
             precomputed_k_min_result =
                 spdp::compute_vi44_k_min(data, graph, k_min_options);
-            const int selected_k_min = precomputed_k_min_result->selected_k_min;
-            if (selected_k_min <= 0) {
+            const int initial_k = precomputed_k_min_result->selected_k_min;
+            if (initial_k <= 0) {
                 throw std::runtime_error(
                     "Initial-incumbent generation obtained a nonpositive k_min."
                 );
             }
 
             output_file << "[initial-incumbent] attempted=1\n";
-            output_file << "[initial-incumbent] k_min=" << selected_k_min << '\n';
-            const std::filesystem::path initial_gurobi_log_path =
-                build_initial_incumbent_gurobi_log_path(args.instance);
-            std::ofstream initial_log_file(initial_gurobi_log_path, std::ios::trunc);
-            if (!initial_log_file) {
-                throw std::runtime_error(
-                    "Failed to initialize initial-incumbent Gurobi log file: " +
-                    initial_gurobi_log_path.string()
-                );
-            }
-            initial_log_file.close();
+            output_file << "[initial-incumbent] initial_k=" << initial_k << '\n';
+            output_file << "[initial-incumbent] max_k_increments="
+                << args.initial_incumbent_max_k_increments << '\n';
+            output_file << "[initial-incumbent] timeout_action="
+                << args.initial_incumbent_timeout_action << '\n';
 
-            spdp::InitialIncumbentSolveOptions initial_options;
-            initial_options.vehicle_count = selected_k_min;
-            initial_options.solver_time_limit = args.initial_incumbent_time_limit;
-            initial_options.gurobi_threads = args.gurobi_threads;
-            initial_options.gurobi_log_path = initial_gurobi_log_path.string();
-            const spdp::InitialIncumbentSolveResult initial_result =
-                spdp::solve_fixed_k_duration_initial_incumbent(
+            spdp::InitialIncumbentSearchOptions search_options;
+            search_options.initial_vehicle_count = initial_k;
+            search_options.max_k_increments =
+                args.initial_incumbent_max_k_increments;
+            search_options.timeout_action =
+                to_initial_incumbent_timeout_action(
+                    args.initial_incumbent_timeout_action
+                );
+            search_options.per_attempt_time_limit =
+                args.initial_incumbent_time_limit;
+            search_options.gurobi_threads = args.gurobi_threads;
+            search_options.gurobi_log_base_path =
+                build_initial_incumbent_gurobi_log_path(args.instance).string();
+
+            const spdp::InitialIncumbentSearchResult search_result =
+                spdp::solve_iterative_duration_initial_incumbent(
                     data,
                     graph,
-                    initial_options
+                    search_options
                 );
+            precomputed_k_min_result->selected_k_min =
+                search_result.certified_k;
 
+            bool any_time_limit = false;
+            for (const spdp::InitialIncumbentAttemptResult& attempt :
+                 search_result.attempts) {
+                any_time_limit =
+                    any_time_limit || attempt.solve_result.hit_time_limit;
+                output_file << "[initial-incumbent-attempt] index="
+                    << attempt.attempt_index
+                    << " k=" << attempt.vehicle_count
+                    << " gurobi_status=" << attempt.solve_result.status
+                    << " infeasible="
+                    << (attempt.solve_result.infeasible ? 1 : 0)
+                    << " hit_time_limit="
+                    << (attempt.solve_result.hit_time_limit ? 1 : 0)
+                    << " hit_solution_limit="
+                    << (attempt.solve_result.hit_solution_limit ? 1 : 0)
+                    << " solution_found="
+                    << (attempt.solve_result.has_feasible_solution ? 1 : 0)
+                    << " runtime_seconds="
+                    << format_double(attempt.solve_result.runtime_seconds)
+                    << " gurobi_log_path=" << attempt.gurobi_log_path
+                    << '\n';
+            }
+
+            const spdp::InitialIncumbentAttemptResult& last_attempt =
+                search_result.attempts.back();
+            output_file << "[initial-incumbent] k_min="
+                << search_result.certified_k << '\n';
+            output_file << "[initial-incumbent] certified_k="
+                << search_result.certified_k << '\n';
+            output_file << "[initial-incumbent] last_candidate_k="
+                << search_result.last_candidate_k << '\n';
+            output_file << "[initial-incumbent] incumbent_k="
+                << search_result.incumbent_k << '\n';
             output_file << "[initial-incumbent] gurobi_status="
-                << initial_result.status << '\n';
+                << last_attempt.solve_result.status << '\n';
             output_file << "[initial-incumbent] hit_time_limit="
-                << (initial_result.hit_time_limit ? 1 : 0) << '\n';
+                << (any_time_limit ? 1 : 0) << '\n';
             output_file << "[initial-incumbent] hit_solution_limit="
-                << (initial_result.hit_solution_limit ? 1 : 0) << '\n';
+                << (last_attempt.solve_result.hit_solution_limit ? 1 : 0) << '\n';
+            output_file << "[initial-incumbent] stopped_on_time_limit="
+                << (search_result.stopped_on_time_limit ? 1 : 0) << '\n';
+            output_file << "[initial-incumbent] exhausted_increment_limit="
+                << (search_result.exhausted_increment_limit ? 1 : 0) << '\n';
+            output_file << "[initial-incumbent] exhausted_candidate_limit="
+                << (search_result.exhausted_candidate_limit ? 1 : 0) << '\n';
+            output_file << "[initial-incumbent] attempt_count="
+                << search_result.attempts.size() << '\n';
             output_file << "[initial-incumbent] runtime_seconds="
-                << format_double(initial_result.runtime_seconds) << '\n';
+                << format_double(search_result.total_runtime_seconds) << '\n';
             output_file << "[initial-incumbent] solution_found="
-                << (initial_result.has_feasible_solution ? 1 : 0) << '\n';
+                << (search_result.has_feasible_solution ? 1 : 0) << '\n';
 
-            if (initial_result.has_feasible_solution) {
+            if (search_result.has_feasible_solution) {
+                const spdp::InitialIncumbentSolveResult& initial_result =
+                    search_result.incumbent_result;
                 std::vector<int> active_edge_ids;
                 for (std::size_t edge_id = 0;
                      edge_id < initial_result.edge_values.size();
@@ -1849,9 +1961,10 @@ int main(int argc, char** argv) {
                         initial_result.runtime_seconds
                     );
                 if (recovered.routes.size() !=
-                    static_cast<std::size_t>(selected_k_min)) {
+                    static_cast<std::size_t>(search_result.incumbent_k)) {
                     throw std::runtime_error(
-                        "Recovered initial incumbent route count differs from k_min."
+                        "Recovered initial incumbent route count differs from "
+                        "the successful candidate vehicle count."
                     );
                 }
 

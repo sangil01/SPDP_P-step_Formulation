@@ -23,6 +23,8 @@ NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic
 SOLVER_TIME_LIMIT=3600 # seconds
 INITIAL_INCUMBENT_ENABLE=1
 INITIAL_INCUMBENT_TIME_LIMIT=600 # seconds; 0 means no time limit
+INITIAL_INCUMBENT_MAX_K_INCREMENTS=2 # additional K values after the initial lower bound
+INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
 GUROBI_THREADS=0
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
@@ -130,12 +132,12 @@ DATA_LIST=(
     "RecDep_day_B14.dat"
     "RecDep_day_C5.dat"
     "RecDep_day_C6.dat"
-    "RecDep_day_C7.dat"'''
+    "RecDep_day_C7.dat"
     "RecDep_day_C8.dat"
-    '''"RecDep_day_C9.dat"
-    "RecDep_day_C10.dat"
+    "RecDep_day_C9.dat"
+    "RecDep_day_C10.dat"'''
     "RecDep_day_C11.dat"
-    "RecDep_day_C12.dat"
+    '''"RecDep_day_C12.dat"
     "RecDep_day_D1.dat"
     "RecDep_day_D2.dat"'''
     #=================================#
@@ -186,7 +188,7 @@ if [[ "$SOLVER_MODE" == "enumeration" ]]; then
 fi
 RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}${ENUMERATION_SOS1_TAG}${RUN_TAG_SUFFIX}"
 if [[ "$INITIAL_INCUMBENT_ENABLE" == "1" ]]; then
-    RUN_TAG+="_initial-incumbent-${INITIAL_INCUMBENT_TIME_LIMIT}s"
+    RUN_TAG+="_initial-incumbent-${INITIAL_INCUMBENT_TIME_LIMIT}s-kinc${INITIAL_INCUMBENT_MAX_K_INCREMENTS}-timeout-${INITIAL_INCUMBENT_TIMEOUT_ACTION}"
 fi
 RUNNER_LOG="$SCRIPT_DIR/${RUN_TAG}.log"
 SUMMARY_XLSX="$SCRIPT_DIR/${RUN_TAG}.xlsx"
@@ -240,6 +242,8 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "bnp-initial-upper-bound: $BNP_INITIAL_UPPER_BOUND"
         echo "initial-incumbent-enable: $INITIAL_INCUMBENT_ENABLE"
         echo "initial-incumbent-time-limit: $INITIAL_INCUMBENT_TIME_LIMIT"
+        echo "initial-incumbent-max-k-increments: $INITIAL_INCUMBENT_MAX_K_INCREMENTS"
+        echo "initial-incumbent-timeout-action: $INITIAL_INCUMBENT_TIMEOUT_ACTION"
         echo "vi-formulation: $VI_FORMULATION"
         echo "cg-max-iterations-per-phase: $CG_MAX_ITERATIONS_PER_PHASE"
         echo "exact-pricing-max-columns-per-start: $EXACT_PRICING_MAX_COLUMNS_PER_START"
@@ -309,6 +313,8 @@ for data_name in "${DATA_LIST[@]}"; do
         --solver-time-limit "$SOLVER_TIME_LIMIT" \
         --initial-incumbent-enable "$INITIAL_INCUMBENT_ENABLE" \
         --initial-incumbent-time-limit "$INITIAL_INCUMBENT_TIME_LIMIT" \
+        --initial-incumbent-max-k-increments "$INITIAL_INCUMBENT_MAX_K_INCREMENTS" \
+        --initial-incumbent-timeout-action "$INITIAL_INCUMBENT_TIMEOUT_ACTION" \
         --gurobi-threads "$GUROBI_THREADS" \
         --vi-formulation "$VI_FORMULATION" \
         --dump-psteps "$DUMP_PSTEPS" \

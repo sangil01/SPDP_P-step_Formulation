@@ -39,7 +39,11 @@ add_executable(SPDP_P_step
     src/main.cpp
     src/ReadData.cpp
     src/GenMultiGraph.cpp
+    src/TwoIndexModelCore.cpp
+    src/KMinComputation.cpp
     src/PstepValidInequality.cpp
+    src/TwoIndexSolver.cpp
+    src/InitialIncumbent.cpp
     src/PstepFormulation.cpp
     src/PstepPricing.cpp
     src/PstepMasterCG.cpp
