@@ -8,6 +8,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(SPDP_ENABLE_ONEMKL "Enable optional Intel oneMKL backend support" OFF)
 
 set(GUROBI_HOME "/opt/gurobi1301/linux64" CACHE PATH "Path to the Gurobi installation")
+set(ORTOOLS_HOME "/opt/or-tools" CACHE PATH "Path to the OR-Tools installation")
+
+list(PREPEND CMAKE_PREFIX_PATH "${ORTOOLS_HOME}")
+find_package(ortools CONFIG REQUIRED)
+
+if(NOT TARGET ortools::ortools)
+    message(FATAL_ERROR "OR-Tools package did not define the ortools::ortools target")
+endif()
+
+message(STATUS "Using OR-Tools package: ${ortools_DIR}")
+
 set(GUROBI_INCLUDE_DIR "${GUROBI_HOME}/include")
 set(GUROBI_CPP_DIR "${GUROBI_HOME}/src/cpp")
 set(GUROBI_CORE_LIB "${GUROBI_HOME}/lib/libgurobi130.so")
@@ -52,9 +63,9 @@ add_executable(SPDP_P_step
 )
 
 target_include_directories(SPDP_P_step PRIVATE include "${GUROBI_INCLUDE_DIR}" "${GUROBI_CPP_DIR}")
-target_link_libraries(SPDP_P_step PRIVATE "${GUROBI_CORE_LIB}")
+target_link_libraries(SPDP_P_step PRIVATE "${GUROBI_CORE_LIB}" ortools::ortools)
 
-set(SPDP_BUILD_RPATH "${GUROBI_LIB_DIR}")
+set(SPDP_BUILD_RPATH "${GUROBI_LIB_DIR}" "${ORTOOLS_HOME}/lib")
 
 if(SPDP_ENABLE_ONEMKL)
     if(NOT MKL_DIR AND DEFINED ENV{MKLROOT})
