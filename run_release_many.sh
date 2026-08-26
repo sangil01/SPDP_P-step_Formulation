@@ -20,9 +20,9 @@ ENUMERATION_OBJECTIVE=original-cost  # Options: original-cost, travel-cost-only,
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=3600 # seconds
+SOLVER_TIME_LIMIT=60 # seconds
 INITIAL_INCUMBENT_ENABLE=1
-INITIAL_INCUMBENT_TIME_LIMIT=600 # seconds; 0 means no time limit
+INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=2 # additional K values after the initial lower bound
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
 GUROBI_THREADS=0
@@ -135,9 +135,9 @@ DATA_LIST=(
     "RecDep_day_C7.dat"
     "RecDep_day_C8.dat"
     "RecDep_day_C9.dat"
-    "RecDep_day_C10.dat"'''
+    "RecDep_day_C10.dat"
     "RecDep_day_C11.dat"
-    '''"RecDep_day_C12.dat"
+    "RecDep_day_C12.dat"
     "RecDep_day_D1.dat"
     "RecDep_day_D2.dat"'''
     #=================================#
@@ -150,17 +150,17 @@ DATA_LIST=(
     "RecDep_day_B20.dat"
     "RecDep_day_C13.dat"
     "RecDep_day_C14.dat"
-    "RecDep_day_C15.dat"
+    "RecDep_day_C15.dat"'''
     "RecDep_day_C16.dat"
     "RecDep_day_C17.dat"
     "RecDep_day_C18.dat"
     "RecDep_day_C19.dat"
     "RecDep_day_C20.dat"
-    "RecDep_day_D3.dat"
-    "RecDep_day_D4.dat"
+    '''"RecDep_day_D3.dat"
+    "RecDep_day_D4.dat"'''
     "RecDep_day_D5.dat"
     "RecDep_day_D6.dat"
-    "RecDep_day_D7.dat"'''
+    #"RecDep_day_D7.dat"
     #=================================#
     #====Request 100 초과 200 이하====#
     '''"RecDep_day_D8.dat"
