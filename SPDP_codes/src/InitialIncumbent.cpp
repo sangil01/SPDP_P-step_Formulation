@@ -330,6 +330,21 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
                 converted.runtime_seconds = cp_result.wall_time_seconds;
                 converted.configured_time_limit_seconds =
                     cp_result.configured_time_limit_seconds;
+                converted.cp_solve_mode = cp_result.solve_mode;
+                converted.cp_threshold_horizon_factor =
+                    cp_result.threshold_horizon_factor;
+                converted.cp_model_horizon = cp_result.model_horizon;
+                converted.cp_has_objective_value =
+                    cp_result.has_objective_value;
+                converted.cp_objective_value = cp_result.objective_value;
+                converted.cp_has_objective_bound =
+                    cp_result.has_objective_bound;
+                converted.cp_best_objective_bound =
+                    cp_result.best_objective_bound;
+                converted.cp_stopped_by_feasible_observer =
+                    cp_result.stopped_by_feasible_observer;
+                converted.cp_stopped_by_bound_callback =
+                    cp_result.stopped_by_bound_callback;
                 converted.hit_time_limit = cp_result.hit_time_limit;
                 converted.early_unknown = cp_result.early_unknown;
                 converted.solution_info = cp_result.solution_info;
@@ -367,7 +382,6 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
                     return converted;
                 }
                 converted.outcome = FixedKSolveOutcome::Feasible;
-                converted.termination_name = "feasible";
                 converted.has_feasible_solution = true;
                 converted.adapter_status = "passed";
                 converted.active_edge_ids = mapped.active_edge_ids;

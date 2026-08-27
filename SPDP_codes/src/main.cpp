@@ -35,6 +35,8 @@ struct CliOptions {
     std::string initial_incumbent_timeout_action = "stop";
     std::string initial_incumbent_backend = "two-index-milp";
     int initial_incumbent_cp_workers = 0;
+    std::string initial_incumbent_cp_mode = "satisfaction";
+    double initial_incumbent_cp_threshold_horizon_factor = 1.5;
     int initial_incumbent_cp_redundant_terminal_balance = 1;
     int initial_incumbent_cp_redundant_full_reservoir = 1;
     int initial_incumbent_cp_redundant_container_workload = 0;
@@ -121,6 +123,8 @@ void print_usage(const char* executable) {
               << " [--initial-incumbent-timeout-action stop|advance]"
               << " [--initial-incumbent-backend two-index-milp|cp-sat]"
               << " [--initial-incumbent-cp-workers N]"
+              << " [--initial-incumbent-cp-mode satisfaction|threshold-optimization]"
+              << " [--initial-incumbent-cp-threshold-horizon-factor F]"
               << " [--initial-incumbent-cp-redundant-terminal-balance 0|1]"
               << " [--initial-incumbent-cp-redundant-full-reservoir 0|1]"
               << " [--initial-incumbent-cp-redundant-container-workload 0|1]"
@@ -258,6 +262,16 @@ std::string parse_initial_incumbent_backend(const std::string& value) {
     throw std::runtime_error(
         "Invalid value for --initial-incumbent-backend: " + value +
         " (expected two-index-milp or cp-sat)"
+    );
+}
+
+std::string parse_initial_incumbent_cp_mode(const std::string& value) {
+    if (value == "satisfaction" || value == "threshold-optimization") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --initial-incumbent-cp-mode: " + value +
+        " (expected satisfaction or threshold-optimization)"
     );
 }
 
@@ -458,6 +472,16 @@ spdp::InitialIncumbentBackend to_initial_incumbent_backend(
         return spdp::InitialIncumbentBackend::CpSat;
     }
     throw std::runtime_error("Unsupported initial-incumbent backend: " + value);
+}
+
+spdp::CpSolveMode to_cp_solve_mode(const std::string& value) {
+    if (value == "satisfaction") {
+        return spdp::CpSolveMode::Satisfaction;
+    }
+    if (value == "threshold-optimization") {
+        return spdp::CpSolveMode::ThresholdOptimization;
+    }
+    throw std::runtime_error("Unsupported CP-SAT solve mode: " + value);
 }
 
 spdp::VI44KMinOptions make_vi_44_k_min_options(
@@ -774,6 +798,27 @@ CliOptions parse_cli(int argc, char** argv) {
                 throw std::runtime_error(arg + " must be nonnegative.");
             }
             options.initial_incumbent_cp_workers = value;
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-cp-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.initial_incumbent_cp_mode =
+                parse_initial_incumbent_cp_mode(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-cp-threshold-horizon-factor") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const double value = parse_double(argv[++idx], arg);
+            if (!std::isfinite(value)) {
+                throw std::runtime_error(arg + " must be finite.");
+            }
+            options.initial_incumbent_cp_threshold_horizon_factor = value;
             continue;
         }
 
@@ -1487,6 +1532,13 @@ CliOptions parse_cli(int argc, char** argv) {
             "bound, or both."
         );
     }
+    if (options.initial_incumbent_cp_mode == "threshold-optimization" &&
+        options.initial_incumbent_cp_threshold_horizon_factor <= 1.0) {
+        throw std::runtime_error(
+            "--initial-incumbent-cp-threshold-horizon-factor must be greater "
+            "than one in threshold-optimization mode."
+        );
+    }
 
     return options;
 }
@@ -1597,6 +1649,11 @@ void print_instance_summary(
         << args.initial_incumbent_max_k_increments << '\n';
     out << "[main] initial_incumbent_timeout_action: "
         << args.initial_incumbent_timeout_action << '\n';
+    out << "[main] initial_incumbent_cp_mode: "
+        << args.initial_incumbent_cp_mode << '\n';
+    out << "[main] initial_incumbent_cp_threshold_horizon_factor: "
+        << format_double(args.initial_incumbent_cp_threshold_horizon_factor)
+        << '\n';
     out << "[main] Gurobi threads: " << format_gurobi_threads(args.gurobi_threads) << '\n';
     out << "[main] VI formulation: " << args.vi_formulation << '\n';
     out << "[main] Locations: " << data.locations << '\n';
@@ -1967,6 +2024,12 @@ int main(int argc, char** argv) {
                 << args.initial_incumbent_timeout_action << '\n';
             output_file << "[initial-incumbent] backend="
                 << args.initial_incumbent_backend << '\n';
+            output_file << "[initial-incumbent] cp_mode="
+                << args.initial_incumbent_cp_mode << '\n';
+            output_file << "[initial-incumbent] cp_threshold_horizon_factor="
+                << format_double(
+                    args.initial_incumbent_cp_threshold_horizon_factor)
+                << '\n';
 
             spdp::InitialIncumbentSearchOptions search_options;
             search_options.backend =
@@ -1986,6 +2049,10 @@ int main(int argc, char** argv) {
             search_options.cp_sat_log_base_path =
                 build_initial_incumbent_cp_sat_log_path(args.instance).string();
             search_options.cp_sat.workers = args.initial_incumbent_cp_workers;
+            search_options.cp_sat.solve_mode =
+                to_cp_solve_mode(args.initial_incumbent_cp_mode);
+            search_options.cp_sat.threshold_horizon_factor =
+                args.initial_incumbent_cp_threshold_horizon_factor;
             search_options.cp_sat.redundant.terminal_balance =
                 args.initial_incumbent_cp_redundant_terminal_balance == 1;
             search_options.cp_sat.redundant.full_skip_reservoir =
@@ -2042,6 +2109,29 @@ int main(int argc, char** argv) {
                     << format_double(
                         attempt.solve_result.configured_time_limit_seconds
                     )
+                    << " cp_mode="
+                    << spdp::cp_solve_mode_name(
+                        attempt.solve_result.cp_solve_mode)
+                    << " cp_threshold_horizon_factor="
+                    << format_double(
+                        attempt.solve_result.cp_threshold_horizon_factor)
+                    << " cp_model_horizon="
+                    << attempt.solve_result.cp_model_horizon
+                    << " cp_has_objective_value="
+                    << (attempt.solve_result.cp_has_objective_value ? 1 : 0)
+                    << " cp_objective_value="
+                    << format_double(attempt.solve_result.cp_objective_value)
+                    << " cp_has_objective_bound="
+                    << (attempt.solve_result.cp_has_objective_bound ? 1 : 0)
+                    << " cp_best_objective_bound="
+                    << format_double(
+                        attempt.solve_result.cp_best_objective_bound)
+                    << " cp_stopped_by_feasible_observer="
+                    << (attempt.solve_result.cp_stopped_by_feasible_observer
+                        ? 1 : 0)
+                    << " cp_stopped_by_bound_callback="
+                    << (attempt.solve_result.cp_stopped_by_bound_callback
+                        ? 1 : 0)
                     << " conflicts=" << attempt.solve_result.conflicts
                     << " branches=" << attempt.solve_result.branches
                     << " cor_40_pruned_arcs="

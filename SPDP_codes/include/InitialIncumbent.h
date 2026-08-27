@@ -47,6 +47,15 @@ struct InitialIncumbentSolveResult {
     bool has_feasible_solution = false;
     double runtime_seconds = 0.0;
     double configured_time_limit_seconds = 0.0;
+    CpSolveMode cp_solve_mode = CpSolveMode::Satisfaction;
+    double cp_threshold_horizon_factor = 0.0;
+    std::int64_t cp_model_horizon = 0;
+    bool cp_has_objective_value = false;
+    double cp_objective_value = 0.0;
+    bool cp_has_objective_bound = false;
+    double cp_best_objective_bound = 0.0;
+    bool cp_stopped_by_feasible_observer = false;
+    bool cp_stopped_by_bound_callback = false;
     double total_duration = -1.0;
     double total_original_cost = -1.0;
     int vehicle_count = 0;

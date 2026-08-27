@@ -27,10 +27,12 @@ INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial low
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
 INITIAL_INCUMBENT_BACKEND=cp-sat # Options: two-index-milp, cp-sat
 INITIAL_INCUMBENT_CP_WORKERS=0
-INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE=0
-INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR=0
-INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=0
-INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=0
+INITIAL_INCUMBENT_CP_MODE=threshold-optimization # Options: satisfaction, threshold-optimization
+INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR=1.5 # Used only by threshold-optimization
+INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE=1
+INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR=1
+INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=1
+INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=1
 INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP=1
 INITIAL_INCUMBENT_CP_SYMMETRY_43=1
 GUROBI_THREADS=0
@@ -198,6 +200,10 @@ RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_P
 if [[ "$INITIAL_INCUMBENT_ENABLE" == "1" ]]; then
     RUN_TAG+="_initial-incumbent-${INITIAL_INCUMBENT_BACKEND}-${INITIAL_INCUMBENT_TIME_LIMIT}s-kinc${INITIAL_INCUMBENT_MAX_K_INCREMENTS}-timeout-${INITIAL_INCUMBENT_TIMEOUT_ACTION}"
     if [[ "$INITIAL_INCUMBENT_BACKEND" == "cp-sat" ]]; then
+        RUN_TAG+="-cpm${INITIAL_INCUMBENT_CP_MODE}"
+        if [[ "$INITIAL_INCUMBENT_CP_MODE" == "threshold-optimization" ]]; then
+            RUN_TAG+="-cpf${INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR}"
+        fi
         RUN_TAG+="-cpw${INITIAL_INCUMBENT_CP_WORKERS}-rtb${INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE}-rfr${INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR}-rcw${INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD}-rad${INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION}-sfp${INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP}-s43${INITIAL_INCUMBENT_CP_SYMMETRY_43}"
     fi
 fi
@@ -257,6 +263,8 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-timeout-action: $INITIAL_INCUMBENT_TIMEOUT_ACTION"
         echo "initial-incumbent-backend: $INITIAL_INCUMBENT_BACKEND"
         echo "initial-incumbent-cp-workers: $INITIAL_INCUMBENT_CP_WORKERS"
+        echo "initial-incumbent-cp-mode: $INITIAL_INCUMBENT_CP_MODE"
+        echo "initial-incumbent-cp-threshold-horizon-factor: $INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR"
         echo "initial-incumbent-cp-redundant-terminal-balance: $INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE"
         echo "initial-incumbent-cp-redundant-full-reservoir: $INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR"
         echo "initial-incumbent-cp-redundant-container-workload: $INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD"
@@ -336,6 +344,8 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-timeout-action "$INITIAL_INCUMBENT_TIMEOUT_ACTION" \
         --initial-incumbent-backend "$INITIAL_INCUMBENT_BACKEND" \
         --initial-incumbent-cp-workers "$INITIAL_INCUMBENT_CP_WORKERS" \
+        --initial-incumbent-cp-mode "$INITIAL_INCUMBENT_CP_MODE" \
+        --initial-incumbent-cp-threshold-horizon-factor "$INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR" \
         --initial-incumbent-cp-redundant-terminal-balance "$INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE" \
         --initial-incumbent-cp-redundant-full-reservoir "$INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR" \
         --initial-incumbent-cp-redundant-container-workload "$INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD" \

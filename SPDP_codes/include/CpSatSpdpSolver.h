@@ -10,6 +10,10 @@
 namespace spdp {
 
 enum class CpActionKind { Pickup, Treatment, Delivery };
+enum class CpSolveMode {
+    Satisfaction,
+    ThresholdOptimization,
+};
 enum class CpSolveOutcome {
     Feasible,
     ProvenInfeasible,
@@ -34,6 +38,8 @@ struct CpSatSolveOptions {
     int vehicle_count = 0;
     double time_limit_seconds = 0.0;
     int workers = 0;
+    CpSolveMode solve_mode = CpSolveMode::Satisfaction;
+    double threshold_horizon_factor = 1.5;
     std::string log_file_path;
     CpRedundantOptions redundant;
     CpSymmetryOptions symmetry;
@@ -63,6 +69,7 @@ struct CpModelBuildStats {
 
 struct CpFixedKSolveResult {
     CpSolveOutcome outcome = CpSolveOutcome::EarlyUnknown;
+    CpSolveMode solve_mode = CpSolveMode::Satisfaction;
     int raw_status = 0;
     std::string status_name;
     std::string termination_name;
@@ -70,6 +77,14 @@ struct CpFixedKSolveResult {
     std::string solution_info;
     double wall_time_seconds = 0.0;
     double configured_time_limit_seconds = 0.0;
+    double threshold_horizon_factor = 0.0;
+    std::int64_t model_horizon = 0;
+    bool has_objective_value = false;
+    double objective_value = 0.0;
+    bool has_objective_bound = false;
+    double best_objective_bound = 0.0;
+    bool stopped_by_feasible_observer = false;
+    bool stopped_by_bound_callback = false;
     bool hit_time_limit = false;
     bool early_unknown = false;
     std::int64_t conflicts = 0;
@@ -77,6 +92,8 @@ struct CpFixedKSolveResult {
     CpModelBuildStats build_stats;
     std::vector<CpActionRoute> routes;
 };
+
+const char* cp_solve_mode_name(CpSolveMode mode);
 
 CpSolveOutcome classify_cp_unknown_outcome(
     double configured_time_limit_seconds,

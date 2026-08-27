@@ -6,6 +6,8 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -30,6 +32,7 @@ using operations_research::sat::IntVar;
 using operations_research::sat::LinearExpr;
 
 constexpr double kIntegerTolerance = 1e-9;
+constexpr double kObjectiveTolerance = 1e-9;
 
 struct IntegerData {
     std::int64_t pickup = 0;
@@ -167,7 +170,49 @@ LinearExpr bool_sum(const std::vector<BoolVar>& vars) {
     return expression;
 }
 
+bool compute_threshold_horizon(
+    std::int64_t limit,
+    double factor,
+    std::int64_t& horizon,
+    std::string& error
+) {
+    if (limit <= 0 || !std::isfinite(factor) || factor <= 1.0) {
+        error =
+            "Threshold optimization requires a positive route limit and "
+            "a finite horizon factor greater than one.";
+        return false;
+    }
+    const long double scaled =
+        static_cast<long double>(limit) * static_cast<long double>(factor);
+    if (!std::isfinite(scaled) ||
+        scaled > static_cast<long double>(std::numeric_limits<std::int64_t>::max())) {
+        error = "Threshold horizon exceeds the CP-SAT integer range.";
+        return false;
+    }
+    horizon = static_cast<std::int64_t>(std::ceil(scaled));
+    if (horizon <= limit) {
+        error = "Threshold horizon must be strictly greater than the route limit.";
+        return false;
+    }
+    return true;
+}
+
+bool objective_bound_excludes_threshold(double bound, std::int64_t limit) {
+    return std::isfinite(bound) &&
+        bound > static_cast<double>(limit) + kObjectiveTolerance;
+}
+
 }  // namespace
+
+const char* cp_solve_mode_name(CpSolveMode mode) {
+    switch (mode) {
+    case CpSolveMode::Satisfaction:
+        return "satisfaction";
+    case CpSolveMode::ThresholdOptimization:
+        return "threshold-optimization";
+    }
+    return "unknown";
+}
 
 CpSolveOutcome classify_cp_unknown_outcome(
     double configured_time_limit_seconds,
@@ -196,7 +241,12 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
     const CpSatSolveOptions& options
 ) {
     CpFixedKSolveResult result;
+    result.solve_mode = options.solve_mode;
     result.configured_time_limit_seconds = options.time_limit_seconds;
+    result.threshold_horizon_factor =
+        options.solve_mode == CpSolveMode::ThresholdOptimization
+            ? options.threshold_horizon_factor
+            : 0.0;
     const bool write_log_file = !options.log_file_path.empty();
     std::ofstream log_file;
     if (write_log_file) {
@@ -241,6 +291,34 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
         return result;
     }
 
+    std::int64_t route_horizon = integer_data.limit;
+    if (options.solve_mode == CpSolveMode::ThresholdOptimization &&
+        !compute_threshold_horizon(
+            integer_data.limit,
+            options.threshold_horizon_factor,
+            route_horizon,
+            result.error_message
+        )) {
+        result.outcome = CpSolveOutcome::ModelInvalid;
+        result.status_name = "MODEL_INVALID";
+        result.termination_name = "model-invalid";
+        append_early_log(result.status_name, result.error_message);
+        return result;
+    }
+    result.model_horizon = route_horizon;
+
+    const std::int64_t largest_rhs_multiplier =
+        std::max<std::int64_t>(2, options.vehicle_count);
+    if (route_horizon >
+        std::numeric_limits<std::int64_t>::max() / largest_rhs_multiplier) {
+        result.outcome = CpSolveOutcome::ModelInvalid;
+        result.status_name = "MODEL_INVALID";
+        result.termination_name = "model-invalid";
+        result.error_message = "Active CP horizon makes a redundant bound overflow.";
+        append_early_log(result.status_name, result.error_message);
+        return result;
+    }
+
     const int n = static_cast<int>(data.requests.size());
     const int k_count = options.vehicle_count;
     if (n == 0 || k_count > n) {
@@ -268,6 +346,21 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
             Action{CpActionKind::Delivery, i, request.from_id,
                    request.container_type, integer_data.delivery};
     }
+    for (const Action& action : actions) {
+        if (action.duration > route_horizon) {
+            result.outcome = CpSolveOutcome::ProvenInfeasible;
+            result.status_name = "INFEASIBLE";
+            result.termination_name =
+                options.solve_mode == CpSolveMode::ThresholdOptimization
+                    ? "restricted-horizon-infeasible"
+                    : "proven-infeasible";
+            append_early_log(
+                result.status_name,
+                "A mandatory action exceeds the active route horizon."
+            );
+            return result;
+        }
+    }
 
     CpModelBuilder builder;
     std::vector<IntVar> vehicle;
@@ -281,7 +374,8 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
                               .WithName("vehicle_" + action_name(action)));
         position.push_back(builder.NewIntVar(Domain(1, action_count))
                                .WithName("position_" + action_name(action)));
-        start_time.push_back(builder.NewIntVar(Domain(0, integer_data.limit))
+        start_time.push_back(builder.NewIntVar(Domain(
+                                 0, route_horizon - action.duration))
                                  .WithName("time_" + action_name(action)));
     }
 
@@ -397,7 +491,7 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
     std::vector<IntVar> completion;
     completion.reserve(static_cast<std::size_t>(k_count));
     for (int k = 0; k < k_count; ++k) {
-        completion.push_back(builder.NewIntVar(Domain(0, integer_data.limit))
+        completion.push_back(builder.NewIntVar(Domain(0, route_horizon))
                                  .WithName("completion_" + std::to_string(k)));
         for (const ArcVariable& arc : arcs) {
             if (arc.head != end_anchor(k)) {
@@ -409,6 +503,15 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
                     actions[static_cast<std::size_t>(arc.tail)].duration
             ).OnlyEnforceIf(arc.literal);
         }
+    }
+
+    std::optional<IntVar> makespan;
+    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+        makespan.emplace(
+            builder.NewIntVar(Domain(0, route_horizon)).WithName("makespan")
+        );
+        builder.AddMaxEquality(*makespan, completion);
+        builder.Minimize(*makespan);
     }
 
     for (int i = 0; i < n; ++i) {
@@ -561,7 +664,7 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
                         action_index(CpActionKind::Delivery, j, n))][static_cast<std::size_t>(k)]
                 );
             }
-            builder.AddLessOrEqual(service_twice + workload, 2 * integer_data.limit);
+            builder.AddLessOrEqual(service_twice + workload, 2 * route_horizon);
         }
     }
 
@@ -575,7 +678,7 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
                 integer_data.travel[static_cast<std::size_t>(from.location)]
                                    [static_cast<std::size_t>(to.location)] * arc.literal;
         }
-        builder.AddLessOrEqual(total_duration, k_count * integer_data.limit);
+        builder.AddLessOrEqual(total_duration, k_count * route_horizon);
     }
 
     if (options.symmetry.first_pickup_vehicle_ordering) {
@@ -639,8 +742,72 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
             log_file.flush();
         });
     }
+
+    std::mutex callback_mutex;
+    std::optional<CpSolverResponse> accepted_threshold_response;
+    bool stopped_by_bound_callback = false;
+    double callback_proving_bound = 0.0;
+    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+        model.Add(operations_research::sat::NewFeasibleSolutionObserver(
+            [&](const CpSolverResponse& candidate) {
+                if (candidate.objective_value() >
+                    static_cast<double>(integer_data.limit) +
+                        kObjectiveTolerance) {
+                    return;
+                }
+                bool should_stop = false;
+                {
+                    std::lock_guard<std::mutex> lock(callback_mutex);
+                    if (!accepted_threshold_response.has_value()) {
+                        accepted_threshold_response = candidate;
+                        should_stop = true;
+                    }
+                }
+                if (should_stop) {
+                    operations_research::sat::StopSearch(&model);
+                }
+            }
+        ));
+        model.Add(operations_research::sat::NewBestBoundCallback(
+            [&](double bound) {
+                if (!objective_bound_excludes_threshold(
+                        bound, integer_data.limit)) {
+                    return;
+                }
+                bool should_stop = false;
+                {
+                    std::lock_guard<std::mutex> lock(callback_mutex);
+                    if (!stopped_by_bound_callback ||
+                        bound > callback_proving_bound) {
+                        callback_proving_bound = bound;
+                    }
+                    if (!stopped_by_bound_callback) {
+                        stopped_by_bound_callback = true;
+                        should_stop = true;
+                    }
+                }
+                if (should_stop) {
+                    operations_research::sat::StopSearch(&model);
+                }
+            }
+        ));
+    }
+
     const CpSolverResponse response =
         operations_research::sat::SolveCpModel(builder.Build(), &model);
+
+    std::optional<CpSolverResponse> saved_threshold_response;
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex);
+        saved_threshold_response = accepted_threshold_response;
+        result.stopped_by_feasible_observer =
+            accepted_threshold_response.has_value();
+        result.stopped_by_bound_callback = stopped_by_bound_callback;
+        if (stopped_by_bound_callback) {
+            result.has_objective_bound = true;
+            result.best_objective_bound = callback_proving_bound;
+        }
+    }
 
     result.raw_status = static_cast<int>(response.status());
     result.status_name = operations_research::sat::CpSolverStatus_Name(response.status());
@@ -648,19 +815,108 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
     result.wall_time_seconds = response.wall_time();
     result.conflicts = response.num_conflicts();
     result.branches = response.num_branches();
-    if (response.status() == operations_research::sat::CpSolverStatus::INFEASIBLE) {
-        result.outcome = CpSolveOutcome::ProvenInfeasible;
-        result.termination_name = "proven-infeasible";
-        return result;
+    const bool raw_has_solution =
+        response.status() == operations_research::sat::CpSolverStatus::FEASIBLE ||
+        response.status() == operations_research::sat::CpSolverStatus::OPTIMAL;
+    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+        if (raw_has_solution) {
+            result.has_objective_value = true;
+            result.objective_value = response.objective_value();
+        }
+        if (std::isfinite(response.best_objective_bound())) {
+            if (!result.has_objective_bound ||
+                response.best_objective_bound() > result.best_objective_bound) {
+                result.best_objective_bound = response.best_objective_bound();
+            }
+            result.has_objective_bound = true;
+        }
+        if (saved_threshold_response.has_value()) {
+            result.has_objective_value = true;
+            result.objective_value =
+                saved_threshold_response->objective_value();
+        }
     }
+
+    auto append_final_log = [&]() {
+        if (!write_log_file) {
+            return;
+        }
+        log_file << "[spdp-cp-wrapper] mode="
+                 << cp_solve_mode_name(result.solve_mode)
+                 << " horizon_factor=" << result.threshold_horizon_factor
+                 << " model_horizon=" << result.model_horizon
+                 << " termination=" << result.termination_name
+                 << " has_objective_value="
+                 << (result.has_objective_value ? 1 : 0)
+                 << " objective_value=" << result.objective_value
+                 << " has_objective_bound="
+                 << (result.has_objective_bound ? 1 : 0)
+                 << " best_objective_bound=" << result.best_objective_bound
+                 << " stopped_by_feasible_observer="
+                 << (result.stopped_by_feasible_observer ? 1 : 0)
+                 << " stopped_by_bound_callback="
+                 << (result.stopped_by_bound_callback ? 1 : 0)
+                 << '\n';
+        log_file.flush();
+    };
+
     if (response.status() == operations_research::sat::CpSolverStatus::MODEL_INVALID) {
         result.outcome = CpSolveOutcome::ModelInvalid;
         result.termination_name = "model-invalid";
         result.error_message = result.solution_info;
+        append_final_log();
         return result;
     }
-    if (response.status() != operations_research::sat::CpSolverStatus::FEASIBLE &&
-        response.status() != operations_research::sat::CpSolverStatus::OPTIMAL) {
+
+    const CpSolverResponse* solution_response = nullptr;
+    if (options.solve_mode == CpSolveMode::Satisfaction) {
+        if (response.status() == operations_research::sat::CpSolverStatus::INFEASIBLE) {
+            result.outcome = CpSolveOutcome::ProvenInfeasible;
+            result.termination_name = "proven-infeasible";
+            append_final_log();
+            return result;
+        }
+        if (raw_has_solution) {
+            result.outcome = CpSolveOutcome::Feasible;
+            result.termination_name = "feasible";
+            solution_response = &response;
+        }
+    } else {
+        if (saved_threshold_response.has_value()) {
+            result.outcome = CpSolveOutcome::Feasible;
+            result.termination_name = "threshold-feasible-witness";
+            solution_response = &*saved_threshold_response;
+        } else if (raw_has_solution &&
+                   response.objective_value() <=
+                       static_cast<double>(integer_data.limit) +
+                           kObjectiveTolerance) {
+            result.outcome = CpSolveOutcome::Feasible;
+            result.termination_name = "threshold-feasible-witness";
+            solution_response = &response;
+        } else if (result.stopped_by_bound_callback ||
+                   (result.has_objective_bound &&
+                    objective_bound_excludes_threshold(
+                        result.best_objective_bound, integer_data.limit)) ||
+                   (response.status() ==
+                        operations_research::sat::CpSolverStatus::OPTIMAL &&
+                    raw_has_solution &&
+                    response.objective_value() >
+                        static_cast<double>(integer_data.limit) +
+                            kObjectiveTolerance)) {
+            result.outcome = CpSolveOutcome::ProvenInfeasible;
+            result.termination_name = "objective-bound-infeasible";
+            append_final_log();
+            return result;
+        } else if (response.status() ==
+                   operations_research::sat::CpSolverStatus::INFEASIBLE) {
+            result.outcome = CpSolveOutcome::ProvenInfeasible;
+            result.termination_name = "restricted-horizon-infeasible";
+            append_final_log();
+            return result;
+        }
+    }
+
+    if (solution_response == nullptr) {
         result.outcome = classify_cp_unknown_outcome(
             result.configured_time_limit_seconds,
             result.wall_time_seconds
@@ -669,14 +925,14 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
         result.early_unknown = result.outcome == CpSolveOutcome::EarlyUnknown;
         result.termination_name = result.hit_time_limit
             ? "timed-out-unknown" : "early-unknown";
+        append_final_log();
         return result;
     }
 
-    result.outcome = CpSolveOutcome::Feasible;
-    result.termination_name = "feasible";
     std::map<int, int> successor;
     for (const ArcVariable& arc : arcs) {
-        if (operations_research::sat::SolutionBooleanValue(response, arc.literal)) {
+        if (operations_research::sat::SolutionBooleanValue(
+                *solution_response, arc.literal)) {
             successor[arc.tail] = arc.head;
         }
     }
@@ -689,8 +945,10 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
             const auto found = successor.find(current);
             if (found == successor.end()) {
                 result.outcome = CpSolveOutcome::ModelInvalid;
+                result.termination_name = "model-invalid";
                 result.error_message = "Selected CP circuit cannot be decoded.";
                 result.routes.clear();
+                append_final_log();
                 return result;
             }
             current = found->second;
@@ -700,8 +958,10 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
             if (current < 0 || current >= action_count ||
                 visited[static_cast<std::size_t>(current)]) {
                 result.outcome = CpSolveOutcome::ModelInvalid;
+                result.termination_name = "model-invalid";
                 result.error_message = "Selected CP circuit repeats or leaves an action route.";
                 result.routes.clear();
+                append_final_log();
                 return result;
             }
             visited[static_cast<std::size_t>(current)] = true;
@@ -710,21 +970,25 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
                 action.kind,
                 action.request,
                 static_cast<int>(operations_research::sat::SolutionIntegerValue(
-                    response, position[static_cast<std::size_t>(current)])),
+                    *solution_response,
+                    position[static_cast<std::size_t>(current)])),
                 operations_research::sat::SolutionIntegerValue(
-                    response, start_time[static_cast<std::size_t>(current)])
+                    *solution_response,
+                    start_time[static_cast<std::size_t>(current)])
             });
         }
         route.completion_time = operations_research::sat::SolutionIntegerValue(
-            response, completion[static_cast<std::size_t>(k)]
+            *solution_response, completion[static_cast<std::size_t>(k)]
         );
         result.routes.push_back(std::move(route));
     }
     if (std::count(visited.begin(), visited.end(), true) != action_count) {
         result.outcome = CpSolveOutcome::ModelInvalid;
+        result.termination_name = "model-invalid";
         result.error_message = "Selected CP circuit does not cover every action exactly once.";
         result.routes.clear();
     }
+    append_final_log();
     return result;
 }
 
