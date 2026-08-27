@@ -1504,6 +1504,13 @@ std::string format_gurobi_threads(int threads) {
     return std::to_string(threads);
 }
 
+std::string single_line_log_text(std::string value) {
+    std::replace(value.begin(), value.end(), '\n', ' ');
+    std::replace(value.begin(), value.end(), '\r', ' ');
+    std::replace(value.begin(), value.end(), '\t', ' ');
+    return value;
+}
+
 std::string format_sequence_pi(const std::vector<int>& sequence_pi) {
     if (sequence_pi.empty()) {
         return "()";
@@ -2014,17 +2021,27 @@ int main(int argc, char** argv) {
                             spdp::InitialIncumbentBackend::CpSat
                         ? "cp-sat" : "two-index-milp")
                     << " status_name=" << attempt.solve_result.status_name
+                    << " termination_name="
+                    << attempt.solve_result.termination_name
                     << " gurobi_status=" << attempt.solve_result.status
                     << " infeasible="
                     << (attempt.solve_result.infeasible ? 1 : 0)
                     << " hit_time_limit="
                     << (attempt.solve_result.hit_time_limit ? 1 : 0)
+                    << " early_unknown="
+                    << (attempt.solve_result.early_unknown ? 1 : 0)
                     << " hit_solution_limit="
                     << (attempt.solve_result.hit_solution_limit ? 1 : 0)
                     << " solution_found="
                     << (attempt.solve_result.has_feasible_solution ? 1 : 0)
                     << " runtime_seconds="
                     << format_double(attempt.solve_result.runtime_seconds)
+                    << " wall_time_seconds="
+                    << format_double(attempt.solve_result.runtime_seconds)
+                    << " configured_time_limit_seconds="
+                    << format_double(
+                        attempt.solve_result.configured_time_limit_seconds
+                    )
                     << " conflicts=" << attempt.solve_result.conflicts
                     << " branches=" << attempt.solve_result.branches
                     << " cor_40_pruned_arcs="
@@ -2034,6 +2051,10 @@ int main(int argc, char** argv) {
                     << " cor_43_constraint_count="
                     << attempt.solve_result.cp_build_stats.cor_43_constraint_count
                     << " adapter_status=" << attempt.solve_result.adapter_status
+                    << " solution_info="
+                    << std::quoted(single_line_log_text(
+                        attempt.solve_result.solution_info
+                    ))
                     << " gurobi_log_path=" << attempt.gurobi_log_path
                     << '\n';
                 if (!attempt.solve_result.error_message.empty()) {
@@ -2061,6 +2082,12 @@ int main(int argc, char** argv) {
                 << (last_attempt.solve_result.hit_solution_limit ? 1 : 0) << '\n';
             output_file << "[initial-incumbent] stopped_on_time_limit="
                 << (search_result.stopped_on_time_limit ? 1 : 0) << '\n';
+            output_file << "[initial-incumbent] stopped_on_early_unknown="
+                << (search_result.stopped_on_early_unknown ? 1 : 0) << '\n';
+            output_file << "[initial-incumbent] early_unknown_k="
+                << search_result.early_unknown_k << '\n';
+            output_file << "[initial-incumbent] termination_name="
+                << last_attempt.solve_result.termination_name << '\n';
             output_file << "[initial-incumbent] exhausted_increment_limit="
                 << (search_result.exhausted_increment_limit ? 1 : 0) << '\n';
             output_file << "[initial-incumbent] exhausted_candidate_limit="

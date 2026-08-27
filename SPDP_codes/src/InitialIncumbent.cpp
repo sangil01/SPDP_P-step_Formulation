@@ -31,6 +31,8 @@ struct InitialIncumbentSearchState {
     bool finished = false;
     bool solution_found = false;
     bool stopped_on_time_limit = false;
+    bool stopped_on_early_unknown = false;
+    int early_unknown_k = 0;
     bool exhausted_increment_limit = false;
     bool exhausted_candidate_limit = false;
 };
@@ -69,7 +71,7 @@ InitialIncumbentSearchState make_initial_incumbent_search_state(
 
 InitialIncumbentSearchState advance_initial_incumbent_search(
     const InitialIncumbentSearchState& state,
-    FixedKSolveOutcome outcome
+    const InitialIncumbentSolveResult& solve_result
 ) {
     if (state.finished) {
         throw std::runtime_error(
@@ -78,6 +80,7 @@ InitialIncumbentSearchState advance_initial_incumbent_search(
     }
 
     InitialIncumbentSearchState next = state;
+    const FixedKSolveOutcome outcome = solve_result.outcome;
     if (outcome == FixedKSolveOutcome::Feasible) {
         next.finished = true;
         next.solution_found = true;
@@ -90,7 +93,14 @@ InitialIncumbentSearchState advance_initial_incumbent_search(
         return next;
     }
 
-    if (outcome == FixedKSolveOutcome::Unknown &&
+    if (outcome == FixedKSolveOutcome::EarlyUnknown) {
+        next.finished = true;
+        next.stopped_on_early_unknown = true;
+        next.early_unknown_k = state.candidate_k;
+        return next;
+    }
+
+    if (outcome == FixedKSolveOutcome::TimedOutUnknown &&
         state.timeout_action == InitialIncumbentTimeoutAction::Stop) {
         next.finished = true;
         next.stopped_on_time_limit = true;
@@ -174,11 +184,22 @@ InitialIncumbentSolveResult solve_fixed_k_duration_initial_incumbent(
     result.hit_solution_limit = result.status == GRB_SOLUTION_LIMIT;
     result.infeasible = result.status == GRB_INFEASIBLE;
     result.runtime_seconds = core.model->get(GRB_DoubleAttr_Runtime);
+    result.configured_time_limit_seconds = options.solver_time_limit;
     result.has_feasible_solution = core.model->get(GRB_IntAttr_SolCount) > 0;
-    result.outcome = result.has_feasible_solution
-        ? FixedKSolveOutcome::Feasible
-        : (result.infeasible ? FixedKSolveOutcome::ProvenInfeasible
-                             : FixedKSolveOutcome::Unknown);
+    if (result.has_feasible_solution) {
+        result.outcome = FixedKSolveOutcome::Feasible;
+        result.termination_name = "feasible";
+    } else if (result.infeasible) {
+        result.outcome = FixedKSolveOutcome::ProvenInfeasible;
+        result.termination_name = "proven-infeasible";
+    } else if (result.hit_time_limit) {
+        result.outcome = FixedKSolveOutcome::TimedOutUnknown;
+        result.termination_name = "timed-out-unknown";
+    } else {
+        result.outcome = FixedKSolveOutcome::EarlyUnknown;
+        result.termination_name = "early-unknown";
+        result.early_unknown = true;
+    }
     if (!result.has_feasible_solution) {
         return result;
     }
@@ -236,13 +257,17 @@ InitialIncumbentSearchResult run_iterative_initial_incumbent_search(
             search_result.incumbent_result = attempt.solve_result;
         }
 
-        const FixedKSolveOutcome outcome = attempt.solve_result.outcome;
         search_result.attempts.push_back(std::move(attempt));
-        state = advance_initial_incumbent_search(state, outcome);
+        state = advance_initial_incumbent_search(
+            state,
+            search_result.attempts.back().solve_result
+        );
     }
 
     search_result.certified_k = state.certified_k;
     search_result.stopped_on_time_limit = state.stopped_on_time_limit;
+    search_result.stopped_on_early_unknown = state.stopped_on_early_unknown;
+    search_result.early_unknown_k = state.early_unknown_k;
     search_result.exhausted_increment_limit =
         state.exhausted_increment_limit;
     search_result.exhausted_candidate_limit =
@@ -301,7 +326,13 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
                 converted.status = cp_result.raw_status;
                 converted.raw_status = cp_result.raw_status;
                 converted.status_name = cp_result.status_name;
+                converted.termination_name = cp_result.termination_name;
                 converted.runtime_seconds = cp_result.wall_time_seconds;
+                converted.configured_time_limit_seconds =
+                    cp_result.configured_time_limit_seconds;
+                converted.hit_time_limit = cp_result.hit_time_limit;
+                converted.early_unknown = cp_result.early_unknown;
+                converted.solution_info = cp_result.solution_info;
                 converted.conflicts = cp_result.conflicts;
                 converted.branches = cp_result.branches;
                 converted.cp_build_stats = cp_result.build_stats;
@@ -312,9 +343,11 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
                     converted.outcome = FixedKSolveOutcome::ProvenInfeasible;
                     converted.infeasible = true;
                     return converted;
-                case CpSolveOutcome::Unknown:
-                    converted.outcome = FixedKSolveOutcome::Unknown;
-                    converted.hit_time_limit = options.per_attempt_time_limit > 0.0;
+                case CpSolveOutcome::TimedOutUnknown:
+                    converted.outcome = FixedKSolveOutcome::TimedOutUnknown;
+                    return converted;
+                case CpSolveOutcome::EarlyUnknown:
+                    converted.outcome = FixedKSolveOutcome::EarlyUnknown;
                     return converted;
                 case CpSolveOutcome::ModelInvalid:
                     converted.outcome = FixedKSolveOutcome::ModelInvalid;
@@ -328,11 +361,13 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
                 );
                 if (!mapped.success) {
                     converted.outcome = FixedKSolveOutcome::AdapterError;
+                    converted.termination_name = "adapter-error";
                     converted.adapter_status = "failed";
                     converted.error_message = mapped.error_message;
                     return converted;
                 }
                 converted.outcome = FixedKSolveOutcome::Feasible;
+                converted.termination_name = "feasible";
                 converted.has_feasible_solution = true;
                 converted.adapter_status = "passed";
                 converted.active_edge_ids = mapped.active_edge_ids;

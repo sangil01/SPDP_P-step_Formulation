@@ -6,7 +6,7 @@
       {
         "id": "242db59fe749fd4f",
         "type": "tabs",
-        "dimension": 57.1619812583668,
+        "dimension": 63.11166875784191,
         "children": [
           {
             "id": "a730609999747ef0",
@@ -27,7 +27,7 @@
       {
         "id": "5b4569e2f57c5e3d",
         "type": "tabs",
-        "dimension": 42.8380187416332,
+        "dimension": 36.888331242158095,
         "children": [
           {
             "id": "731ec9fecafc0bba",
@@ -100,7 +100,7 @@
             }
           }
         ],
-        "currentTab": 1
+        "currentTab": 4
       }
     ],
     "direction": "vertical"
@@ -159,7 +159,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 282.5
+    "width": 470.5
   },
   "right": {
     "id": "b90d585d0fa44aa9",
@@ -266,15 +266,17 @@
   },
   "active": "a730609999747ef0",
   "lastOpenFiles": [
+    "104. Forward dominance rule exactness proof.md",
+    "9_6. CP for exact K_min.md",
+    "9_7. Acceleration method duration IP and incumbent solution.md",
+    "0. TO DO.md",
+    "9_5. Initial-incumbent warm start.md",
+    "109. SPDP difficulty analysis.md",
     "2. Skip Pick-up and Delivery Problem (SPDP).md",
     "3. P-step Formulation for SPDP-flexible.md",
-    "9_6. CP for exact K_min.md",
     "9_1. Valid inequalities for tightening LP bound.md",
-    "9_5. Initial-incumbent warm start.md",
     "9_4. Exact minimum number of vehicles.md",
     "9_3. 2-index formulation on multigraph.md",
-    "0. TO DO.md",
-    "109. SPDP difficulty analysis.md",
     "(SPDP_output_issue_(must not remove)).md",
     "4_1. Pricing.md",
     "4_2. For efficient pricing.md",
@@ -293,9 +295,7 @@
     "100. p-step labeling efficiency.md",
     "106. Exactness proof with short boundary p-step in heuristic CG for initial column set.md",
     "105. Patterns in optimal solution.md",
-    "104. Forward dominance rule exactness proof.md",
     "102. Pricing complexity.md",
-    "101. Pick-up, Delivery symmetry breaking as a valid strengthening.md",
     "TS (2025) A p-step Formulation for the Capacitated Vehicle Routing Problem_초안.pdf",
     "images/Pasted image 20260702154259.png",
     "COR (2022) Transport of skips between recycling centers and treatment facilities.pdf",

@@ -20,7 +20,8 @@ enum class InitialIncumbentBackend {
 enum class FixedKSolveOutcome {
     Feasible,
     ProvenInfeasible,
-    Unknown,
+    TimedOutUnknown,
+    EarlyUnknown,
     ModelInvalid,
     AdapterError,
 };
@@ -34,15 +35,18 @@ struct InitialIncumbentSolveOptions {
 
 struct InitialIncumbentSolveResult {
     InitialIncumbentBackend backend = InitialIncumbentBackend::TwoIndexMilp;
-    FixedKSolveOutcome outcome = FixedKSolveOutcome::Unknown;
+    FixedKSolveOutcome outcome = FixedKSolveOutcome::EarlyUnknown;
     int status = 0;
     int raw_status = 0;
     std::string status_name;
+    std::string termination_name;
     bool hit_time_limit = false;
+    bool early_unknown = false;
     bool hit_solution_limit = false;
     bool infeasible = false;
     bool has_feasible_solution = false;
     double runtime_seconds = 0.0;
+    double configured_time_limit_seconds = 0.0;
     double total_duration = -1.0;
     double total_original_cost = -1.0;
     int vehicle_count = 0;
@@ -53,6 +57,7 @@ struct InitialIncumbentSolveResult {
     CpModelBuildStats cp_build_stats;
     std::string adapter_status;
     std::string error_message;
+    std::string solution_info;
 };
 
 enum class InitialIncumbentTimeoutAction {
@@ -90,6 +95,8 @@ struct InitialIncumbentSearchResult {
     int incumbent_k = 0;
     bool has_feasible_solution = false;
     bool stopped_on_time_limit = false;
+    bool stopped_on_early_unknown = false;
+    int early_unknown_k = 0;
     bool exhausted_increment_limit = false;
     bool exhausted_candidate_limit = false;
     double total_runtime_seconds = 0.0;

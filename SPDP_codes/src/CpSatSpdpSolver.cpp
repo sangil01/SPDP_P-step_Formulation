@@ -169,11 +169,34 @@ LinearExpr bool_sum(const std::vector<BoolVar>& vars) {
 
 }  // namespace
 
+CpSolveOutcome classify_cp_unknown_outcome(
+    double configured_time_limit_seconds,
+    double solver_wall_time_seconds
+) {
+    if (!(configured_time_limit_seconds > 0.0) ||
+        !std::isfinite(configured_time_limit_seconds) ||
+        !std::isfinite(solver_wall_time_seconds)) {
+        return CpSolveOutcome::EarlyUnknown;
+    }
+
+    // CP-SAT can report a wall time a few milliseconds below its configured
+    // limit.  Cap the tolerance at 0.1 s so substantially early returns such
+    // as 87.47/1200 s can never be classified as timeouts.
+    const double tolerance = std::min(
+        0.1,
+        std::max(0.001, configured_time_limit_seconds * 1e-6)
+    );
+    return solver_wall_time_seconds + tolerance >= configured_time_limit_seconds
+        ? CpSolveOutcome::TimedOutUnknown
+        : CpSolveOutcome::EarlyUnknown;
+}
+
 CpFixedKSolveResult solve_fixed_k_cp_sat(
     const SPDPData& data,
     const CpSatSolveOptions& options
 ) {
     CpFixedKSolveResult result;
+    result.configured_time_limit_seconds = options.time_limit_seconds;
     const bool write_log_file = !options.log_file_path.empty();
     std::ofstream log_file;
     if (write_log_file) {
@@ -181,6 +204,7 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
         if (!log_file) {
             result.outcome = CpSolveOutcome::ModelInvalid;
             result.status_name = "MODEL_INVALID";
+            result.termination_name = "model-invalid";
             result.error_message =
                 "Failed to create CP-SAT log file: " + options.log_file_path;
             return result;
@@ -202,6 +226,7 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
         options.time_limit_seconds < 0.0) {
         result.outcome = CpSolveOutcome::ModelInvalid;
         result.status_name = "MODEL_INVALID";
+        result.termination_name = "model-invalid";
         result.error_message = "Invalid CP-SAT solve options.";
         append_early_log(result.status_name, result.error_message);
         return result;
@@ -211,6 +236,7 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
     if (!convert_integer_data(data, integer_data, result.error_message)) {
         result.outcome = CpSolveOutcome::ModelInvalid;
         result.status_name = "MODEL_INVALID";
+        result.termination_name = "model-invalid";
         append_early_log(result.status_name, result.error_message);
         return result;
     }
@@ -220,6 +246,7 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
     if (n == 0 || k_count > n) {
         result.outcome = CpSolveOutcome::ProvenInfeasible;
         result.status_name = "INFEASIBLE";
+        result.termination_name = "proven-infeasible";
         append_early_log(
             result.status_name,
             "Exact vehicle count exceeds the number of requests."
@@ -617,25 +644,36 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
 
     result.raw_status = static_cast<int>(response.status());
     result.status_name = operations_research::sat::CpSolverStatus_Name(response.status());
+    result.solution_info = response.solution_info();
     result.wall_time_seconds = response.wall_time();
     result.conflicts = response.num_conflicts();
     result.branches = response.num_branches();
     if (response.status() == operations_research::sat::CpSolverStatus::INFEASIBLE) {
         result.outcome = CpSolveOutcome::ProvenInfeasible;
+        result.termination_name = "proven-infeasible";
         return result;
     }
     if (response.status() == operations_research::sat::CpSolverStatus::MODEL_INVALID) {
         result.outcome = CpSolveOutcome::ModelInvalid;
-        result.error_message = response.solution_info();
+        result.termination_name = "model-invalid";
+        result.error_message = result.solution_info;
         return result;
     }
     if (response.status() != operations_research::sat::CpSolverStatus::FEASIBLE &&
         response.status() != operations_research::sat::CpSolverStatus::OPTIMAL) {
-        result.outcome = CpSolveOutcome::Unknown;
+        result.outcome = classify_cp_unknown_outcome(
+            result.configured_time_limit_seconds,
+            result.wall_time_seconds
+        );
+        result.hit_time_limit = result.outcome == CpSolveOutcome::TimedOutUnknown;
+        result.early_unknown = result.outcome == CpSolveOutcome::EarlyUnknown;
+        result.termination_name = result.hit_time_limit
+            ? "timed-out-unknown" : "early-unknown";
         return result;
     }
 
     result.outcome = CpSolveOutcome::Feasible;
+    result.termination_name = "feasible";
     std::map<int, int> successor;
     for (const ArcVariable& arc : arcs) {
         if (operations_research::sat::SolutionBooleanValue(response, arc.literal)) {

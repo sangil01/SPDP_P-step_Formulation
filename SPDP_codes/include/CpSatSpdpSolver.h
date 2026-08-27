@@ -10,7 +10,13 @@
 namespace spdp {
 
 enum class CpActionKind { Pickup, Treatment, Delivery };
-enum class CpSolveOutcome { Feasible, ProvenInfeasible, Unknown, ModelInvalid };
+enum class CpSolveOutcome {
+    Feasible,
+    ProvenInfeasible,
+    TimedOutUnknown,
+    EarlyUnknown,
+    ModelInvalid,
+};
 
 struct CpSymmetryOptions {
     bool first_pickup_vehicle_ordering = false;
@@ -56,16 +62,26 @@ struct CpModelBuildStats {
 };
 
 struct CpFixedKSolveResult {
-    CpSolveOutcome outcome = CpSolveOutcome::Unknown;
+    CpSolveOutcome outcome = CpSolveOutcome::EarlyUnknown;
     int raw_status = 0;
     std::string status_name;
+    std::string termination_name;
     std::string error_message;
+    std::string solution_info;
     double wall_time_seconds = 0.0;
+    double configured_time_limit_seconds = 0.0;
+    bool hit_time_limit = false;
+    bool early_unknown = false;
     std::int64_t conflicts = 0;
     std::int64_t branches = 0;
     CpModelBuildStats build_stats;
     std::vector<CpActionRoute> routes;
 };
+
+CpSolveOutcome classify_cp_unknown_outcome(
+    double configured_time_limit_seconds,
+    double solver_wall_time_seconds
+);
 
 CpFixedKSolveResult solve_fixed_k_cp_sat(
     const SPDPData& data,
