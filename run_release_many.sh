@@ -25,6 +25,16 @@ INITIAL_INCUMBENT_ENABLE=1
 INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=2 # additional K values after the initial lower bound
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
+INITIAL_INCUMBENT_BACKEND=two-index-milp # Options: two-index-milp, cp-sat
+INITIAL_INCUMBENT_CP_WORKERS=0
+INITIAL_INCUMBENT_CP_RANDOM_SEED=1
+INITIAL_INCUMBENT_CP_LOG_PROGRESS=0
+INITIAL_INCUMBENT_CP_TERMINAL_BALANCE=1
+INITIAL_INCUMBENT_CP_FULL_RESERVOIR=1
+INITIAL_INCUMBENT_CP_CONTAINER_WORKLOAD=0
+INITIAL_INCUMBENT_CP_AGGREGATE_DURATION=1
+INITIAL_INCUMBENT_CP_FIRST_PICKUP_SYMMETRY=0
+INITIAL_INCUMBENT_CP_SYMMETRY_43=0
 GUROBI_THREADS=0
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
@@ -188,7 +198,10 @@ if [[ "$SOLVER_MODE" == "enumeration" ]]; then
 fi
 RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}${ENUMERATION_SOS1_TAG}${RUN_TAG_SUFFIX}"
 if [[ "$INITIAL_INCUMBENT_ENABLE" == "1" ]]; then
-    RUN_TAG+="_initial-incumbent-${INITIAL_INCUMBENT_TIME_LIMIT}s-kinc${INITIAL_INCUMBENT_MAX_K_INCREMENTS}-timeout-${INITIAL_INCUMBENT_TIMEOUT_ACTION}"
+    RUN_TAG+="_initial-incumbent-${INITIAL_INCUMBENT_BACKEND}-${INITIAL_INCUMBENT_TIME_LIMIT}s-kinc${INITIAL_INCUMBENT_MAX_K_INCREMENTS}-timeout-${INITIAL_INCUMBENT_TIMEOUT_ACTION}"
+    if [[ "$INITIAL_INCUMBENT_BACKEND" == "cp-sat" ]]; then
+        RUN_TAG+="-cpw${INITIAL_INCUMBENT_CP_WORKERS}-seed${INITIAL_INCUMBENT_CP_RANDOM_SEED}-tb${INITIAL_INCUMBENT_CP_TERMINAL_BALANCE}-fr${INITIAL_INCUMBENT_CP_FULL_RESERVOIR}-cw${INITIAL_INCUMBENT_CP_CONTAINER_WORKLOAD}-ad${INITIAL_INCUMBENT_CP_AGGREGATE_DURATION}-fp${INITIAL_INCUMBENT_CP_FIRST_PICKUP_SYMMETRY}-s43${INITIAL_INCUMBENT_CP_SYMMETRY_43}"
+    fi
 fi
 RUNNER_LOG="$SCRIPT_DIR/${RUN_TAG}.log"
 SUMMARY_XLSX="$SCRIPT_DIR/${RUN_TAG}.xlsx"
@@ -244,6 +257,16 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-time-limit: $INITIAL_INCUMBENT_TIME_LIMIT"
         echo "initial-incumbent-max-k-increments: $INITIAL_INCUMBENT_MAX_K_INCREMENTS"
         echo "initial-incumbent-timeout-action: $INITIAL_INCUMBENT_TIMEOUT_ACTION"
+        echo "initial-incumbent-backend: $INITIAL_INCUMBENT_BACKEND"
+        echo "initial-incumbent-cp-workers: $INITIAL_INCUMBENT_CP_WORKERS"
+        echo "initial-incumbent-cp-random-seed: $INITIAL_INCUMBENT_CP_RANDOM_SEED"
+        echo "initial-incumbent-cp-log-progress: $INITIAL_INCUMBENT_CP_LOG_PROGRESS"
+        echo "initial-incumbent-cp-terminal-balance: $INITIAL_INCUMBENT_CP_TERMINAL_BALANCE"
+        echo "initial-incumbent-cp-full-reservoir: $INITIAL_INCUMBENT_CP_FULL_RESERVOIR"
+        echo "initial-incumbent-cp-container-workload: $INITIAL_INCUMBENT_CP_CONTAINER_WORKLOAD"
+        echo "initial-incumbent-cp-aggregate-duration: $INITIAL_INCUMBENT_CP_AGGREGATE_DURATION"
+        echo "initial-incumbent-cp-first-pickup-symmetry: $INITIAL_INCUMBENT_CP_FIRST_PICKUP_SYMMETRY"
+        echo "initial-incumbent-cp-symmetry-43: $INITIAL_INCUMBENT_CP_SYMMETRY_43"
         echo "vi-formulation: $VI_FORMULATION"
         echo "cg-max-iterations-per-phase: $CG_MAX_ITERATIONS_PER_PHASE"
         echo "exact-pricing-max-columns-per-start: $EXACT_PRICING_MAX_COLUMNS_PER_START"
@@ -315,6 +338,16 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-time-limit "$INITIAL_INCUMBENT_TIME_LIMIT" \
         --initial-incumbent-max-k-increments "$INITIAL_INCUMBENT_MAX_K_INCREMENTS" \
         --initial-incumbent-timeout-action "$INITIAL_INCUMBENT_TIMEOUT_ACTION" \
+        --initial-incumbent-backend "$INITIAL_INCUMBENT_BACKEND" \
+        --initial-incumbent-cp-workers "$INITIAL_INCUMBENT_CP_WORKERS" \
+        --initial-incumbent-cp-random-seed "$INITIAL_INCUMBENT_CP_RANDOM_SEED" \
+        --initial-incumbent-cp-log-progress "$INITIAL_INCUMBENT_CP_LOG_PROGRESS" \
+        --initial-incumbent-cp-terminal-balance "$INITIAL_INCUMBENT_CP_TERMINAL_BALANCE" \
+        --initial-incumbent-cp-full-reservoir "$INITIAL_INCUMBENT_CP_FULL_RESERVOIR" \
+        --initial-incumbent-cp-container-workload "$INITIAL_INCUMBENT_CP_CONTAINER_WORKLOAD" \
+        --initial-incumbent-cp-aggregate-duration "$INITIAL_INCUMBENT_CP_AGGREGATE_DURATION" \
+        --initial-incumbent-cp-first-pickup-symmetry "$INITIAL_INCUMBENT_CP_FIRST_PICKUP_SYMMETRY" \
+        --initial-incumbent-cp-symmetry-43 "$INITIAL_INCUMBENT_CP_SYMMETRY_43" \
         --gurobi-threads "$GUROBI_THREADS" \
         --vi-formulation "$VI_FORMULATION" \
         --dump-psteps "$DUMP_PSTEPS" \

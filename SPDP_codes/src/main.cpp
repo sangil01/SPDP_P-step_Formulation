@@ -33,6 +33,16 @@ struct CliOptions {
     double initial_incumbent_time_limit = 60.0;
     int initial_incumbent_max_k_increments = 0;
     std::string initial_incumbent_timeout_action = "stop";
+    std::string initial_incumbent_backend = "two-index-milp";
+    int initial_incumbent_cp_workers = 0;
+    int initial_incumbent_cp_random_seed = 1;
+    int initial_incumbent_cp_log_progress = 0;
+    int initial_incumbent_cp_terminal_balance = 1;
+    int initial_incumbent_cp_full_reservoir = 1;
+    int initial_incumbent_cp_container_workload = 0;
+    int initial_incumbent_cp_aggregate_duration = 1;
+    int initial_incumbent_cp_first_pickup_symmetry = 0;
+    int initial_incumbent_cp_symmetry_43 = 0;
     int gurobi_threads = -1;
     std::string solver_mode = "enumeration";
     std::string enumeration_sos1_mode = "default";
@@ -111,6 +121,16 @@ void print_usage(const char* executable) {
               << " [--initial-incumbent-time-limit T]"
               << " [--initial-incumbent-max-k-increments N]"
               << " [--initial-incumbent-timeout-action stop|advance]"
+              << " [--initial-incumbent-backend two-index-milp|cp-sat]"
+              << " [--initial-incumbent-cp-workers N]"
+              << " [--initial-incumbent-cp-random-seed N]"
+              << " [--initial-incumbent-cp-log-progress 0|1]"
+              << " [--initial-incumbent-cp-terminal-balance 0|1]"
+              << " [--initial-incumbent-cp-full-reservoir 0|1]"
+              << " [--initial-incumbent-cp-container-workload 0|1]"
+              << " [--initial-incumbent-cp-aggregate-duration 0|1]"
+              << " [--initial-incumbent-cp-first-pickup-symmetry 0|1]"
+              << " [--initial-incumbent-cp-symmetry-43 0|1]"
               << " [--solver-mode enumeration|branch-and-price]"
               << " [--enumeration-sos1-mode default|sos1-auto|sos1-native]"
               << " [--enumeration-objective original-cost|travel-cost-only|duration|duration-plus-fixed]"
@@ -232,6 +252,16 @@ std::string parse_initial_incumbent_timeout_action(const std::string& value) {
     throw std::runtime_error(
         "Invalid value for --initial-incumbent-timeout-action: " + value +
         " (expected stop or advance)"
+    );
+}
+
+std::string parse_initial_incumbent_backend(const std::string& value) {
+    if (value == "two-index-milp" || value == "cp-sat") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --initial-incumbent-backend: " + value +
+        " (expected two-index-milp or cp-sat)"
     );
 }
 
@@ -420,6 +450,18 @@ spdp::InitialIncumbentTimeoutAction to_initial_incumbent_timeout_action(
     throw std::runtime_error(
         "Unsupported initial-incumbent timeout action: " + value
     );
+}
+
+spdp::InitialIncumbentBackend to_initial_incumbent_backend(
+    const std::string& value
+) {
+    if (value == "two-index-milp") {
+        return spdp::InitialIncumbentBackend::TwoIndexMilp;
+    }
+    if (value == "cp-sat") {
+        return spdp::InitialIncumbentBackend::CpSat;
+    }
+    throw std::runtime_error("Unsupported initial-incumbent backend: " + value);
 }
 
 spdp::VI44KMinOptions make_vi_44_k_min_options(
@@ -715,6 +757,61 @@ CliOptions parse_cli(int argc, char** argv) {
             }
             options.initial_incumbent_timeout_action =
                 parse_initial_incumbent_timeout_action(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-backend") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--initial-incumbent-backend requires a value.");
+            }
+            options.initial_incumbent_backend =
+                parse_initial_incumbent_backend(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-cp-workers" ||
+            arg == "--initial-incumbent-cp-random-seed") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const int value = parse_int(argv[++idx], arg);
+            if (value < 0) {
+                throw std::runtime_error(arg + " must be nonnegative.");
+            }
+            if (arg == "--initial-incumbent-cp-workers") {
+                options.initial_incumbent_cp_workers = value;
+            } else {
+                options.initial_incumbent_cp_random_seed = value;
+            }
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-cp-log-progress" ||
+            arg == "--initial-incumbent-cp-terminal-balance" ||
+            arg == "--initial-incumbent-cp-full-reservoir" ||
+            arg == "--initial-incumbent-cp-container-workload" ||
+            arg == "--initial-incumbent-cp-aggregate-duration" ||
+            arg == "--initial-incumbent-cp-first-pickup-symmetry" ||
+            arg == "--initial-incumbent-cp-symmetry-43") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const int value = parse_binary_flag(argv[++idx], arg);
+            if (arg == "--initial-incumbent-cp-log-progress") {
+                options.initial_incumbent_cp_log_progress = value;
+            } else if (arg == "--initial-incumbent-cp-terminal-balance") {
+                options.initial_incumbent_cp_terminal_balance = value;
+            } else if (arg == "--initial-incumbent-cp-full-reservoir") {
+                options.initial_incumbent_cp_full_reservoir = value;
+            } else if (arg == "--initial-incumbent-cp-container-workload") {
+                options.initial_incumbent_cp_container_workload = value;
+            } else if (arg == "--initial-incumbent-cp-aggregate-duration") {
+                options.initial_incumbent_cp_aggregate_duration = value;
+            } else if (arg == "--initial-incumbent-cp-first-pickup-symmetry") {
+                options.initial_incumbent_cp_first_pickup_symmetry = value;
+            } else {
+                options.initial_incumbent_cp_symmetry_43 = value;
+            }
             continue;
         }
 
@@ -1865,8 +1962,12 @@ int main(int argc, char** argv) {
                 << args.initial_incumbent_max_k_increments << '\n';
             output_file << "[initial-incumbent] timeout_action="
                 << args.initial_incumbent_timeout_action << '\n';
+            output_file << "[initial-incumbent] backend="
+                << args.initial_incumbent_backend << '\n';
 
             spdp::InitialIncumbentSearchOptions search_options;
+            search_options.backend =
+                to_initial_incumbent_backend(args.initial_incumbent_backend);
             search_options.initial_vehicle_count = initial_k;
             search_options.max_k_increments =
                 args.initial_incumbent_max_k_increments;
@@ -1879,6 +1980,23 @@ int main(int argc, char** argv) {
             search_options.gurobi_threads = args.gurobi_threads;
             search_options.gurobi_log_base_path =
                 build_initial_incumbent_gurobi_log_path(args.instance).string();
+            search_options.cp_sat.workers = args.initial_incumbent_cp_workers;
+            search_options.cp_sat.random_seed =
+                args.initial_incumbent_cp_random_seed;
+            search_options.cp_sat.log_search_progress =
+                args.initial_incumbent_cp_log_progress == 1;
+            search_options.cp_sat.redundant.terminal_balance =
+                args.initial_incumbent_cp_terminal_balance == 1;
+            search_options.cp_sat.redundant.full_skip_reservoir =
+                args.initial_incumbent_cp_full_reservoir == 1;
+            search_options.cp_sat.redundant.container_workload =
+                args.initial_incumbent_cp_container_workload == 1;
+            search_options.cp_sat.redundant.aggregate_duration =
+                args.initial_incumbent_cp_aggregate_duration == 1;
+            search_options.cp_sat.symmetry.first_pickup_vehicle_ordering =
+                args.initial_incumbent_cp_first_pickup_symmetry == 1;
+            search_options.cp_sat.symmetry.cor_43_identical_pickup_time_ordering =
+                args.initial_incumbent_cp_symmetry_43 == 1;
 
             const spdp::InitialIncumbentSearchResult search_result =
                 spdp::solve_iterative_duration_initial_incumbent(
@@ -1897,6 +2015,11 @@ int main(int argc, char** argv) {
                 output_file << "[initial-incumbent-attempt] index="
                     << attempt.attempt_index
                     << " k=" << attempt.vehicle_count
+                    << " backend="
+                    << (attempt.solve_result.backend ==
+                            spdp::InitialIncumbentBackend::CpSat
+                        ? "cp-sat" : "two-index-milp")
+                    << " status_name=" << attempt.solve_result.status_name
                     << " gurobi_status=" << attempt.solve_result.status
                     << " infeasible="
                     << (attempt.solve_result.infeasible ? 1 : 0)
@@ -1908,8 +2031,22 @@ int main(int argc, char** argv) {
                     << (attempt.solve_result.has_feasible_solution ? 1 : 0)
                     << " runtime_seconds="
                     << format_double(attempt.solve_result.runtime_seconds)
+                    << " conflicts=" << attempt.solve_result.conflicts
+                    << " branches=" << attempt.solve_result.branches
+                    << " cor_40_pruned_arcs="
+                    << attempt.solve_result.cp_build_stats.cor_40_pruned_arcs
+                    << " cor_41_pruned_arcs="
+                    << attempt.solve_result.cp_build_stats.cor_41_pruned_arcs
+                    << " cor_43_constraint_count="
+                    << attempt.solve_result.cp_build_stats.cor_43_constraint_count
+                    << " adapter_status=" << attempt.solve_result.adapter_status
                     << " gurobi_log_path=" << attempt.gurobi_log_path
                     << '\n';
+                if (!attempt.solve_result.error_message.empty()) {
+                    output_file << "[initial-incumbent-attempt-error] index="
+                        << attempt.attempt_index << " message="
+                        << attempt.solve_result.error_message << '\n';
+                }
             }
 
             const spdp::InitialIncumbentAttemptResult& last_attempt =
@@ -1944,14 +2081,8 @@ int main(int argc, char** argv) {
             if (search_result.has_feasible_solution) {
                 const spdp::InitialIncumbentSolveResult& initial_result =
                     search_result.incumbent_result;
-                std::vector<int> active_edge_ids;
-                for (std::size_t edge_id = 0;
-                     edge_id < initial_result.edge_values.size();
-                     ++edge_id) {
-                    if (initial_result.edge_values[edge_id] > 0.5) {
-                        active_edge_ids.push_back(static_cast<int>(edge_id));
-                    }
-                }
+                const std::vector<int>& active_edge_ids =
+                    initial_result.active_edge_ids;
                 spdp::RecoveredSolution recovered =
                     spdp::recover_selected_edge_solution(
                         data,

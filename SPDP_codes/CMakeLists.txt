@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(SPDP_ENABLE_ONEMKL "Enable optional Intel oneMKL backend support" OFF)
+option(SPDP_ENABLE_LONG_CP_TESTS "Register long CP-SAT benchmark tests" OFF)
 
 set(GUROBI_HOME "/opt/gurobi1301/linux64" CACHE PATH "Path to the Gurobi installation")
 set(ORTOOLS_HOME "/opt/or-tools" CACHE PATH "Path to the OR-Tools installation")
@@ -46,10 +47,12 @@ message(STATUS "Using Gurobi include dir: ${GUROBI_INCLUDE_DIR}")
 message(STATUS "Using Gurobi C++ source dir: ${GUROBI_CPP_DIR}")
 message(STATUS "Using Gurobi core library: ${GUROBI_CORE_LIB}")
 
-add_executable(SPDP_P_step
-    src/main.cpp
+add_library(spdp_core STATIC
     src/ReadData.cpp
     src/GenMultiGraph.cpp
+    src/RouteState.cpp
+    src/CpSatSpdpSolver.cpp
+    src/CpIncumbentAdapter.cpp
     src/TwoIndexModelCore.cpp
     src/KMinComputation.cpp
     src/PstepValidInequality.cpp
@@ -62,8 +65,15 @@ add_executable(SPDP_P_step
     ${GUROBI_CPP_SOURCES}
 )
 
-target_include_directories(SPDP_P_step PRIVATE include "${GUROBI_INCLUDE_DIR}" "${GUROBI_CPP_DIR}")
-target_link_libraries(SPDP_P_step PRIVATE "${GUROBI_CORE_LIB}" ortools::ortools)
+target_include_directories(
+    spdp_core
+    PUBLIC include "${GUROBI_INCLUDE_DIR}" "${GUROBI_CPP_DIR}"
+    PRIVATE src
+)
+target_link_libraries(spdp_core PUBLIC "${GUROBI_CORE_LIB}" ortools::ortools)
+
+add_executable(SPDP_P_step src/main.cpp)
+target_link_libraries(SPDP_P_step PRIVATE spdp_core)
 
 set(SPDP_BUILD_RPATH "${GUROBI_LIB_DIR}" "${ORTOOLS_HOME}/lib")
 
@@ -74,8 +84,8 @@ if(SPDP_ENABLE_ONEMKL)
 
     find_package(MKL CONFIG REQUIRED)
     message(STATUS "Intel oneMKL enabled via MKL_DIR=${MKL_DIR}")
-    target_compile_definitions(SPDP_P_step PRIVATE SPDP_HAVE_ONEMKL=1)
-    target_link_libraries(SPDP_P_step PRIVATE MKL::MKL)
+    target_compile_definitions(spdp_core PRIVATE SPDP_HAVE_ONEMKL=1)
+    target_link_libraries(spdp_core PUBLIC MKL::MKL)
 
     if(DEFINED MKL_ROOT)
         list(APPEND SPDP_BUILD_RPATH "${MKL_ROOT}/lib")
@@ -89,3 +99,69 @@ endif()
 set_target_properties(SPDP_P_step PROPERTIES
     BUILD_RPATH "${SPDP_BUILD_RPATH}"
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(
+        SPDP_cp_tests
+        tests/TestMain.cpp
+        tests/RouteStateTests.cpp
+        tests/InitialIncumbentSearchTests.cpp
+        tests/CpSatSpdpSolverTests.cpp
+        tests/CpIncumbentAdapterTests.cpp
+    )
+    target_include_directories(SPDP_cp_tests PRIVATE tests)
+    target_link_libraries(SPDP_cp_tests PRIVATE spdp_core)
+    set_target_properties(
+        SPDP_cp_tests
+        PROPERTIES BUILD_RPATH "${SPDP_BUILD_RPATH}"
+    )
+    add_test(NAME route_state COMMAND SPDP_cp_tests --case route_state)
+    add_test(NAME initial_incumbent_search COMMAND SPDP_cp_tests --case initial_incumbent_search)
+    add_test(NAME initial_incumbent_backend COMMAND SPDP_cp_tests --case initial_incumbent_backend)
+    add_test(NAME cp_data COMMAND SPDP_cp_tests --case cp_data)
+    add_test(NAME cp_symmetry COMMAND SPDP_cp_tests --case cp_symmetry)
+    add_test(NAME cp_core COMMAND SPDP_cp_tests --case cp_core)
+    add_test(NAME cp_adapter COMMAND SPDP_cp_tests --case cp_adapter)
+    add_test(NAME cli COMMAND SPDP_P_step --help)
+    set_tests_properties(
+        cli
+        PROPERTIES PASS_REGULAR_EXPRESSION "initial-incumbent-backend two-index-milp\\|cp-sat"
+    )
+    add_test(
+        NAME cli_invalid_cp_flag
+        COMMAND SPDP_P_step --initial-incumbent-cp-symmetry-43 2
+    )
+    set_tests_properties(cli_invalid_cp_flag PROPERTIES WILL_FAIL TRUE)
+
+    set(
+        SPDP_TEST_DATA_DIR
+        "${CMAKE_SOURCE_DIR}/../SPDP_data"
+        CACHE PATH
+        "Directory containing SPDP benchmark .dat files"
+    )
+    if(SPDP_ENABLE_LONG_CP_TESTS AND
+       EXISTS "${SPDP_TEST_DATA_DIR}/RecDep_day_A6.dat")
+        foreach(
+            benchmark_case
+            benchmark_a6
+            benchmark_a6_k2_default
+            benchmark_d5_k7
+            benchmark_d5_k8
+            benchmark_c19_k12
+            benchmark_c19_k13
+        )
+            add_test(
+                NAME ${benchmark_case}
+                COMMAND SPDP_cp_tests --case ${benchmark_case}
+            )
+            set_tests_properties(
+                ${benchmark_case}
+                PROPERTIES
+                    LABELS long
+                    ENVIRONMENT "SPDP_TEST_DATA_DIR=${SPDP_TEST_DATA_DIR}"
+                    TIMEOUT 1300
+            )
+        endforeach()
+    endif()
+endif()

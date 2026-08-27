@@ -1,13 +1,29 @@
 #ifndef SPDP_INITIAL_INCUMBENT_H
 #define SPDP_INITIAL_INCUMBENT_H
 
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
+#include "CpSatSpdpSolver.h"
 #include "GenMultiGraph.h"
 #include "ReadData.h"
 
 namespace spdp {
+
+enum class InitialIncumbentBackend {
+    TwoIndexMilp,
+    CpSat,
+};
+
+enum class FixedKSolveOutcome {
+    Feasible,
+    ProvenInfeasible,
+    Unknown,
+    ModelInvalid,
+    AdapterError,
+};
 
 struct InitialIncumbentSolveOptions {
     int vehicle_count = 0;
@@ -17,7 +33,11 @@ struct InitialIncumbentSolveOptions {
 };
 
 struct InitialIncumbentSolveResult {
+    InitialIncumbentBackend backend = InitialIncumbentBackend::TwoIndexMilp;
+    FixedKSolveOutcome outcome = FixedKSolveOutcome::Unknown;
     int status = 0;
+    int raw_status = 0;
+    std::string status_name;
     bool hit_time_limit = false;
     bool hit_solution_limit = false;
     bool infeasible = false;
@@ -27,6 +47,12 @@ struct InitialIncumbentSolveResult {
     double total_original_cost = -1.0;
     int vehicle_count = 0;
     std::vector<double> edge_values;
+    std::vector<int> active_edge_ids;
+    std::int64_t conflicts = 0;
+    std::int64_t branches = 0;
+    CpModelBuildStats cp_build_stats;
+    std::string adapter_status;
+    std::string error_message;
 };
 
 enum class InitialIncumbentTimeoutAction {
@@ -35,6 +61,7 @@ enum class InitialIncumbentTimeoutAction {
 };
 
 struct InitialIncumbentSearchOptions {
+    InitialIncumbentBackend backend = InitialIncumbentBackend::TwoIndexMilp;
     int initial_vehicle_count = 0;
     int max_k_increments = 0;
     InitialIncumbentTimeoutAction timeout_action =
@@ -42,7 +69,11 @@ struct InitialIncumbentSearchOptions {
     double per_attempt_time_limit = 0.0;
     int gurobi_threads = -1;
     std::string gurobi_log_base_path;
+    CpSatSolveOptions cp_sat;
 };
+
+using FixedKSolveCallback =
+    std::function<InitialIncumbentSolveResult(int vehicle_count)>;
 
 struct InitialIncumbentAttemptResult {
     int attempt_index = 0;
@@ -75,6 +106,12 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
     const SPDPData& data,
     const MultiDiGraph& graph,
     const InitialIncumbentSearchOptions& options
+);
+
+InitialIncumbentSearchResult run_iterative_initial_incumbent_search(
+    const InitialIncumbentSearchOptions& options,
+    int max_candidate_k,
+    const FixedKSolveCallback& solve_fixed_k
 );
 
 }  // namespace spdp
