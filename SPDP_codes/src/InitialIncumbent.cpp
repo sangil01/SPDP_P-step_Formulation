@@ -262,13 +262,15 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
         );
     }
 
-    const std::filesystem::path base_log_path(options.gurobi_log_base_path);
-    auto log_path_for_k = [&base_log_path, &options](int vehicle_count) {
-        if (options.gurobi_log_base_path.empty()) {
+    auto log_path_for_k = [](const std::string& base_path_string,
+                             const std::string& solver_suffix,
+                             int vehicle_count) {
+        if (base_path_string.empty()) {
             return std::string{};
         }
+        const std::filesystem::path base_log_path(base_path_string);
         std::string stem = base_log_path.stem().string();
-        const std::string suffix = "_gurobi";
+        const std::string suffix = "_" + solver_suffix;
         if (stem.size() >= suffix.size() &&
             stem.compare(stem.size() - suffix.size(), suffix.size(), suffix) == 0) {
             stem.erase(stem.size() - suffix.size());
@@ -289,6 +291,9 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
                 CpSatSolveOptions cp_options = options.cp_sat;
                 cp_options.vehicle_count = vehicle_count;
                 cp_options.time_limit_seconds = options.per_attempt_time_limit;
+                cp_options.log_file_path = log_path_for_k(
+                    options.cp_sat_log_base_path, "cp_sat", vehicle_count
+                );
                 const CpFixedKSolveResult cp_result =
                     solve_fixed_k_cp_sat(data, cp_options);
                 InitialIncumbentSolveResult converted;
@@ -343,7 +348,9 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
             attempt_options.vehicle_count = vehicle_count;
             attempt_options.solver_time_limit = options.per_attempt_time_limit;
             attempt_options.gurobi_threads = options.gurobi_threads;
-            attempt_options.gurobi_log_path = log_path_for_k(vehicle_count);
+            attempt_options.gurobi_log_path = log_path_for_k(
+                options.gurobi_log_base_path, "gurobi", vehicle_count
+            );
             return solve_fixed_k_duration_initial_incumbent(
                 data, graph, attempt_options
             );
@@ -351,7 +358,11 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
     );
     for (InitialIncumbentAttemptResult& attempt : result.attempts) {
         if (options.backend == InitialIncumbentBackend::TwoIndexMilp) {
-            attempt.gurobi_log_path = log_path_for_k(attempt.vehicle_count);
+            attempt.gurobi_log_path = log_path_for_k(
+                options.gurobi_log_base_path,
+                "gurobi",
+                attempt.vehicle_count
+            );
         }
     }
     return result;

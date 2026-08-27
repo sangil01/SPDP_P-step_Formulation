@@ -28,8 +28,7 @@ struct CpSatSolveOptions {
     int vehicle_count = 0;
     double time_limit_seconds = 0.0;
     int workers = 0;
-    int random_seed = 1;
-    bool log_search_progress = false;
+    std::string log_file_path;
     CpRedundantOptions redundant;
     CpSymmetryOptions symmetry;
 };

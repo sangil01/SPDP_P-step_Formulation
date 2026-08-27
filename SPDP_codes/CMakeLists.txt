@@ -120,17 +120,18 @@ if(BUILD_TESTING)
     add_test(NAME initial_incumbent_search COMMAND SPDP_cp_tests --case initial_incumbent_search)
     add_test(NAME initial_incumbent_backend COMMAND SPDP_cp_tests --case initial_incumbent_backend)
     add_test(NAME cp_data COMMAND SPDP_cp_tests --case cp_data)
+    add_test(NAME cp_log_file COMMAND SPDP_cp_tests --case cp_log_file)
     add_test(NAME cp_symmetry COMMAND SPDP_cp_tests --case cp_symmetry)
     add_test(NAME cp_core COMMAND SPDP_cp_tests --case cp_core)
     add_test(NAME cp_adapter COMMAND SPDP_cp_tests --case cp_adapter)
     add_test(NAME cli COMMAND SPDP_P_step --help)
     set_tests_properties(
         cli
-        PROPERTIES PASS_REGULAR_EXPRESSION "initial-incumbent-backend two-index-milp\\|cp-sat"
+        PROPERTIES PASS_REGULAR_EXPRESSION "initial-incumbent-cp-redundant-terminal-balance"
     )
     add_test(
         NAME cli_invalid_cp_flag
-        COMMAND SPDP_P_step --initial-incumbent-cp-symmetry-43 2
+        COMMAND SPDP_P_step --initial-incumbent-cp-redundant-terminal-balance 2
     )
     set_tests_properties(cli_invalid_cp_flag PROPERTIES WILL_FAIL TRUE)
 

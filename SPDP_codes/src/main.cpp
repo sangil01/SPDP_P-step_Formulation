@@ -35,13 +35,11 @@ struct CliOptions {
     std::string initial_incumbent_timeout_action = "stop";
     std::string initial_incumbent_backend = "two-index-milp";
     int initial_incumbent_cp_workers = 0;
-    int initial_incumbent_cp_random_seed = 1;
-    int initial_incumbent_cp_log_progress = 0;
-    int initial_incumbent_cp_terminal_balance = 1;
-    int initial_incumbent_cp_full_reservoir = 1;
-    int initial_incumbent_cp_container_workload = 0;
-    int initial_incumbent_cp_aggregate_duration = 1;
-    int initial_incumbent_cp_first_pickup_symmetry = 0;
+    int initial_incumbent_cp_redundant_terminal_balance = 1;
+    int initial_incumbent_cp_redundant_full_reservoir = 1;
+    int initial_incumbent_cp_redundant_container_workload = 0;
+    int initial_incumbent_cp_redundant_aggregate_duration = 1;
+    int initial_incumbent_cp_symmetry_first_pickup = 0;
     int initial_incumbent_cp_symmetry_43 = 0;
     int gurobi_threads = -1;
     std::string solver_mode = "enumeration";
@@ -123,13 +121,11 @@ void print_usage(const char* executable) {
               << " [--initial-incumbent-timeout-action stop|advance]"
               << " [--initial-incumbent-backend two-index-milp|cp-sat]"
               << " [--initial-incumbent-cp-workers N]"
-              << " [--initial-incumbent-cp-random-seed N]"
-              << " [--initial-incumbent-cp-log-progress 0|1]"
-              << " [--initial-incumbent-cp-terminal-balance 0|1]"
-              << " [--initial-incumbent-cp-full-reservoir 0|1]"
-              << " [--initial-incumbent-cp-container-workload 0|1]"
-              << " [--initial-incumbent-cp-aggregate-duration 0|1]"
-              << " [--initial-incumbent-cp-first-pickup-symmetry 0|1]"
+              << " [--initial-incumbent-cp-redundant-terminal-balance 0|1]"
+              << " [--initial-incumbent-cp-redundant-full-reservoir 0|1]"
+              << " [--initial-incumbent-cp-redundant-container-workload 0|1]"
+              << " [--initial-incumbent-cp-redundant-aggregate-duration 0|1]"
+              << " [--initial-incumbent-cp-symmetry-first-pickup 0|1]"
               << " [--initial-incumbent-cp-symmetry-43 0|1]"
               << " [--solver-mode enumeration|branch-and-price]"
               << " [--enumeration-sos1-mode default|sos1-auto|sos1-native]"
@@ -769,8 +765,7 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
-        if (arg == "--initial-incumbent-cp-workers" ||
-            arg == "--initial-incumbent-cp-random-seed") {
+        if (arg == "--initial-incumbent-cp-workers") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
             }
@@ -778,37 +773,30 @@ CliOptions parse_cli(int argc, char** argv) {
             if (value < 0) {
                 throw std::runtime_error(arg + " must be nonnegative.");
             }
-            if (arg == "--initial-incumbent-cp-workers") {
-                options.initial_incumbent_cp_workers = value;
-            } else {
-                options.initial_incumbent_cp_random_seed = value;
-            }
+            options.initial_incumbent_cp_workers = value;
             continue;
         }
 
-        if (arg == "--initial-incumbent-cp-log-progress" ||
-            arg == "--initial-incumbent-cp-terminal-balance" ||
-            arg == "--initial-incumbent-cp-full-reservoir" ||
-            arg == "--initial-incumbent-cp-container-workload" ||
-            arg == "--initial-incumbent-cp-aggregate-duration" ||
-            arg == "--initial-incumbent-cp-first-pickup-symmetry" ||
+        if (arg == "--initial-incumbent-cp-redundant-terminal-balance" ||
+            arg == "--initial-incumbent-cp-redundant-full-reservoir" ||
+            arg == "--initial-incumbent-cp-redundant-container-workload" ||
+            arg == "--initial-incumbent-cp-redundant-aggregate-duration" ||
+            arg == "--initial-incumbent-cp-symmetry-first-pickup" ||
             arg == "--initial-incumbent-cp-symmetry-43") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
             }
             const int value = parse_binary_flag(argv[++idx], arg);
-            if (arg == "--initial-incumbent-cp-log-progress") {
-                options.initial_incumbent_cp_log_progress = value;
-            } else if (arg == "--initial-incumbent-cp-terminal-balance") {
-                options.initial_incumbent_cp_terminal_balance = value;
-            } else if (arg == "--initial-incumbent-cp-full-reservoir") {
-                options.initial_incumbent_cp_full_reservoir = value;
-            } else if (arg == "--initial-incumbent-cp-container-workload") {
-                options.initial_incumbent_cp_container_workload = value;
-            } else if (arg == "--initial-incumbent-cp-aggregate-duration") {
-                options.initial_incumbent_cp_aggregate_duration = value;
-            } else if (arg == "--initial-incumbent-cp-first-pickup-symmetry") {
-                options.initial_incumbent_cp_first_pickup_symmetry = value;
+            if (arg == "--initial-incumbent-cp-redundant-terminal-balance") {
+                options.initial_incumbent_cp_redundant_terminal_balance = value;
+            } else if (arg == "--initial-incumbent-cp-redundant-full-reservoir") {
+                options.initial_incumbent_cp_redundant_full_reservoir = value;
+            } else if (arg == "--initial-incumbent-cp-redundant-container-workload") {
+                options.initial_incumbent_cp_redundant_container_workload = value;
+            } else if (arg == "--initial-incumbent-cp-redundant-aggregate-duration") {
+                options.initial_incumbent_cp_redundant_aggregate_duration = value;
+            } else if (arg == "--initial-incumbent-cp-symmetry-first-pickup") {
+                options.initial_incumbent_cp_symmetry_first_pickup = value;
             } else {
                 options.initial_incumbent_cp_symmetry_43 = value;
             }
@@ -1570,6 +1558,14 @@ std::filesystem::path build_initial_incumbent_gurobi_log_path(
         (instance_path.stem().string() + "_initial_incumbent_gurobi.log");
 }
 
+std::filesystem::path build_initial_incumbent_cp_sat_log_path(
+    const std::string& instance
+) {
+    const std::filesystem::path instance_path(instance);
+    return project_root_path() / "SPDP_output" /
+        (instance_path.stem().string() + "_initial_incumbent_cp_sat.log");
+}
+
 void print_instance_summary(
     std::ostream& out,
     const CliOptions& args,
@@ -1980,21 +1976,19 @@ int main(int argc, char** argv) {
             search_options.gurobi_threads = args.gurobi_threads;
             search_options.gurobi_log_base_path =
                 build_initial_incumbent_gurobi_log_path(args.instance).string();
+            search_options.cp_sat_log_base_path =
+                build_initial_incumbent_cp_sat_log_path(args.instance).string();
             search_options.cp_sat.workers = args.initial_incumbent_cp_workers;
-            search_options.cp_sat.random_seed =
-                args.initial_incumbent_cp_random_seed;
-            search_options.cp_sat.log_search_progress =
-                args.initial_incumbent_cp_log_progress == 1;
             search_options.cp_sat.redundant.terminal_balance =
-                args.initial_incumbent_cp_terminal_balance == 1;
+                args.initial_incumbent_cp_redundant_terminal_balance == 1;
             search_options.cp_sat.redundant.full_skip_reservoir =
-                args.initial_incumbent_cp_full_reservoir == 1;
+                args.initial_incumbent_cp_redundant_full_reservoir == 1;
             search_options.cp_sat.redundant.container_workload =
-                args.initial_incumbent_cp_container_workload == 1;
+                args.initial_incumbent_cp_redundant_container_workload == 1;
             search_options.cp_sat.redundant.aggregate_duration =
-                args.initial_incumbent_cp_aggregate_duration == 1;
+                args.initial_incumbent_cp_redundant_aggregate_duration == 1;
             search_options.cp_sat.symmetry.first_pickup_vehicle_ordering =
-                args.initial_incumbent_cp_first_pickup_symmetry == 1;
+                args.initial_incumbent_cp_symmetry_first_pickup == 1;
             search_options.cp_sat.symmetry.cor_43_identical_pickup_time_ordering =
                 args.initial_incumbent_cp_symmetry_43 == 1;
 

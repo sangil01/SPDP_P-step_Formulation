@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <set>
@@ -15,6 +16,7 @@
 #include "ortools/sat/cp_model.h"
 #include "ortools/sat/cp_model_solver.h"
 #include "ortools/sat/sat_parameters.pb.h"
+#include "ortools/util/logging.h"
 
 namespace spdp {
 namespace {
@@ -172,12 +174,36 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
     const CpSatSolveOptions& options
 ) {
     CpFixedKSolveResult result;
+    const bool write_log_file = !options.log_file_path.empty();
+    std::ofstream log_file;
+    if (write_log_file) {
+        log_file.open(options.log_file_path, std::ios::trunc);
+        if (!log_file) {
+            result.outcome = CpSolveOutcome::ModelInvalid;
+            result.status_name = "MODEL_INVALID";
+            result.error_message =
+                "Failed to create CP-SAT log file: " + options.log_file_path;
+            return result;
+        }
+        log_file << "Starting CP-SAT fixed-K incumbent attempt\n";
+        log_file.flush();
+    }
+    auto append_early_log = [&log_file, write_log_file](
+                                const std::string& status,
+                                const std::string& message) {
+        if (!write_log_file) {
+            return;
+        }
+        log_file << status << ": " << message << '\n';
+        log_file.flush();
+    };
     if (options.vehicle_count <= 0 || options.workers < 0 ||
-        options.random_seed < 0 || !std::isfinite(options.time_limit_seconds) ||
+        !std::isfinite(options.time_limit_seconds) ||
         options.time_limit_seconds < 0.0) {
         result.outcome = CpSolveOutcome::ModelInvalid;
         result.status_name = "MODEL_INVALID";
         result.error_message = "Invalid CP-SAT solve options.";
+        append_early_log(result.status_name, result.error_message);
         return result;
     }
 
@@ -185,6 +211,7 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
     if (!convert_integer_data(data, integer_data, result.error_message)) {
         result.outcome = CpSolveOutcome::ModelInvalid;
         result.status_name = "MODEL_INVALID";
+        append_early_log(result.status_name, result.error_message);
         return result;
     }
 
@@ -193,6 +220,10 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
     if (n == 0 || k_count > n) {
         result.outcome = CpSolveOutcome::ProvenInfeasible;
         result.status_name = "INFEASIBLE";
+        append_early_log(
+            result.status_name,
+            "Exact vehicle count exceeds the number of requests."
+        );
         return result;
     }
     const int action_count = 3 * n;
@@ -564,10 +595,23 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
     if (options.workers > 0) {
         parameters.set_num_search_workers(options.workers);
     }
-    parameters.set_random_seed(options.random_seed);
-    parameters.set_log_search_progress(options.log_search_progress);
+    parameters.set_log_search_progress(write_log_file);
+    parameters.set_log_to_stdout(false);
     operations_research::sat::Model model;
     model.Add(operations_research::sat::NewSatParameters(parameters));
+    if (write_log_file) {
+        operations_research::SolverLogger* logger =
+            model.GetOrCreate<operations_research::SolverLogger>();
+        logger->EnableLogging(true);
+        logger->SetLogToStdOut(false);
+        logger->AddInfoLoggingCallback([&log_file](const std::string& message) {
+            log_file << message;
+            if (message.empty() || message.back() != '\n') {
+                log_file << '\n';
+            }
+            log_file.flush();
+        });
+    }
     const CpSolverResponse response =
         operations_research::sat::SolveCpModel(builder.Build(), &model);
 

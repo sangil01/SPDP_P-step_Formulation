@@ -69,6 +69,7 @@ struct InitialIncumbentSearchOptions {
     double per_attempt_time_limit = 0.0;
     int gurobi_threads = -1;
     std::string gurobi_log_base_path;
+    std::string cp_sat_log_base_path;
     CpSatSolveOptions cp_sat;
 };
 

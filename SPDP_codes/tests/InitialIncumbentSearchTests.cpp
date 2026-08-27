@@ -2,6 +2,8 @@
 
 #include "InitialIncumbent.h"
 
+#include <filesystem>
+
 namespace {
 
 spdp::InitialIncumbentSolveResult result(
@@ -90,6 +92,15 @@ SPDP_TEST(initial_incumbent_backend) {
     options.initial_vehicle_count = 1;
     options.max_k_increments = 0;
     options.per_attempt_time_limit = 5;
+    const std::filesystem::path log_base =
+        std::filesystem::temp_directory_path() /
+        "RecDep_day_test_initial_incumbent_cp_sat.log";
+    const std::filesystem::path expected_log =
+        std::filesystem::temp_directory_path() /
+        "RecDep_day_test_initial_incumbent_k1_cp_sat.log";
+    std::filesystem::remove(log_base);
+    std::filesystem::remove(expected_log);
+    options.cp_sat_log_base_path = log_base.string();
     const auto search = spdp::solve_iterative_duration_initial_incumbent(
         data, graph, options
     );
@@ -100,4 +111,6 @@ SPDP_TEST(initial_incumbent_backend) {
         spdp::FixedKSolveOutcome::Feasible
     );
     SPDP_CHECK_EQ(search.incumbent_result.adapter_status, std::string("passed"));
+    SPDP_CHECK(std::filesystem::exists(expected_log));
+    std::filesystem::remove(expected_log);
 }

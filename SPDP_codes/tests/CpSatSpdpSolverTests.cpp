@@ -5,8 +5,11 @@
 #include "GenMultiGraph.h"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <string>
 
 namespace {
@@ -51,6 +54,46 @@ SPDP_TEST(cp_data) {
     options.vehicle_count = 2;
     const auto infeasible = spdp::solve_fixed_k_cp_sat(data, options);
     SPDP_CHECK_EQ(infeasible.outcome, spdp::CpSolveOutcome::ProvenInfeasible);
+}
+
+SPDP_TEST(cp_log_file) {
+    const std::filesystem::path log_path =
+        std::filesystem::temp_directory_path() / "spdp_cp_sat_progress.log";
+    std::filesystem::remove(log_path);
+
+    auto data = one_request_data();
+    spdp::CpSatSolveOptions options;
+    options.vehicle_count = 1;
+    options.time_limit_seconds = 5;
+    options.log_file_path = log_path.string();
+
+    const auto solved = spdp::solve_fixed_k_cp_sat(data, options);
+    SPDP_CHECK_EQ(solved.outcome, spdp::CpSolveOutcome::Feasible);
+    SPDP_CHECK(std::filesystem::exists(log_path));
+
+    std::ifstream input(log_path);
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    SPDP_CHECK(contents.str().find("CP-SAT") != std::string::npos);
+    SPDP_CHECK(contents.str().find("CpSolverResponse summary") !=
+               std::string::npos);
+    std::filesystem::remove(log_path);
+
+    const std::filesystem::path invalid_log_path =
+        std::filesystem::temp_directory_path() /
+        "spdp_cp_sat_model_invalid.log";
+    std::filesystem::remove(invalid_log_path);
+    data.time[0][1] = 1.5;
+    options.log_file_path = invalid_log_path.string();
+    const auto invalid = spdp::solve_fixed_k_cp_sat(data, options);
+    SPDP_CHECK_EQ(invalid.outcome, spdp::CpSolveOutcome::ModelInvalid);
+    SPDP_CHECK(std::filesystem::exists(invalid_log_path));
+    std::ifstream invalid_input(invalid_log_path);
+    std::ostringstream invalid_contents;
+    invalid_contents << invalid_input.rdbuf();
+    SPDP_CHECK(invalid_contents.str().find("MODEL_INVALID") !=
+               std::string::npos);
+    std::filesystem::remove(invalid_log_path);
 }
 
 SPDP_TEST(cp_symmetry) {
