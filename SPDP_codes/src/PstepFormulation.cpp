@@ -1,5 +1,6 @@
 #include "PstepFormulation.h"
 #include "PstepValidInequality.h"
+#include "RouteState.h"
 
 #include <algorithm>
 #include <cmath>
@@ -499,14 +500,6 @@ void append_compact_pstep_coefficients(
     }
 }
 
-// 해 복원 과정에서 차량에 실린 요청 상태를 추적하기 위한 내부 구조체.
-struct OnboardRequest {
-    int request_id = 0;
-    int container_type = -1;
-    int treatment_location = 0;
-    bool is_full = true;
-};
-
 // 해 출력 시 정수값처럼 보이는 실수는 깔끔하게 정리해 출력한다.
 std::string format_solution_value(double value) {
     const double rounded = std::round(value);
@@ -532,30 +525,9 @@ std::vector<int> collect_active_edge_ids(const CompactMasterProblem& problem) {
 // 그 결과가 multigraph edge에 저장된 start/end state와 일치하는지 계속 확인한다.
 // 이 함수는 그 연결 고리 역할을 한다.
 State make_state_from_onboard(
-    const std::vector<OnboardRequest>& onboard_requests
+    const std::vector<OnboardSkip>& onboard_requests
 ) {
-    require_condition(
-        onboard_requests.size() <= 2U,
-        "Recovered onboard request count exceeds vehicle capacity."
-    );
-
-    std::vector<StateToken> tokens;
-    tokens.reserve(2);
-
-    for (const OnboardRequest& request : onboard_requests) {
-        if (request.is_full) {
-            tokens.push_back(StateToken{'F', request.container_type, request.treatment_location});
-        } else {
-            tokens.push_back(StateToken{'E', request.container_type, -1});
-        }
-    }
-
-    while (tokens.size() < 2U) {
-        tokens.push_back(StateToken{'N', -1, -1});
-    }
-
-    State state{tokens[0], tokens[1]};
-    return canonicalize_state(state);
+    return RouteState(onboard_requests).canonical_state();
 }
 
 // 하나의 edge를 현재 onboard 상태에 적용할 수 있는지 확인하고, 가능하면 다음 상태를 만든다.
@@ -565,55 +537,47 @@ bool try_apply_edge_to_onboard(
     const EdgeRecord& edge,
     const SPDPData& data,
     const MultiDiGraph& graph,
-    const std::vector<OnboardRequest>& current_onboard,
-    std::vector<OnboardRequest>& next_onboard
+    const std::vector<OnboardSkip>& current_onboard,
+    std::vector<OnboardSkip>& next_onboard
 ) {
     const State current_state = make_state_from_onboard(current_onboard);
     if (!same_state(current_state, edge.data.start_state)) {
         return false;
     }
 
-    next_onboard = current_onboard;
+    RouteState route_state(current_onboard);
 
     // edge 내부의 treatment sequence를 따라 full container를 empty로 바꾼다.
     for (int treatment_location : edge.data.sequence_pi) {
-        for (auto it = next_onboard.rbegin(); it != next_onboard.rend(); ++it) {
-            if (it->is_full && it->treatment_location == treatment_location) {
-                it->is_full = false;
-            }
-        }
+        route_state.empty_at_treatment(treatment_location);
     }
 
     const NodeSpec& arrival_node = graph.node(edge.v);
     if (arrival_node.kind == NodeSpec::Kind::Pickup) {
         // Pickup node에 도착하면 새로운 full container 요청이 onboard에 추가된다.
-        next_onboard.push_back(OnboardRequest{
+        if (!route_state.try_pickup(OnboardSkip{
             arrival_node.request_idx.value(),
             arrival_node.container_type.value(),
             arrival_node.landfill_location.value(),
             true,
-        });
+        })) {
+            return false;
+        }
     } else if (arrival_node.kind == NodeSpec::Kind::Delivery) {
         // Delivery node에 도착하면 대응되는 empty container 하나를 내려야 한다.
         const int container_type = arrival_node.container_type.value();
-        auto found = next_onboard.end();
-        for (auto it = next_onboard.begin(); it != next_onboard.end(); ++it) {
-            if (!it->is_full && it->container_type == container_type) {
-                found = it;
-            }
-        }
-        if (found == next_onboard.end()) {
+        if (!route_state.try_delivery(container_type)) {
             return false;
         }
-        next_onboard.erase(found);
     }
 
     // 시뮬레이션 결과가 edge가 요구하는 end_state와 일치해야만 이 edge를 탈 수 있다.
-    const State next_state = make_state_from_onboard(next_onboard);
+    const State next_state = route_state.canonical_state();
     if (!same_state(next_state, edge.data.end_state)) {
         return false;
     }
 
+    next_onboard = route_state.onboard();
     return true;
 }
 
@@ -629,7 +593,7 @@ bool decompose_selected_edges(
 
 bool extend_current_route(
     NodeId current_node_id,
-    const std::vector<OnboardRequest>& current_onboard,
+    const std::vector<OnboardSkip>& current_onboard,
     const SPDPData& data,
     const MultiDiGraph& graph,
     const std::vector<EdgeRecord>& all_edges,
@@ -693,7 +657,7 @@ bool extend_current_route(
     // 끝까지 모순 없이 이어지면 그 선택을 채택한다.
     // 중간에 막히면 백트래킹으로 이전 상태로 되돌아간다.
     for (int edge_id : candidate_edge_ids) {
-        std::vector<OnboardRequest> next_onboard;
+        std::vector<OnboardSkip> next_onboard;
         if (!try_apply_edge_to_onboard(
                 all_edges[static_cast<std::size_t>(edge_id)],
                 data,
@@ -795,7 +759,7 @@ RecoveredRouteSolution build_route_solution(
     route.route_id = route_id;
     route.edge_ids = route_edge_ids;
 
-    std::vector<OnboardRequest> onboard_requests;
+    std::vector<OnboardSkip> onboard_requests;
     NodeId current_node_id = 0;
     int load = 0;
 
@@ -826,7 +790,7 @@ RecoveredRouteSolution build_route_solution(
 
                 emptied_any_container = true;
                 route.actions.push_back(RouteSolutionAction{
-                    it->request_id,
+                    it->request_index,
                     treatment_location,
                     1,
                     load,
@@ -849,7 +813,7 @@ RecoveredRouteSolution build_route_solution(
                 "Recovered route exceeds vehicle capacity at pickup."
             );
             const int request_id = arrival_node.request_idx.value();
-            onboard_requests.push_back(OnboardRequest{
+            onboard_requests.push_back(OnboardSkip{
                 request_id,
                 arrival_node.container_type.value(),
                 arrival_node.landfill_location.value(),
@@ -917,7 +881,7 @@ RecoveredRouteSolution build_route_solution(
         std::all_of(
             onboard_requests.begin(),
             onboard_requests.end(),
-            [](const OnboardRequest& request) {
+            [](const OnboardSkip& request) {
                 return !request.is_full;
             }
         ),
