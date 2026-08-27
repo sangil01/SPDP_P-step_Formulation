@@ -4,6 +4,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXE="$SCRIPT_DIR/SPDP_codes/build-release/SPDP_P_step"
 SUMMARY_EXE="$SCRIPT_DIR/generate_root_cg_summary_xlsx.py"
+OUTPUT_DIR=SPDP_output
 
 if [[ ! -x "$EXE" ]]; then
     echo "Release executable not found or not executable: $EXE"
@@ -25,14 +26,16 @@ INITIAL_INCUMBENT_ENABLE=1
 INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
-INITIAL_INCUMBENT_BACKEND=cp-sat # Options: two-index-milp, cp-sat
+INITIAL_INCUMBENT_BACKEND=two-index-milp # Options: two-index-milp, cp-sat
+INITIAL_INCUMBENT_MILP_MODE=makespan # Options: duration, makespan
+INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR=1.5 # Used only by makespan
 INITIAL_INCUMBENT_CP_WORKERS=0
 INITIAL_INCUMBENT_CP_MODE=threshold-optimization # Options: satisfaction, threshold-optimization
 INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR=1.5 # Used only by threshold-optimization
-INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE=1
-INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR=1
-INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=1
-INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=1
+INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE=0
+INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR=0
+INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=0
+INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=0
 INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP=1
 INITIAL_INCUMBENT_CP_SYMMETRY_43=1
 GUROBI_THREADS=0
@@ -100,14 +103,14 @@ FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
 FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
     #=========Request 20 이하=========#
-    "RecDep_day_A1.dat"
+    '''"RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
     "RecDep_day_A4.dat"
     "RecDep_day_A5.dat"
     "RecDep_day_A6.dat"
     "RecDep_day_A7.dat"
-    '''"RecDep_day_A8.dat"
+    "RecDep_day_A8.dat"
     "RecDep_day_A9.dat"
     "RecDep_day_A10.dat"
     "RecDep_day_A11.dat"
@@ -152,7 +155,7 @@ DATA_LIST=(
     "RecDep_day_D2.dat"'''
     #=================================#
     #=====Request 50 초과 100 이하=====#
-    '''"RecDep_day_B15.dat"
+    "RecDep_day_B15.dat"
     "RecDep_day_B16.dat"
     "RecDep_day_B17.dat"
     "RecDep_day_B18.dat"
@@ -167,10 +170,10 @@ DATA_LIST=(
     "RecDep_day_C19.dat"
     "RecDep_day_C20.dat"
     "RecDep_day_D3.dat"
-    "RecDep_day_D4.dat"'''
+    "RecDep_day_D4.dat"
     "RecDep_day_D5.dat"
-    #"RecDep_day_D6.dat"
-    #"RecDep_day_D7.dat"
+    "RecDep_day_D6.dat"
+    "RecDep_day_D7.dat"
     #=================================#
     #====Request 100 초과 200 이하====#
     '''"RecDep_day_D8.dat"
@@ -199,6 +202,12 @@ fi
 RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}${ENUMERATION_SOS1_TAG}${RUN_TAG_SUFFIX}"
 if [[ "$INITIAL_INCUMBENT_ENABLE" == "1" ]]; then
     RUN_TAG+="_initial-incumbent-${INITIAL_INCUMBENT_BACKEND}-${INITIAL_INCUMBENT_TIME_LIMIT}s-kinc${INITIAL_INCUMBENT_MAX_K_INCREMENTS}-timeout-${INITIAL_INCUMBENT_TIMEOUT_ACTION}"
+    if [[ "$INITIAL_INCUMBENT_BACKEND" == "two-index-milp" ]]; then
+        RUN_TAG+="-milpm${INITIAL_INCUMBENT_MILP_MODE}"
+        if [[ "$INITIAL_INCUMBENT_MILP_MODE" == "makespan" ]]; then
+            RUN_TAG+="-milpf${INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR}"
+        fi
+    fi
     if [[ "$INITIAL_INCUMBENT_BACKEND" == "cp-sat" ]]; then
         RUN_TAG+="-cpm${INITIAL_INCUMBENT_CP_MODE}"
         if [[ "$INITIAL_INCUMBENT_CP_MODE" == "threshold-optimization" ]]; then
@@ -207,8 +216,14 @@ if [[ "$INITIAL_INCUMBENT_ENABLE" == "1" ]]; then
         RUN_TAG+="-cpw${INITIAL_INCUMBENT_CP_WORKERS}-rtb${INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE}-rfr${INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR}-rcw${INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD}-rad${INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION}-sfp${INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP}-s43${INITIAL_INCUMBENT_CP_SYMMETRY_43}"
     fi
 fi
-RUNNER_LOG="$SCRIPT_DIR/${RUN_TAG}.log"
-SUMMARY_XLSX="$SCRIPT_DIR/${RUN_TAG}.xlsx"
+if [[ "$OUTPUT_DIR" = /* ]]; then
+    OUTPUT_PATH="$OUTPUT_DIR"
+else
+    OUTPUT_PATH="$SCRIPT_DIR/$OUTPUT_DIR"
+fi
+mkdir -p "$OUTPUT_PATH"
+RUNNER_LOG="$OUTPUT_PATH/${RUN_TAG}.log"
+SUMMARY_XLSX="$OUTPUT_PATH/${RUN_TAG}.xlsx"
 
 FAILED=0
 TOTAL=${#DATA_LIST[@]}
@@ -244,6 +259,7 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "Started at: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "Running data [$CURRENT/$TOTAL]: $data_name"
         echo "p: $P"
+        echo "output-dir: $OUTPUT_DIR"
         echo "solver-mode: $SOLVER_MODE"
         echo "enumeration-sos1-mode: $ENUMERATION_SOS1_MODE"
         echo "enumeration-objective: $ENUMERATION_OBJECTIVE"
@@ -262,6 +278,8 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-max-k-increments: $INITIAL_INCUMBENT_MAX_K_INCREMENTS"
         echo "initial-incumbent-timeout-action: $INITIAL_INCUMBENT_TIMEOUT_ACTION"
         echo "initial-incumbent-backend: $INITIAL_INCUMBENT_BACKEND"
+        echo "initial-incumbent-milp-mode: $INITIAL_INCUMBENT_MILP_MODE"
+        echo "initial-incumbent-milp-makespan-horizon-factor: $INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR"
         echo "initial-incumbent-cp-workers: $INITIAL_INCUMBENT_CP_WORKERS"
         echo "initial-incumbent-cp-mode: $INITIAL_INCUMBENT_CP_MODE"
         echo "initial-incumbent-cp-threshold-horizon-factor: $INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR"
@@ -324,6 +342,7 @@ for data_name in "${DATA_LIST[@]}"; do
 
     if "$EXE" "$data_name" \
         --p "$P" \
+        --output-dir "$OUTPUT_DIR" \
         --solver-mode "$SOLVER_MODE" \
         --enumeration-sos1-mode "$ENUMERATION_SOS1_MODE" \
         --enumeration-objective "$ENUMERATION_OBJECTIVE" \
@@ -343,6 +362,8 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-max-k-increments "$INITIAL_INCUMBENT_MAX_K_INCREMENTS" \
         --initial-incumbent-timeout-action "$INITIAL_INCUMBENT_TIMEOUT_ACTION" \
         --initial-incumbent-backend "$INITIAL_INCUMBENT_BACKEND" \
+        --initial-incumbent-milp-mode "$INITIAL_INCUMBENT_MILP_MODE" \
+        --initial-incumbent-milp-makespan-horizon-factor "$INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR" \
         --initial-incumbent-cp-workers "$INITIAL_INCUMBENT_CP_WORKERS" \
         --initial-incumbent-cp-mode "$INITIAL_INCUMBENT_CP_MODE" \
         --initial-incumbent-cp-threshold-horizon-factor "$INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR" \
@@ -435,7 +456,7 @@ if [[ "$SOLVER_MODE" == "branch-and-price" ]]; then
 
     if python3 "$SUMMARY_EXE" \
         --output "$SUMMARY_XLSX" \
-        --log-dir "$SCRIPT_DIR/SPDP_output" \
+        --log-dir "$OUTPUT_PATH" \
         --p "$P" \
         "${DATA_LIST[@]}" >> "$RUNNER_LOG" 2>&1; then
         echo "Summary workbook created: $SUMMARY_XLSX"

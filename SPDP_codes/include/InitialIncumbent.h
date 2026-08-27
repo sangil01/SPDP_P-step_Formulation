@@ -17,6 +17,13 @@ enum class InitialIncumbentBackend {
     CpSat,
 };
 
+enum class InitialIncumbentMilpMode {
+    Duration,
+    Makespan,
+};
+
+const char* initial_incumbent_milp_mode_name(InitialIncumbentMilpMode mode);
+
 enum class FixedKSolveOutcome {
     Feasible,
     ProvenInfeasible,
@@ -31,6 +38,8 @@ struct InitialIncumbentSolveOptions {
     double solver_time_limit = 0.0;  // 0 means no time limit.
     int gurobi_threads = -1;
     std::string gurobi_log_path;
+    InitialIncumbentMilpMode milp_mode = InitialIncumbentMilpMode::Duration;
+    double milp_makespan_horizon_factor = 1.5;
 };
 
 struct InitialIncumbentSolveResult {
@@ -47,6 +56,15 @@ struct InitialIncumbentSolveResult {
     bool has_feasible_solution = false;
     double runtime_seconds = 0.0;
     double configured_time_limit_seconds = 0.0;
+    InitialIncumbentMilpMode milp_mode = InitialIncumbentMilpMode::Duration;
+    double milp_makespan_horizon_factor = 0.0;
+    double milp_model_horizon = 0.0;
+    bool milp_has_objective_value = false;
+    double milp_objective_value = 0.0;
+    bool milp_has_objective_bound = false;
+    double milp_best_objective_bound = 0.0;
+    bool milp_stopped_by_feasible_callback = false;
+    bool milp_stopped_by_bound_callback = false;
     CpSolveMode cp_solve_mode = CpSolveMode::Satisfaction;
     double cp_threshold_horizon_factor = 0.0;
     std::int64_t cp_model_horizon = 0;
@@ -76,6 +94,8 @@ enum class InitialIncumbentTimeoutAction {
 
 struct InitialIncumbentSearchOptions {
     InitialIncumbentBackend backend = InitialIncumbentBackend::TwoIndexMilp;
+    InitialIncumbentMilpMode milp_mode = InitialIncumbentMilpMode::Duration;
+    double milp_makespan_horizon_factor = 1.5;
     int initial_vehicle_count = 0;
     int max_k_increments = 0;
     InitialIncumbentTimeoutAction timeout_action =
@@ -113,12 +133,26 @@ struct InitialIncumbentSearchResult {
     InitialIncumbentSolveResult incumbent_result;
 };
 
+InitialIncumbentSolveResult solve_fixed_k_initial_incumbent(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const InitialIncumbentSolveOptions& options
+);
+
+// Backward-compatible duration-only entry point.
 InitialIncumbentSolveResult solve_fixed_k_duration_initial_incumbent(
     const SPDPData& data,
     const MultiDiGraph& graph,
     const InitialIncumbentSolveOptions& options
 );
 
+InitialIncumbentSearchResult solve_iterative_initial_incumbent(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const InitialIncumbentSearchOptions& options
+);
+
+// Backward-compatible duration-only entry point.
 InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
     const SPDPData& data,
     const MultiDiGraph& graph,

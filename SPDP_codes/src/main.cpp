@@ -27,6 +27,7 @@ namespace {
 
 struct CliOptions {
     std::string instance = "A0.dat";
+    std::string output_dir = "SPDP_output";
     int p = 2;
     double solver_time_limit = 3600.0;
     int initial_incumbent_enable = 0;
@@ -34,6 +35,8 @@ struct CliOptions {
     int initial_incumbent_max_k_increments = 0;
     std::string initial_incumbent_timeout_action = "stop";
     std::string initial_incumbent_backend = "two-index-milp";
+    std::string initial_incumbent_milp_mode = "duration";
+    double initial_incumbent_milp_makespan_horizon_factor = 1.5;
     int initial_incumbent_cp_workers = 0;
     std::string initial_incumbent_cp_mode = "satisfaction";
     double initial_incumbent_cp_threshold_horizon_factor = 1.5;
@@ -116,12 +119,14 @@ struct CliOptions {
 
 void print_usage(const char* executable) {
     std::cerr << "Usage: " << executable
-              << " [instance] [--p N] [--solver-time-limit T] [--gurobi-threads N]"
+              << " [instance] [--p N] [--output-dir DIR] [--solver-time-limit T] [--gurobi-threads N]"
               << " [--initial-incumbent-enable 0|1]"
               << " [--initial-incumbent-time-limit T]"
               << " [--initial-incumbent-max-k-increments N]"
               << " [--initial-incumbent-timeout-action stop|advance]"
               << " [--initial-incumbent-backend two-index-milp|cp-sat]"
+              << " [--initial-incumbent-milp-mode duration|makespan]"
+              << " [--initial-incumbent-milp-makespan-horizon-factor F]"
               << " [--initial-incumbent-cp-workers N]"
               << " [--initial-incumbent-cp-mode satisfaction|threshold-optimization]"
               << " [--initial-incumbent-cp-threshold-horizon-factor F]"
@@ -262,6 +267,16 @@ std::string parse_initial_incumbent_backend(const std::string& value) {
     throw std::runtime_error(
         "Invalid value for --initial-incumbent-backend: " + value +
         " (expected two-index-milp or cp-sat)"
+    );
+}
+
+std::string parse_initial_incumbent_milp_mode(const std::string& value) {
+    if (value == "duration" || value == "makespan") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --initial-incumbent-milp-mode: " + value +
+        " (expected duration or makespan)"
     );
 }
 
@@ -472,6 +487,18 @@ spdp::InitialIncumbentBackend to_initial_incumbent_backend(
         return spdp::InitialIncumbentBackend::CpSat;
     }
     throw std::runtime_error("Unsupported initial-incumbent backend: " + value);
+}
+
+spdp::InitialIncumbentMilpMode to_initial_incumbent_milp_mode(
+    const std::string& value
+) {
+    if (value == "duration") {
+        return spdp::InitialIncumbentMilpMode::Duration;
+    }
+    if (value == "makespan") {
+        return spdp::InitialIncumbentMilpMode::Makespan;
+    }
+    throw std::runtime_error("Unsupported initial-incumbent MILP mode: " + value);
 }
 
 spdp::CpSolveMode to_cp_solve_mode(const std::string& value) {
@@ -719,6 +746,17 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--output-dir") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--output-dir requires a value.");
+            }
+            options.output_dir = argv[++idx];
+            if (options.output_dir.empty()) {
+                throw std::runtime_error("--output-dir must not be empty.");
+            }
+            continue;
+        }
+
         if (arg == "--solver-time-limit") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error("--solver-time-limit requires a value.");
@@ -786,6 +824,27 @@ CliOptions parse_cli(int argc, char** argv) {
             }
             options.initial_incumbent_backend =
                 parse_initial_incumbent_backend(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-milp-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.initial_incumbent_milp_mode =
+                parse_initial_incumbent_milp_mode(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-milp-makespan-horizon-factor") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const double value = parse_double(argv[++idx], arg);
+            if (!std::isfinite(value)) {
+                throw std::runtime_error(arg + " must be finite.");
+            }
+            options.initial_incumbent_milp_makespan_horizon_factor = value;
             continue;
         }
 
@@ -1532,6 +1591,14 @@ CliOptions parse_cli(int argc, char** argv) {
             "bound, or both."
         );
     }
+    if (options.initial_incumbent_backend == "two-index-milp" &&
+        options.initial_incumbent_milp_mode == "makespan" &&
+        options.initial_incumbent_milp_makespan_horizon_factor <= 1.0) {
+        throw std::runtime_error(
+            "--initial-incumbent-milp-makespan-horizon-factor must be greater "
+            "than one in makespan mode."
+        );
+    }
     if (options.initial_incumbent_cp_mode == "threshold-optimization" &&
         options.initial_incumbent_cp_threshold_horizon_factor <= 1.0) {
         throw std::runtime_error(
@@ -1540,6 +1607,9 @@ CliOptions parse_cli(int argc, char** argv) {
         );
     }
 
+    if (options.output_dir.empty()) {
+        throw std::runtime_error("--output-dir must not be empty.");
+    }
     return options;
 }
 
@@ -1588,40 +1658,61 @@ std::filesystem::path project_root_path() {
     return source_path.parent_path().parent_path().parent_path();
 }
 
-std::filesystem::path build_log_output_path(const std::string& instance, int p) {
+std::filesystem::path output_directory_path(const std::string& configured) {
+    const std::filesystem::path output_path(configured);
+    return output_path.is_absolute()
+        ? output_path
+        : project_root_path() / output_path;
+}
+
+std::filesystem::path build_log_output_path(
+    const std::string& instance,
+    int p,
+    const std::string& output_dir
+) {
     const std::filesystem::path instance_path(instance);
     const std::string output_name =
         instance_path.stem().string() + "_p" + std::to_string(p) + "_log.txt";
-    return project_root_path() / "SPDP_output" / output_name;
+    return output_directory_path(output_dir) / output_name;
 }
 
-std::filesystem::path build_solution_output_path(const std::string& instance, int p) {
+std::filesystem::path build_solution_output_path(
+    const std::string& instance,
+    int p,
+    const std::string& output_dir
+) {
     const std::filesystem::path instance_path(instance);
     const std::string output_name =
         instance_path.stem().string() + "_p" + std::to_string(p) + "_sol.txt";
-    return project_root_path() / "SPDP_output" / output_name;
+    return output_directory_path(output_dir) / output_name;
 }
 
-std::filesystem::path build_gurobi_log_path(const std::string& instance, int p) {
+std::filesystem::path build_gurobi_log_path(
+    const std::string& instance,
+    int p,
+    const std::string& output_dir
+) {
     const std::filesystem::path instance_path(instance);
     const std::string output_name =
         instance_path.stem().string() + "_p" + std::to_string(p) + "_gurobi.log";
-    return project_root_path() / "SPDP_output" / output_name;
+    return output_directory_path(output_dir) / output_name;
 }
 
 std::filesystem::path build_initial_incumbent_gurobi_log_path(
-    const std::string& instance
+    const std::string& instance,
+    const std::string& output_dir
 ) {
     const std::filesystem::path instance_path(instance);
-    return project_root_path() / "SPDP_output" /
+    return output_directory_path(output_dir) /
         (instance_path.stem().string() + "_initial_incumbent_gurobi.log");
 }
 
 std::filesystem::path build_initial_incumbent_cp_sat_log_path(
-    const std::string& instance
+    const std::string& instance,
+    const std::string& output_dir
 ) {
     const std::filesystem::path instance_path(instance);
-    return project_root_path() / "SPDP_output" /
+    return output_directory_path(output_dir) /
         (instance_path.stem().string() + "_initial_incumbent_cp_sat.log");
 }
 
@@ -1633,6 +1724,7 @@ void print_instance_summary(
 ) {
     out << "[main] Loaded instance: " << args.instance << '\n';
     out << "[main] p: " << args.p << '\n';
+    out << "[main] output_dir: " << args.output_dir << '\n';
     out << "[main] Solver mode: " << args.solver_mode << '\n';
     out << "[main] Enumeration SOS1 mode: " << args.enumeration_sos1_mode << '\n';
     out << "[main] Enumeration objective: " << args.enumeration_objective << '\n';
@@ -1647,6 +1739,14 @@ void print_instance_summary(
         << format_double(args.initial_incumbent_time_limit) << '\n';
     out << "[main] initial_incumbent_max_k_increments: "
         << args.initial_incumbent_max_k_increments << '\n';
+    out << "[main] initial_incumbent_backend: "
+        << args.initial_incumbent_backend << '\n';
+    out << "[main] initial_incumbent_milp_mode: "
+        << args.initial_incumbent_milp_mode << '\n';
+    out << "[main] initial_incumbent_milp_makespan_horizon_factor: "
+        << format_double(
+            args.initial_incumbent_milp_makespan_horizon_factor)
+        << '\n';
     out << "[main] initial_incumbent_timeout_action: "
         << args.initial_incumbent_timeout_action << '\n';
     out << "[main] initial_incumbent_cp_mode: "
@@ -1959,11 +2059,11 @@ int main(int argc, char** argv) {
         }
         const spdp::SPDPData data = spdp::read_spdp_data(args.instance);
 
-        const std::filesystem::path log_output_path = build_log_output_path(args.instance, args.p);
+        const std::filesystem::path log_output_path = build_log_output_path(args.instance, args.p, args.output_dir);
         const std::filesystem::path solution_output_path =
-            build_solution_output_path(args.instance, args.p);
+            build_solution_output_path(args.instance, args.p, args.output_dir);
         const std::filesystem::path gurobi_log_path =
-            build_gurobi_log_path(args.instance, args.p);
+            build_gurobi_log_path(args.instance, args.p, args.output_dir);
         std::filesystem::create_directories(log_output_path.parent_path());
 
         std::ofstream output_file(log_output_path);
@@ -2024,6 +2124,12 @@ int main(int argc, char** argv) {
                 << args.initial_incumbent_timeout_action << '\n';
             output_file << "[initial-incumbent] backend="
                 << args.initial_incumbent_backend << '\n';
+            output_file << "[initial-incumbent] milp_mode="
+                << args.initial_incumbent_milp_mode << '\n';
+            output_file << "[initial-incumbent] milp_makespan_horizon_factor="
+                << format_double(
+                    args.initial_incumbent_milp_makespan_horizon_factor)
+                << '\n';
             output_file << "[initial-incumbent] cp_mode="
                 << args.initial_incumbent_cp_mode << '\n';
             output_file << "[initial-incumbent] cp_threshold_horizon_factor="
@@ -2034,6 +2140,11 @@ int main(int argc, char** argv) {
             spdp::InitialIncumbentSearchOptions search_options;
             search_options.backend =
                 to_initial_incumbent_backend(args.initial_incumbent_backend);
+            search_options.milp_mode =
+                to_initial_incumbent_milp_mode(
+                    args.initial_incumbent_milp_mode);
+            search_options.milp_makespan_horizon_factor =
+                args.initial_incumbent_milp_makespan_horizon_factor;
             search_options.initial_vehicle_count = initial_k;
             search_options.max_k_increments =
                 args.initial_incumbent_max_k_increments;
@@ -2045,9 +2156,9 @@ int main(int argc, char** argv) {
                 args.initial_incumbent_time_limit;
             search_options.gurobi_threads = args.gurobi_threads;
             search_options.gurobi_log_base_path =
-                build_initial_incumbent_gurobi_log_path(args.instance).string();
+                build_initial_incumbent_gurobi_log_path(args.instance, args.output_dir).string();
             search_options.cp_sat_log_base_path =
-                build_initial_incumbent_cp_sat_log_path(args.instance).string();
+                build_initial_incumbent_cp_sat_log_path(args.instance, args.output_dir).string();
             search_options.cp_sat.workers = args.initial_incumbent_cp_workers;
             search_options.cp_sat.solve_mode =
                 to_cp_solve_mode(args.initial_incumbent_cp_mode);
@@ -2067,7 +2178,7 @@ int main(int argc, char** argv) {
                 args.initial_incumbent_cp_symmetry_43 == 1;
 
             const spdp::InitialIncumbentSearchResult search_result =
-                spdp::solve_iterative_duration_initial_incumbent(
+                spdp::solve_iterative_initial_incumbent(
                     data,
                     graph,
                     search_options
@@ -2109,6 +2220,29 @@ int main(int argc, char** argv) {
                     << format_double(
                         attempt.solve_result.configured_time_limit_seconds
                     )
+                    << " milp_mode="
+                    << spdp::initial_incumbent_milp_mode_name(
+                        attempt.solve_result.milp_mode)
+                    << " milp_makespan_horizon_factor="
+                    << format_double(
+                        attempt.solve_result.milp_makespan_horizon_factor)
+                    << " milp_model_horizon="
+                    << format_double(attempt.solve_result.milp_model_horizon)
+                    << " milp_has_objective_value="
+                    << (attempt.solve_result.milp_has_objective_value ? 1 : 0)
+                    << " milp_objective_value="
+                    << format_double(attempt.solve_result.milp_objective_value)
+                    << " milp_has_objective_bound="
+                    << (attempt.solve_result.milp_has_objective_bound ? 1 : 0)
+                    << " milp_best_objective_bound="
+                    << format_double(
+                        attempt.solve_result.milp_best_objective_bound)
+                    << " milp_stopped_by_feasible_callback="
+                    << (attempt.solve_result.milp_stopped_by_feasible_callback
+                        ? 1 : 0)
+                    << " milp_stopped_by_bound_callback="
+                    << (attempt.solve_result.milp_stopped_by_bound_callback
+                        ? 1 : 0)
                     << " cp_mode="
                     << spdp::cp_solve_mode_name(
                         attempt.solve_result.cp_solve_mode)

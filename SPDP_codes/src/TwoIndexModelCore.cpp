@@ -27,6 +27,8 @@ double two_index_objective_coefficient(
     TwoIndexCoreObjective objective
 ) {
     switch (objective) {
+        case TwoIndexCoreObjective::None:
+            return 0.0;
         case TwoIndexCoreObjective::OriginalCost:
             return edge.data.cost;
         case TwoIndexCoreObjective::TravelCost: {
@@ -123,6 +125,16 @@ TwoIndexCoreModel build_two_index_model_core(
     const TwoIndexCoreOptions& options
 ) {
     validate_two_index_inputs(data, graph, options.solver_time_limit);
+
+    const double time_horizon = options.time_horizon > 0.0
+        ? options.time_horizon
+        : data.time_limit;
+    if (options.add_time_constraints &&
+        (!std::isfinite(time_horizon) || time_horizon <= 0.0)) {
+        throw std::runtime_error(
+            "The two-index time horizon must be finite and positive."
+        );
+    }
 
     TwoIndexCoreModel core;
     core.environment = std::make_unique<GRBEnv>(true);
@@ -237,18 +249,16 @@ TwoIndexCoreModel build_two_index_model_core(
     }
 
     if (options.add_time_constraints) {
-        std::vector<std::map<State, GRBVar>> time_vars_by_node(
-            graph.number_of_nodes()
-        );
+        core.time_vars_by_node.assign(graph.number_of_nodes(), {});
         for (NodeId node_id = 1; node_id < end_node_id; ++node_id) {
             std::size_t state_index = 0U;
             for (const State& state :
                  states_by_node[static_cast<std::size_t>(node_id)]) {
-                time_vars_by_node[static_cast<std::size_t>(node_id)].emplace(
+                core.time_vars_by_node[static_cast<std::size_t>(node_id)].emplace(
                     state,
                     core.model->addVar(
                         0.0,
-                        data.time_limit,
+                        time_horizon,
                         0.0,
                         GRB_CONTINUOUS,
                         options.name_prefix + "_B_" + std::to_string(node_id) + "_" +
@@ -262,7 +272,7 @@ TwoIndexCoreModel build_two_index_model_core(
         const auto time_var = [&](NodeId node_id, const State& state) -> GRBVar {
             const State canonical_state = canonical_auxiliary_state(state);
             const auto& variables =
-                time_vars_by_node.at(static_cast<std::size_t>(node_id));
+                core.time_vars_by_node.at(static_cast<std::size_t>(node_id));
             const auto found = variables.find(canonical_state);
             if (found == variables.end()) {
                 throw std::runtime_error(
@@ -290,10 +300,13 @@ TwoIndexCoreModel build_two_index_model_core(
                 continue;
             }
             if (edge.v == end_node_id) {
+                if (!options.enforce_route_duration_limit) {
+                    continue;
+                }
                 const GRBVar start_time = time_var(edge.u, edge.data.start_state);
                 core.model->addConstr(
                     start_time + edge.data.time * core.y_vars[edge_id] <=
-                        data.time_limit,
+                        time_horizon,
                     constraint_name
                 );
                 continue;
@@ -301,7 +314,7 @@ TwoIndexCoreModel build_two_index_model_core(
 
             const GRBVar start_time = time_var(edge.u, edge.data.start_state);
             const GRBVar end_time = time_var(edge.v, edge.data.end_state);
-            const double big_m = data.time_limit + edge.data.time;
+            const double big_m = time_horizon + edge.data.time;
             core.model->addConstr(
                 end_time >= start_time + edge.data.time -
                     big_m * (1.0 - core.y_vars[edge_id]),
@@ -329,6 +342,23 @@ TwoIndexCoreModel build_two_index_model_core(
     );
     core.model->update();
     return core;
+}
+
+GRBVar two_index_time_var(
+    const TwoIndexCoreModel& core,
+    NodeId node_id,
+    const State& state
+) {
+    const State canonical_state = canonical_auxiliary_state(state);
+    const auto& variables =
+        core.time_vars_by_node.at(static_cast<std::size_t>(node_id));
+    const auto found = variables.find(canonical_state);
+    if (found == variables.end()) {
+        throw std::runtime_error(
+            "The two-index formulation found no time variable for an endpoint state."
+        );
+    }
+    return found->second;
 }
 
 }  // namespace spdp::detail

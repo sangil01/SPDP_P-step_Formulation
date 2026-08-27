@@ -130,36 +130,68 @@ InitialIncumbentSearchState advance_initial_incumbent_search(
     return next;
 }
 
-}  // namespace
+// Match the 1e-9 feasibility tolerance used by the two-index core and route
+// validator. A larger scaled tolerance could accept a route that validation rejects.
+constexpr double kMakespanThresholdTolerance = 1e-9;
 
-InitialIncumbentSolveResult solve_fixed_k_duration_initial_incumbent(
-    const SPDPData& data,
+class MakespanThresholdCallback final : public GRBCallback {
+public:
+    MakespanThresholdCallback(double threshold, double tolerance)
+        : threshold_(threshold), tolerance_(tolerance) {}
+
+    bool stopped_by_feasible_callback() const {
+        return stopped_by_feasible_callback_;
+    }
+
+    bool stopped_by_bound_callback() const {
+        return stopped_by_bound_callback_;
+    }
+
+    double proving_bound() const {
+        return proving_bound_;
+    }
+
+protected:
+    void callback() override {
+        try {
+            if (where == GRB_CB_MIPSOL) {
+                const double incumbent = getDoubleInfo(GRB_CB_MIPSOL_OBJ);
+                if (std::isfinite(incumbent) &&
+                    incumbent <= threshold_ + tolerance_) {
+                    stopped_by_feasible_callback_ = true;
+                    abort();
+                }
+                return;
+            }
+            if (where == GRB_CB_MIP) {
+                const double bound = getDoubleInfo(GRB_CB_MIP_OBJBND);
+                if (std::isfinite(bound) &&
+                    std::abs(bound) < 0.5 * GRB_INFINITY &&
+                    bound > threshold_ + tolerance_) {
+                    stopped_by_bound_callback_ = true;
+                    proving_bound_ = bound;
+                    abort();
+                }
+            }
+        } catch (const GRBException&) {
+            // Let Gurobi continue. Post-solve attributes still provide a safe
+            // classification if callback information is unavailable.
+        }
+    }
+
+private:
+    double threshold_ = 0.0;
+    double tolerance_ = 0.0;
+    bool stopped_by_feasible_callback_ = false;
+    bool stopped_by_bound_callback_ = false;
+    double proving_bound_ = 0.0;
+};
+
+void add_fixed_vehicle_count_constraint(
+    TwoIndexCoreModel& core,
     const MultiDiGraph& graph,
-    const InitialIncumbentSolveOptions& options
+    int vehicle_count
 ) {
-    if (options.vehicle_count <= 0) {
-        throw std::runtime_error(
-            "Initial-incumbent generation requires a positive fixed vehicle count."
-        );
-    }
-    if (!std::isfinite(options.solver_time_limit) ||
-        options.solver_time_limit < 0.0) {
-        throw std::runtime_error(
-            "Initial-incumbent time limit must be finite and nonnegative."
-        );
-    }
-
-    TwoIndexCoreOptions core_options;
-    core_options.objective = TwoIndexCoreObjective::Duration;
-    core_options.binary_y = true;
-    core_options.add_time_constraints = true;
-    core_options.solver_time_limit = options.solver_time_limit;
-    core_options.gurobi_threads = options.gurobi_threads;
-    core_options.output_enabled = true;
-    core_options.gurobi_log_path = options.gurobi_log_path;
-    core_options.name_prefix = "initial_incumbent";
-    TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
-
     GRBLinExpr actual_departures = 0.0;
     for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
         const EdgeRecord& edge = graph.edges()[edge_id];
@@ -169,41 +201,36 @@ InitialIncumbentSolveResult solve_fixed_k_duration_initial_incumbent(
         }
     }
     core.model->addConstr(
-        actual_departures == static_cast<double>(options.vehicle_count),
+        actual_departures == static_cast<double>(vehicle_count),
         "initial_incumbent_fixed_vehicle_count"
     );
-    core.model->set(GRB_IntParam_SolutionLimit, 1);
-    core.model->update();
-    core.model->optimize();
+}
 
-    InitialIncumbentSolveResult result;
-    result.status = core.model->get(GRB_IntAttr_Status);
-    result.raw_status = result.status;
-    result.status_name = std::to_string(result.status);
-    result.hit_time_limit = result.status == GRB_TIME_LIMIT;
-    result.hit_solution_limit = result.status == GRB_SOLUTION_LIMIT;
-    result.infeasible = result.status == GRB_INFEASIBLE;
-    result.runtime_seconds = core.model->get(GRB_DoubleAttr_Runtime);
-    result.configured_time_limit_seconds = options.solver_time_limit;
-    result.has_feasible_solution = core.model->get(GRB_IntAttr_SolCount) > 0;
-    if (result.has_feasible_solution) {
-        result.outcome = FixedKSolveOutcome::Feasible;
-        result.termination_name = "feasible";
-    } else if (result.infeasible) {
-        result.outcome = FixedKSolveOutcome::ProvenInfeasible;
-        result.termination_name = "proven-infeasible";
-    } else if (result.hit_time_limit) {
-        result.outcome = FixedKSolveOutcome::TimedOutUnknown;
-        result.termination_name = "timed-out-unknown";
-    } else {
-        result.outcome = FixedKSolveOutcome::EarlyUnknown;
-        result.termination_name = "early-unknown";
-        result.early_unknown = true;
+void record_milp_objective_metadata(
+    GRBModel& model,
+    InitialIncumbentSolveResult& result
+) {
+    const int solution_count = model.get(GRB_IntAttr_SolCount);
+    if (solution_count > 0) {
+        const double objective_value = model.get(GRB_DoubleAttr_ObjVal);
+        if (std::isfinite(objective_value)) {
+            result.milp_has_objective_value = true;
+            result.milp_objective_value = objective_value;
+        }
     }
-    if (!result.has_feasible_solution) {
-        return result;
+    const double objective_bound = model.get(GRB_DoubleAttr_ObjBound);
+    if (std::isfinite(objective_bound) &&
+        std::abs(objective_bound) < 0.5 * GRB_INFINITY) {
+        result.milp_has_objective_bound = true;
+        result.milp_best_objective_bound = objective_bound;
     }
+}
 
+void extract_milp_incumbent(
+    const MultiDiGraph& graph,
+    const TwoIndexCoreModel& core,
+    InitialIncumbentSolveResult& result
+) {
     result.total_duration = 0.0;
     result.total_original_cost = 0.0;
     result.edge_values.resize(graph.number_of_edges(), 0.0);
@@ -221,7 +248,231 @@ InitialIncumbentSolveResult solve_fixed_k_duration_initial_incumbent(
             result.active_edge_ids.push_back(static_cast<int>(edge_id));
         }
     }
+}
+
+void validate_initial_incumbent_solve_options(
+    const InitialIncumbentSolveOptions& options
+) {
+    if (options.vehicle_count <= 0) {
+        throw std::runtime_error(
+            "Initial-incumbent generation requires a positive fixed vehicle count."
+        );
+    }
+    if (!std::isfinite(options.solver_time_limit) ||
+        options.solver_time_limit < 0.0) {
+        throw std::runtime_error(
+            "Initial-incumbent time limit must be finite and nonnegative."
+        );
+    }
+    if (options.milp_mode == InitialIncumbentMilpMode::Makespan &&
+        (!std::isfinite(options.milp_makespan_horizon_factor) ||
+         options.milp_makespan_horizon_factor <= 1.0)) {
+        throw std::runtime_error(
+            "The MILP makespan horizon factor must be finite and greater than one."
+        );
+    }
+}
+
+InitialIncumbentSolveResult make_base_milp_result(
+    const InitialIncumbentSolveOptions& options,
+    GRBModel& model
+) {
+    InitialIncumbentSolveResult result;
+    result.backend = InitialIncumbentBackend::TwoIndexMilp;
+    result.milp_mode = options.milp_mode;
+    result.milp_makespan_horizon_factor =
+        options.milp_makespan_horizon_factor;
+    result.status = model.get(GRB_IntAttr_Status);
+    result.raw_status = result.status;
+    result.status_name = std::to_string(result.status);
+    result.hit_time_limit = result.status == GRB_TIME_LIMIT;
+    result.hit_solution_limit = result.status == GRB_SOLUTION_LIMIT;
+    result.runtime_seconds = model.get(GRB_DoubleAttr_Runtime);
+    result.configured_time_limit_seconds = options.solver_time_limit;
+    record_milp_objective_metadata(model, result);
     return result;
+}
+
+InitialIncumbentSolveResult solve_fixed_k_duration_impl(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const InitialIncumbentSolveOptions& options
+) {
+    TwoIndexCoreOptions core_options;
+    core_options.objective = TwoIndexCoreObjective::Duration;
+    core_options.binary_y = true;
+    core_options.add_time_constraints = true;
+    core_options.solver_time_limit = options.solver_time_limit;
+    core_options.gurobi_threads = options.gurobi_threads;
+    core_options.output_enabled = true;
+    core_options.gurobi_log_path = options.gurobi_log_path;
+    core_options.name_prefix = "initial_incumbent";
+    TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
+
+    add_fixed_vehicle_count_constraint(core, graph, options.vehicle_count);
+    core.model->set(GRB_IntParam_SolutionLimit, 1);
+    core.model->update();
+    core.model->optimize();
+
+    InitialIncumbentSolveResult result =
+        make_base_milp_result(options, *core.model);
+    result.milp_model_horizon = data.time_limit;
+    result.has_feasible_solution = core.model->get(GRB_IntAttr_SolCount) > 0;
+    if (result.has_feasible_solution) {
+        result.outcome = FixedKSolveOutcome::Feasible;
+        result.termination_name = "feasible";
+    } else if (result.status == GRB_INFEASIBLE) {
+        result.outcome = FixedKSolveOutcome::ProvenInfeasible;
+        result.termination_name = "proven-infeasible";
+        result.infeasible = true;
+    } else if (result.hit_time_limit) {
+        result.outcome = FixedKSolveOutcome::TimedOutUnknown;
+        result.termination_name = "timed-out-unknown";
+    } else {
+        result.outcome = FixedKSolveOutcome::EarlyUnknown;
+        result.termination_name = "early-unknown";
+        result.early_unknown = true;
+    }
+    if (result.has_feasible_solution) {
+        extract_milp_incumbent(graph, core, result);
+    }
+    return result;
+}
+
+InitialIncumbentSolveResult solve_fixed_k_makespan_impl(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const InitialIncumbentSolveOptions& options
+) {
+    const double threshold = data.time_limit;
+    const double horizon = std::ceil(
+        options.milp_makespan_horizon_factor * threshold
+    );
+    const double tolerance = kMakespanThresholdTolerance;
+
+    TwoIndexCoreOptions core_options;
+    core_options.objective = TwoIndexCoreObjective::None;
+    core_options.binary_y = true;
+    core_options.add_time_constraints = true;
+    core_options.time_horizon = horizon;
+    core_options.enforce_route_duration_limit = false;
+    core_options.solver_time_limit = options.solver_time_limit;
+    core_options.gurobi_threads = options.gurobi_threads;
+    core_options.output_enabled = true;
+    core_options.gurobi_log_path = options.gurobi_log_path;
+    core_options.name_prefix = "initial_incumbent_makespan";
+    TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
+
+    add_fixed_vehicle_count_constraint(core, graph, options.vehicle_count);
+    GRBVar makespan = core.model->addVar(
+        0.0,
+        horizon,
+        1.0,
+        GRB_CONTINUOUS,
+        "initial_incumbent_makespan_M"
+    );
+    const NodeId end_node_id = graph.end_node_id();
+    for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        if (edge.u == 0 || edge.v != end_node_id) {
+            continue;
+        }
+        const GRBVar start_time = detail::two_index_time_var(
+            core, edge.u, edge.data.start_state
+        );
+        core.model->addConstr(
+            start_time + edge.data.time * core.y_vars[edge_id] <=
+                makespan + horizon * (1.0 - core.y_vars[edge_id]),
+            "initial_incumbent_makespan_return_" + std::to_string(edge_id)
+        );
+    }
+    core.model->set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
+    core.model->update();
+
+    MakespanThresholdCallback callback(threshold, tolerance);
+    core.model->setCallback(&callback);
+    core.model->optimize();
+
+    InitialIncumbentSolveResult result =
+        make_base_milp_result(options, *core.model);
+    result.milp_model_horizon = horizon;
+    result.milp_stopped_by_feasible_callback =
+        callback.stopped_by_feasible_callback();
+    result.milp_stopped_by_bound_callback =
+        callback.stopped_by_bound_callback();
+    if (callback.stopped_by_bound_callback() &&
+        (!result.milp_has_objective_bound ||
+         callback.proving_bound() > result.milp_best_objective_bound)) {
+        result.milp_has_objective_bound = true;
+        result.milp_best_objective_bound = callback.proving_bound();
+    }
+
+    const bool threshold_feasible =
+        result.milp_has_objective_value &&
+        result.milp_objective_value <= threshold + tolerance;
+    const bool threshold_infeasible_by_bound =
+        result.milp_has_objective_bound &&
+        result.milp_best_objective_bound > threshold + tolerance;
+
+    if (threshold_feasible) {
+        result.outcome = FixedKSolveOutcome::Feasible;
+        result.termination_name = "makespan-threshold-feasible";
+        result.has_feasible_solution = true;
+        extract_milp_incumbent(graph, core, result);
+    } else if (threshold_infeasible_by_bound) {
+        result.outcome = FixedKSolveOutcome::ProvenInfeasible;
+        result.termination_name = "makespan-objective-bound-infeasible";
+        result.infeasible = true;
+    } else if (result.status == GRB_INFEASIBLE) {
+        result.outcome = FixedKSolveOutcome::ProvenInfeasible;
+        result.termination_name = "makespan-restricted-horizon-infeasible";
+        result.infeasible = true;
+    } else if (result.hit_time_limit) {
+        result.outcome = FixedKSolveOutcome::TimedOutUnknown;
+        result.termination_name = "timed-out-unknown";
+    } else {
+        result.outcome = FixedKSolveOutcome::EarlyUnknown;
+        result.termination_name = "early-unknown";
+        result.early_unknown = true;
+    }
+    return result;
+}
+
+}  // namespace
+
+const char* initial_incumbent_milp_mode_name(InitialIncumbentMilpMode mode) {
+    switch (mode) {
+        case InitialIncumbentMilpMode::Duration:
+            return "duration";
+        case InitialIncumbentMilpMode::Makespan:
+            return "makespan";
+    }
+    throw std::runtime_error("Unsupported initial-incumbent MILP mode.");
+}
+
+InitialIncumbentSolveResult solve_fixed_k_initial_incumbent(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const InitialIncumbentSolveOptions& options
+) {
+    validate_initial_incumbent_solve_options(options);
+    switch (options.milp_mode) {
+        case InitialIncumbentMilpMode::Duration:
+            return solve_fixed_k_duration_impl(data, graph, options);
+        case InitialIncumbentMilpMode::Makespan:
+            return solve_fixed_k_makespan_impl(data, graph, options);
+    }
+    throw std::runtime_error("Unsupported initial-incumbent MILP mode.");
+}
+
+InitialIncumbentSolveResult solve_fixed_k_duration_initial_incumbent(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const InitialIncumbentSolveOptions& options
+) {
+    InitialIncumbentSolveOptions duration_options = options;
+    duration_options.milp_mode = InitialIncumbentMilpMode::Duration;
+    return solve_fixed_k_initial_incumbent(data, graph, duration_options);
 }
 
 InitialIncumbentSearchResult run_iterative_initial_incumbent_search(
@@ -275,7 +526,7 @@ InitialIncumbentSearchResult run_iterative_initial_incumbent_search(
     return search_result;
 }
 
-InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
+InitialIncumbentSearchResult solve_iterative_initial_incumbent(
     const SPDPData& data,
     const MultiDiGraph& graph,
     const InitialIncumbentSearchOptions& options
@@ -397,10 +648,13 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
             attempt_options.vehicle_count = vehicle_count;
             attempt_options.solver_time_limit = options.per_attempt_time_limit;
             attempt_options.gurobi_threads = options.gurobi_threads;
+            attempt_options.milp_mode = options.milp_mode;
+            attempt_options.milp_makespan_horizon_factor =
+                options.milp_makespan_horizon_factor;
             attempt_options.gurobi_log_path = log_path_for_k(
                 options.gurobi_log_base_path, "gurobi", vehicle_count
             );
-            return solve_fixed_k_duration_initial_incumbent(
+            return solve_fixed_k_initial_incumbent(
                 data, graph, attempt_options
             );
         }
@@ -415,6 +669,16 @@ InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
         }
     }
     return result;
+}
+
+InitialIncumbentSearchResult solve_iterative_duration_initial_incumbent(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const InitialIncumbentSearchOptions& options
+) {
+    InitialIncumbentSearchOptions duration_options = options;
+    duration_options.milp_mode = InitialIncumbentMilpMode::Duration;
+    return solve_iterative_initial_incumbent(data, graph, duration_options);
 }
 
 }  // namespace spdp
