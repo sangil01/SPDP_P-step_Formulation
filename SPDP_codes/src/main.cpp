@@ -37,6 +37,7 @@ struct CliOptions {
     std::string initial_incumbent_backend = "two-index-milp";
     std::string initial_incumbent_milp_mode = "duration";
     double initial_incumbent_milp_makespan_horizon_factor = 1.5;
+    std::string initial_incumbent_cp_graph_mode = "original-graph";
     int initial_incumbent_cp_workers = 0;
     std::string initial_incumbent_cp_mode = "satisfaction";
     double initial_incumbent_cp_threshold_horizon_factor = 1.5;
@@ -127,6 +128,7 @@ void print_usage(const char* executable) {
               << " [--initial-incumbent-backend two-index-milp|cp-sat]"
               << " [--initial-incumbent-milp-mode duration|makespan]"
               << " [--initial-incumbent-milp-makespan-horizon-factor F]"
+              << " [--initial-incumbent-cp-graph-mode original-graph|multigraph]"
               << " [--initial-incumbent-cp-workers N]"
               << " [--initial-incumbent-cp-mode satisfaction|threshold-optimization]"
               << " [--initial-incumbent-cp-threshold-horizon-factor F]"
@@ -277,6 +279,16 @@ std::string parse_initial_incumbent_milp_mode(const std::string& value) {
     throw std::runtime_error(
         "Invalid value for --initial-incumbent-milp-mode: " + value +
         " (expected duration or makespan)"
+    );
+}
+
+std::string parse_initial_incumbent_cp_graph_mode(const std::string& value) {
+    if (value == "original-graph" || value == "multigraph") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --initial-incumbent-cp-graph-mode: " + value +
+        " (expected original-graph or multigraph)"
     );
 }
 
@@ -499,6 +511,16 @@ spdp::InitialIncumbentMilpMode to_initial_incumbent_milp_mode(
         return spdp::InitialIncumbentMilpMode::Makespan;
     }
     throw std::runtime_error("Unsupported initial-incumbent MILP mode: " + value);
+}
+
+spdp::CpGraphMode to_cp_graph_mode(const std::string& value) {
+    if (value == "original-graph") {
+        return spdp::CpGraphMode::OriginalGraph;
+    }
+    if (value == "multigraph") {
+        return spdp::CpGraphMode::Multigraph;
+    }
+    throw std::runtime_error("Unsupported CP-SAT graph mode: " + value);
 }
 
 spdp::CpSolveMode to_cp_solve_mode(const std::string& value) {
@@ -845,6 +867,15 @@ CliOptions parse_cli(int argc, char** argv) {
                 throw std::runtime_error(arg + " must be finite.");
             }
             options.initial_incumbent_milp_makespan_horizon_factor = value;
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-cp-graph-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.initial_incumbent_cp_graph_mode =
+                parse_initial_incumbent_cp_graph_mode(argv[++idx]);
             continue;
         }
 
@@ -1749,6 +1780,8 @@ void print_instance_summary(
         << '\n';
     out << "[main] initial_incumbent_timeout_action: "
         << args.initial_incumbent_timeout_action << '\n';
+    out << "[main] initial_incumbent_cp_graph_mode: "
+        << args.initial_incumbent_cp_graph_mode << '\n';
     out << "[main] initial_incumbent_cp_mode: "
         << args.initial_incumbent_cp_mode << '\n';
     out << "[main] initial_incumbent_cp_threshold_horizon_factor: "
@@ -2130,6 +2163,8 @@ int main(int argc, char** argv) {
                 << format_double(
                     args.initial_incumbent_milp_makespan_horizon_factor)
                 << '\n';
+            output_file << "[initial-incumbent] cp_graph_mode="
+                << args.initial_incumbent_cp_graph_mode << '\n';
             output_file << "[initial-incumbent] cp_mode="
                 << args.initial_incumbent_cp_mode << '\n';
             output_file << "[initial-incumbent] cp_threshold_horizon_factor="
@@ -2159,6 +2194,8 @@ int main(int argc, char** argv) {
                 build_initial_incumbent_gurobi_log_path(args.instance, args.output_dir).string();
             search_options.cp_sat_log_base_path =
                 build_initial_incumbent_cp_sat_log_path(args.instance, args.output_dir).string();
+            search_options.cp_sat.graph_mode =
+                to_cp_graph_mode(args.initial_incumbent_cp_graph_mode);
             search_options.cp_sat.workers = args.initial_incumbent_cp_workers;
             search_options.cp_sat.solve_mode =
                 to_cp_solve_mode(args.initial_incumbent_cp_mode);
@@ -2243,6 +2280,9 @@ int main(int argc, char** argv) {
                     << " milp_stopped_by_bound_callback="
                     << (attempt.solve_result.milp_stopped_by_bound_callback
                         ? 1 : 0)
+                    << " cp_graph_mode="
+                    << spdp::cp_graph_mode_name(
+                        attempt.solve_result.cp_graph_mode)
                     << " cp_mode="
                     << spdp::cp_solve_mode_name(
                         attempt.solve_result.cp_solve_mode)
@@ -2274,6 +2314,28 @@ int main(int argc, char** argv) {
                     << attempt.solve_result.cp_build_stats.cor_41_pruned_arcs
                     << " cor_43_constraint_count="
                     << attempt.solve_result.cp_build_stats.cor_43_constraint_count
+                    << " input_multigraph_edges="
+                    << attempt.solve_result.cp_build_stats.input_multigraph_edges
+                    << " multigraph_internal_arcs="
+                    << attempt.solve_result.cp_build_stats.created_multigraph_internal_arcs
+                    << " multigraph_start_arc_copies="
+                    << attempt.solve_result.cp_build_stats.created_multigraph_start_arc_copies
+                    << " multigraph_end_arc_copies="
+                    << attempt.solve_result.cp_build_stats.created_multigraph_end_arc_copies
+                    << " multigraph_connector_arcs="
+                    << attempt.solve_result.cp_build_stats.fixed_multigraph_connector_arcs
+                    << " state_continuity_constraints="
+                    << attempt.solve_result.cp_build_stats.state_continuity_constraint_count
+                    << " full_skip_state_embedded="
+                    << (attempt.solve_result.cp_build_stats.full_skip_state_embedded ? 1 : 0)
+                    << " terminal_balance_constraints="
+                    << attempt.solve_result.cp_build_stats.terminal_balance_constraint_count
+                    << " container_workload_constraints="
+                    << attempt.solve_result.cp_build_stats.container_workload_constraint_count
+                    << " aggregate_duration_constraints="
+                    << attempt.solve_result.cp_build_stats.aggregate_duration_constraint_count
+                    << " first_pickup_symmetry_constraints="
+                    << attempt.solve_result.cp_build_stats.first_pickup_symmetry_constraint_count
                     << " adapter_status=" << attempt.solve_result.adapter_status
                     << " solution_info="
                     << std::quoted(single_line_log_text(

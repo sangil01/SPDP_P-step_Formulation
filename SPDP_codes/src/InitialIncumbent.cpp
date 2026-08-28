@@ -571,7 +571,7 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
                     options.cp_sat_log_base_path, "cp_sat", vehicle_count
                 );
                 const CpFixedKSolveResult cp_result =
-                    solve_fixed_k_cp_sat(data, cp_options);
+                    solve_fixed_k_cp_sat(data, graph, cp_options);
                 InitialIncumbentSolveResult converted;
                 converted.backend = InitialIncumbentBackend::CpSat;
                 converted.status = cp_result.raw_status;
@@ -581,6 +581,7 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
                 converted.runtime_seconds = cp_result.wall_time_seconds;
                 converted.configured_time_limit_seconds =
                     cp_result.configured_time_limit_seconds;
+                converted.cp_graph_mode = cp_result.graph_mode;
                 converted.cp_solve_mode = cp_result.solve_mode;
                 converted.cp_threshold_horizon_factor =
                     cp_result.threshold_horizon_factor;
@@ -622,9 +623,19 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
                     break;
                 }
 
-                const CpMappedIncumbent mapped = map_cp_incumbent_to_multigraph(
-                    data, graph, cp_result.routes
-                );
+                const CpMappedIncumbent mapped =
+                    cp_result.graph_mode == CpGraphMode::Multigraph
+                    ? validate_multigraph_cp_incumbent(
+                        data,
+                        graph,
+                        cp_result.active_edge_ids,
+                        vehicle_count
+                    )
+                    : map_cp_incumbent_to_multigraph(
+                        data,
+                        graph,
+                        cp_result.routes
+                    );
                 if (!mapped.success) {
                     converted.outcome = FixedKSolveOutcome::AdapterError;
                     converted.termination_name = "adapter-error";

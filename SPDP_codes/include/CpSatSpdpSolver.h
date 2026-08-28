@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "GenMultiGraph.h"
 #include "ReadData.h"
 
 namespace spdp {
@@ -13,6 +14,10 @@ enum class CpActionKind { Pickup, Treatment, Delivery };
 enum class CpSolveMode {
     Satisfaction,
     ThresholdOptimization,
+};
+enum class CpGraphMode {
+    OriginalGraph,
+    Multigraph,
 };
 enum class CpSolveOutcome {
     Feasible,
@@ -38,6 +43,7 @@ struct CpSatSolveOptions {
     int vehicle_count = 0;
     double time_limit_seconds = 0.0;
     int workers = 0;
+    CpGraphMode graph_mode = CpGraphMode::OriginalGraph;
     CpSolveMode solve_mode = CpSolveMode::Satisfaction;
     double threshold_horizon_factor = 1.5;
     std::string log_file_path;
@@ -65,10 +71,22 @@ struct CpModelBuildStats {
     std::int64_t cor_40_pruned_arcs = 0;
     std::int64_t cor_41_pruned_arcs = 0;
     std::int64_t cor_43_constraint_count = 0;
+    std::int64_t input_multigraph_edges = 0;
+    std::int64_t created_multigraph_internal_arcs = 0;
+    std::int64_t created_multigraph_start_arc_copies = 0;
+    std::int64_t created_multigraph_end_arc_copies = 0;
+    std::int64_t fixed_multigraph_connector_arcs = 0;
+    std::int64_t state_continuity_constraint_count = 0;
+    std::int64_t terminal_balance_constraint_count = 0;
+    std::int64_t container_workload_constraint_count = 0;
+    std::int64_t aggregate_duration_constraint_count = 0;
+    std::int64_t first_pickup_symmetry_constraint_count = 0;
+    bool full_skip_state_embedded = false;
 };
 
 struct CpFixedKSolveResult {
     CpSolveOutcome outcome = CpSolveOutcome::EarlyUnknown;
+    CpGraphMode graph_mode = CpGraphMode::OriginalGraph;
     CpSolveMode solve_mode = CpSolveMode::Satisfaction;
     int raw_status = 0;
     std::string status_name;
@@ -91,9 +109,11 @@ struct CpFixedKSolveResult {
     std::int64_t branches = 0;
     CpModelBuildStats build_stats;
     std::vector<CpActionRoute> routes;
+    std::vector<int> active_edge_ids;
 };
 
 const char* cp_solve_mode_name(CpSolveMode mode);
+const char* cp_graph_mode_name(CpGraphMode mode);
 
 CpSolveOutcome classify_cp_unknown_outcome(
     double configured_time_limit_seconds,
@@ -102,6 +122,12 @@ CpSolveOutcome classify_cp_unknown_outcome(
 
 CpFixedKSolveResult solve_fixed_k_cp_sat(
     const SPDPData& data,
+    const CpSatSolveOptions& options
+);
+
+CpFixedKSolveResult solve_fixed_k_cp_sat(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
     const CpSatSolveOptions& options
 );
 

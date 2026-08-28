@@ -339,4 +339,59 @@ CpMappedIncumbent map_cp_incumbent_to_multigraph(
     return mapped;
 }
 
+CpMappedIncumbent validate_multigraph_cp_incumbent(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const std::vector<int>& active_edge_ids,
+    int expected_vehicle_count
+) {
+    CpMappedIncumbent mapped;
+    try {
+        if (expected_vehicle_count <= 0) {
+            throw std::runtime_error(
+                "Expected multigraph CP vehicle count must be positive."
+            );
+        }
+        std::set<int> unique_edge_ids;
+        for (int edge_id : active_edge_ids) {
+            if (edge_id < 0 ||
+                static_cast<std::size_t>(edge_id) >= graph.number_of_edges()) {
+                throw std::runtime_error(
+                    "Multigraph CP witness contains an invalid edge ID."
+                );
+            }
+            if (!unique_edge_ids.insert(edge_id).second) {
+                throw std::runtime_error(
+                    "Multigraph CP witness repeats an edge ID."
+                );
+            }
+            const EdgeRecord& edge =
+                graph.edges()[static_cast<std::size_t>(edge_id)];
+            mapped.total_duration += edge.data.time;
+            mapped.total_original_cost += edge.data.cost;
+        }
+        mapped.active_edge_ids = active_edge_ids;
+        const RecoveredSolution recovered = recover_selected_edge_solution(
+            data,
+            graph,
+            mapped.active_edge_ids,
+            mapped.total_original_cost,
+            0.0
+        );
+        if (static_cast<int>(recovered.routes.size()) != expected_vehicle_count) {
+            throw std::runtime_error(
+                "Existing route validator recovered a different vehicle count."
+            );
+        }
+        mapped.success = true;
+    } catch (const std::exception& error) {
+        mapped.success = false;
+        mapped.error_message = error.what();
+        mapped.active_edge_ids.clear();
+        mapped.total_duration = 0.0;
+        mapped.total_original_cost = 0.0;
+    }
+    return mapped;
+}
+
 }  // namespace spdp

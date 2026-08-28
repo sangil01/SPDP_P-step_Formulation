@@ -26,16 +26,17 @@ INITIAL_INCUMBENT_ENABLE=1
 INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
-INITIAL_INCUMBENT_BACKEND=two-index-milp # Options: two-index-milp, cp-sat
+INITIAL_INCUMBENT_BACKEND=cp-sat # Options: two-index-milp, cp-sat
 INITIAL_INCUMBENT_MILP_MODE=makespan # Options: duration, makespan
 INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR=1.5 # Used only by makespan
+INITIAL_INCUMBENT_CP_GRAPH_MODE=multigraph # Options: original-graph, multigraph
 INITIAL_INCUMBENT_CP_WORKERS=0
 INITIAL_INCUMBENT_CP_MODE=threshold-optimization # Options: satisfaction, threshold-optimization
 INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR=1.5 # Used only by threshold-optimization
-INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE=0
-INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR=0
-INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=0
-INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=0
+INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE=1
+INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR=1
+INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=1
+INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=1
 INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP=1
 INITIAL_INCUMBENT_CP_SYMMETRY_43=1
 GUROBI_THREADS=0
@@ -103,14 +104,14 @@ FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
 FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
     #=========Request 20 이하=========#
-    '''"RecDep_day_A1.dat"
+    "RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
     "RecDep_day_A4.dat"
     "RecDep_day_A5.dat"
     "RecDep_day_A6.dat"
     "RecDep_day_A7.dat"
-    "RecDep_day_A8.dat"
+    '''"RecDep_day_A8.dat"
     "RecDep_day_A9.dat"
     "RecDep_day_A10.dat"
     "RecDep_day_A11.dat"
@@ -155,7 +156,7 @@ DATA_LIST=(
     "RecDep_day_D2.dat"'''
     #=================================#
     #=====Request 50 초과 100 이하=====#
-    "RecDep_day_B15.dat"
+    '''"RecDep_day_B15.dat"
     "RecDep_day_B16.dat"
     "RecDep_day_B17.dat"
     "RecDep_day_B18.dat"
@@ -163,14 +164,14 @@ DATA_LIST=(
     "RecDep_day_B20.dat"
     "RecDep_day_C13.dat"
     "RecDep_day_C14.dat"
-    "RecDep_day_C15.dat"
-    "RecDep_day_C16.dat"
+    "RecDep_day_C15.dat"'''
+    '''"RecDep_day_C16.dat"
     "RecDep_day_C17.dat"
     "RecDep_day_C18.dat"
     "RecDep_day_C19.dat"
     "RecDep_day_C20.dat"
     "RecDep_day_D3.dat"
-    "RecDep_day_D4.dat"
+    "RecDep_day_D4.dat"'''
     "RecDep_day_D5.dat"
     "RecDep_day_D6.dat"
     "RecDep_day_D7.dat"
@@ -209,6 +210,7 @@ if [[ "$INITIAL_INCUMBENT_ENABLE" == "1" ]]; then
         fi
     fi
     if [[ "$INITIAL_INCUMBENT_BACKEND" == "cp-sat" ]]; then
+        RUN_TAG+="-cpg${INITIAL_INCUMBENT_CP_GRAPH_MODE}"
         RUN_TAG+="-cpm${INITIAL_INCUMBENT_CP_MODE}"
         if [[ "$INITIAL_INCUMBENT_CP_MODE" == "threshold-optimization" ]]; then
             RUN_TAG+="-cpf${INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR}"
@@ -280,6 +282,7 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-backend: $INITIAL_INCUMBENT_BACKEND"
         echo "initial-incumbent-milp-mode: $INITIAL_INCUMBENT_MILP_MODE"
         echo "initial-incumbent-milp-makespan-horizon-factor: $INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR"
+        echo "initial-incumbent-cp-graph-mode: $INITIAL_INCUMBENT_CP_GRAPH_MODE"
         echo "initial-incumbent-cp-workers: $INITIAL_INCUMBENT_CP_WORKERS"
         echo "initial-incumbent-cp-mode: $INITIAL_INCUMBENT_CP_MODE"
         echo "initial-incumbent-cp-threshold-horizon-factor: $INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR"
@@ -364,6 +367,7 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-backend "$INITIAL_INCUMBENT_BACKEND" \
         --initial-incumbent-milp-mode "$INITIAL_INCUMBENT_MILP_MODE" \
         --initial-incumbent-milp-makespan-horizon-factor "$INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR" \
+        --initial-incumbent-cp-graph-mode "$INITIAL_INCUMBENT_CP_GRAPH_MODE" \
         --initial-incumbent-cp-workers "$INITIAL_INCUMBENT_CP_WORKERS" \
         --initial-incumbent-cp-mode "$INITIAL_INCUMBENT_CP_MODE" \
         --initial-incumbent-cp-threshold-horizon-factor "$INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR" \

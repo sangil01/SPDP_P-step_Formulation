@@ -24,6 +24,13 @@ CpMappedIncumbent map_cp_incumbent_to_multigraph(
     const std::vector<CpActionRoute>& routes
 );
 
+CpMappedIncumbent validate_multigraph_cp_incumbent(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const std::vector<int>& active_edge_ids,
+    int expected_vehicle_count
+);
+
 }  // namespace spdp
 
 #endif

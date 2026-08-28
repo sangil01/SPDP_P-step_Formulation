@@ -214,6 +214,16 @@ const char* cp_solve_mode_name(CpSolveMode mode) {
     return "unknown";
 }
 
+const char* cp_graph_mode_name(CpGraphMode mode) {
+    switch (mode) {
+    case CpGraphMode::OriginalGraph:
+        return "original-graph";
+    case CpGraphMode::Multigraph:
+        return "multigraph";
+    }
+    return "unknown";
+}
+
 CpSolveOutcome classify_cp_unknown_outcome(
     double configured_time_limit_seconds,
     double solver_wall_time_seconds
@@ -236,11 +246,12 @@ CpSolveOutcome classify_cp_unknown_outcome(
         : CpSolveOutcome::EarlyUnknown;
 }
 
-CpFixedKSolveResult solve_fixed_k_cp_sat(
+static CpFixedKSolveResult solve_fixed_k_original_graph_cp_sat(
     const SPDPData& data,
     const CpSatSolveOptions& options
 ) {
     CpFixedKSolveResult result;
+    result.graph_mode = CpGraphMode::OriginalGraph;
     result.solve_mode = options.solve_mode;
     result.configured_time_limit_seconds = options.time_limit_seconds;
     result.threshold_horizon_factor =
@@ -841,7 +852,7 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
         if (!write_log_file) {
             return;
         }
-        log_file << "[spdp-cp-wrapper] mode="
+        log_file << "[spdp-cp-wrapper] graph_mode=original-graph mode="
                  << cp_solve_mode_name(result.solve_mode)
                  << " horizon_factor=" << result.threshold_horizon_factor
                  << " model_horizon=" << result.model_horizon
@@ -989,6 +1000,758 @@ CpFixedKSolveResult solve_fixed_k_cp_sat(
         result.routes.clear();
     }
     append_final_log();
+    return result;
+}
+
+static CpFixedKSolveResult solve_fixed_k_multigraph_cp_sat(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const CpSatSolveOptions& options
+) {
+    struct MultigraphArcVariable {
+        int tail = -1;
+        int head = -1;
+        int original_edge_id = -1;
+        int vehicle_index = -1;
+        BoolVar literal;
+    };
+    struct StateFlowTerms {
+        std::vector<BoolVar> incoming;
+        std::vector<BoolVar> outgoing;
+    };
+
+    CpFixedKSolveResult result;
+    result.graph_mode = CpGraphMode::Multigraph;
+    result.solve_mode = options.solve_mode;
+    result.configured_time_limit_seconds = options.time_limit_seconds;
+    result.threshold_horizon_factor =
+        options.solve_mode == CpSolveMode::ThresholdOptimization
+            ? options.threshold_horizon_factor
+            : 0.0;
+    result.build_stats.input_multigraph_edges =
+        static_cast<std::int64_t>(graph.number_of_edges());
+    result.build_stats.full_skip_state_embedded = true;
+
+    const bool write_log_file = !options.log_file_path.empty();
+    std::ofstream log_file;
+    if (write_log_file) {
+        log_file.open(options.log_file_path, std::ios::trunc);
+        if (!log_file) {
+            result.outcome = CpSolveOutcome::ModelInvalid;
+            result.status_name = "MODEL_INVALID";
+            result.termination_name = "model-invalid";
+            result.error_message =
+                "Failed to create CP-SAT log file: " + options.log_file_path;
+            return result;
+        }
+        log_file << "Starting CP-SAT fixed-K multigraph incumbent attempt\n";
+        log_file.flush();
+    }
+    auto fail_model = [&](const std::string& message) {
+        result.outcome = CpSolveOutcome::ModelInvalid;
+        result.status_name = "MODEL_INVALID";
+        result.termination_name = "model-invalid";
+        result.error_message = message;
+        if (write_log_file) {
+            log_file << result.status_name << ": " << message << '\n';
+            log_file.flush();
+        }
+        return result;
+    };
+
+    if (options.vehicle_count <= 0 || options.workers < 0 ||
+        !std::isfinite(options.time_limit_seconds) ||
+        options.time_limit_seconds < 0.0) {
+        return fail_model("Invalid CP-SAT solve options.");
+    }
+
+    IntegerData integer_data;
+    std::string integer_error;
+    if (!convert_integer_data(data, integer_data, integer_error)) {
+        return fail_model(integer_error);
+    }
+    std::int64_t route_horizon = integer_data.limit;
+    if (options.solve_mode == CpSolveMode::ThresholdOptimization &&
+        !compute_threshold_horizon(
+            integer_data.limit,
+            options.threshold_horizon_factor,
+            route_horizon,
+            integer_error
+        )) {
+        return fail_model(integer_error);
+    }
+    result.model_horizon = route_horizon;
+
+    const int n = static_cast<int>(data.requests.size());
+    const int k_count = options.vehicle_count;
+    if (n == 0 || k_count > n) {
+        result.outcome = CpSolveOutcome::ProvenInfeasible;
+        result.status_name = "INFEASIBLE";
+        result.termination_name = "proven-infeasible";
+        return result;
+    }
+    if (graph.end_node_id() != 2 * n + 1) {
+        return fail_model("Multigraph service-node indexing is inconsistent with the requests.");
+    }
+    if (route_horizon >
+        std::numeric_limits<std::int64_t>::max() /
+            std::max<std::int64_t>(2, k_count)) {
+        return fail_model("Active CP horizon makes a redundant bound overflow.");
+    }
+
+    const NodeId end_node = graph.end_node_id();
+    const int service_count = 2 * n;
+    auto service_index = [service_count](NodeId node) {
+        return node >= 1 && node <= service_count ? node - 1 : -1;
+    };
+    auto start_anchor = [service_count](int k) {
+        return service_count + 2 * k;
+    };
+    auto end_anchor = [service_count](int k) {
+        return service_count + 2 * k + 1;
+    };
+
+    for (NodeId node = 1; node <= service_count; ++node) {
+        try {
+            const NodeSpec& spec = graph.node(node);
+            if (spec.kind != NodeSpec::Kind::Pickup &&
+                spec.kind != NodeSpec::Kind::Delivery) {
+                return fail_model("A physical multigraph node is not pickup or delivery.");
+            }
+            if (!spec.request_idx.has_value() ||
+                *spec.request_idx < 0 || *spec.request_idx >= n) {
+                return fail_model("A physical multigraph node has no valid request index.");
+            }
+        } catch (const std::exception& error) {
+            return fail_model(error.what());
+        }
+    }
+
+    std::vector<std::int64_t> edge_time(graph.number_of_edges(), 0);
+    std::vector<int> start_edge_ids;
+    std::vector<int> internal_edge_ids;
+    std::vector<int> end_edge_ids;
+    for (std::size_t edge_id = 0; edge_id < graph.edges().size(); ++edge_id) {
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        if (!exact_integer(edge.data.time, edge_time[edge_id]) ||
+            edge_time[edge_id] < 0) {
+            return fail_model(
+                "Multigraph CP-SAT requires nonnegative exact integer edge durations."
+            );
+        }
+        if (edge.u == 0 && edge.v == end_node) {
+            continue;
+        }
+        if (edge.u == 0 && service_index(edge.v) >= 0 &&
+            graph.node(edge.v).kind == NodeSpec::Kind::Pickup) {
+            start_edge_ids.push_back(static_cast<int>(edge_id));
+        } else if (service_index(edge.u) >= 0 &&
+                   service_index(edge.v) >= 0) {
+            internal_edge_ids.push_back(static_cast<int>(edge_id));
+        } else if (service_index(edge.u) >= 0 && edge.v == end_node &&
+                   graph.node(edge.u).kind == NodeSpec::Kind::Delivery) {
+            end_edge_ids.push_back(static_cast<int>(edge_id));
+        } else {
+            return fail_model("Multigraph contains an unsupported non-dummy edge.");
+        }
+    }
+    if (start_edge_ids.empty() || end_edge_ids.empty()) {
+        result.outcome = CpSolveOutcome::ProvenInfeasible;
+        result.status_name = "INFEASIBLE";
+        result.termination_name = "proven-infeasible";
+        return result;
+    }
+
+    CpModelBuilder builder;
+    CircuitConstraint circuit = builder.AddCircuitConstraint();
+    std::vector<MultigraphArcVariable> selected_arcs;
+    selected_arcs.reserve(
+        internal_edge_ids.size() +
+        static_cast<std::size_t>(k_count) *
+            (start_edge_ids.size() + end_edge_ids.size())
+    );
+    std::vector<std::vector<MultigraphArcVariable>> start_arcs_by_vehicle(
+        static_cast<std::size_t>(k_count)
+    );
+    std::vector<std::map<State, StateFlowTerms>> state_flow(
+        static_cast<std::size_t>(end_node + 1)
+    );
+
+    for (int edge_id : internal_edge_ids) {
+        const EdgeRecord& edge = graph.edges()[static_cast<std::size_t>(edge_id)];
+        BoolVar literal = builder.NewBoolVar().WithName(
+            "mg_arc_e" + std::to_string(edge_id)
+        );
+        circuit.AddArc(service_index(edge.u), service_index(edge.v), literal);
+        MultigraphArcVariable arc{
+            service_index(edge.u), service_index(edge.v), edge_id, -1, literal
+        };
+        selected_arcs.push_back(arc);
+        state_flow[static_cast<std::size_t>(edge.u)][edge.data.start_state]
+            .outgoing.push_back(literal);
+        state_flow[static_cast<std::size_t>(edge.v)][edge.data.end_state]
+            .incoming.push_back(literal);
+        ++result.build_stats.created_multigraph_internal_arcs;
+    }
+
+    for (int k = 0; k < k_count; ++k) {
+        for (int edge_id : start_edge_ids) {
+            const EdgeRecord& edge = graph.edges()[static_cast<std::size_t>(edge_id)];
+            BoolVar literal = builder.NewBoolVar().WithName(
+                "mg_arc_S" + std::to_string(k) + "_e" + std::to_string(edge_id)
+            );
+            circuit.AddArc(start_anchor(k), service_index(edge.v), literal);
+            MultigraphArcVariable arc{
+                start_anchor(k), service_index(edge.v), edge_id, k, literal
+            };
+            selected_arcs.push_back(arc);
+            start_arcs_by_vehicle[static_cast<std::size_t>(k)].push_back(arc);
+            state_flow[static_cast<std::size_t>(edge.v)][edge.data.end_state]
+                .incoming.push_back(literal);
+            ++result.build_stats.created_multigraph_start_arc_copies;
+        }
+        for (int edge_id : end_edge_ids) {
+            const EdgeRecord& edge = graph.edges()[static_cast<std::size_t>(edge_id)];
+            BoolVar literal = builder.NewBoolVar().WithName(
+                "mg_arc_e" + std::to_string(edge_id) + "_Z" + std::to_string(k)
+            );
+            circuit.AddArc(service_index(edge.u), end_anchor(k), literal);
+            selected_arcs.push_back(MultigraphArcVariable{
+                service_index(edge.u), end_anchor(k), edge_id, k, literal
+            });
+            state_flow[static_cast<std::size_t>(edge.u)][edge.data.start_state]
+                .outgoing.push_back(literal);
+            ++result.build_stats.created_multigraph_end_arc_copies;
+        }
+        circuit.AddArc(
+            end_anchor(k),
+            start_anchor((k + 1) % k_count),
+            builder.TrueVar()
+        );
+        ++result.build_stats.fixed_multigraph_connector_arcs;
+    }
+
+    for (NodeId node = 1; node <= service_count; ++node) {
+        for (const auto& entry : state_flow[static_cast<std::size_t>(node)]) {
+            builder.AddEquality(
+                bool_sum(entry.second.incoming),
+                bool_sum(entry.second.outgoing)
+            );
+            ++result.build_stats.state_continuity_constraint_count;
+        }
+    }
+
+    std::vector<IntVar> vehicle;
+    std::vector<IntVar> position;
+    std::vector<IntVar> after_service;
+    std::vector<std::vector<BoolVar>> assigned(
+        static_cast<std::size_t>(service_count),
+        std::vector<BoolVar>(static_cast<std::size_t>(k_count))
+    );
+    vehicle.reserve(static_cast<std::size_t>(service_count));
+    position.reserve(static_cast<std::size_t>(service_count));
+    after_service.reserve(static_cast<std::size_t>(service_count));
+    for (int index = 0; index < service_count; ++index) {
+        vehicle.push_back(builder.NewIntVar(Domain(0, k_count - 1)).WithName(
+            "mg_vehicle_" + std::to_string(index + 1)
+        ));
+        position.push_back(builder.NewIntVar(Domain(1, service_count)).WithName(
+            "mg_position_" + std::to_string(index + 1)
+        ));
+        after_service.push_back(builder.NewIntVar(Domain(0, route_horizon)).WithName(
+            "mg_after_" + std::to_string(index + 1)
+        ));
+        std::vector<BoolVar> assignment_row;
+        for (int k = 0; k < k_count; ++k) {
+            BoolVar literal = builder.NewBoolVar().WithName(
+                "mg_assigned_" + std::to_string(index + 1) + "_" +
+                std::to_string(k)
+            );
+            assigned[static_cast<std::size_t>(index)][static_cast<std::size_t>(k)] =
+                literal;
+            builder.AddEquality(vehicle[static_cast<std::size_t>(index)], k)
+                .OnlyEnforceIf(literal);
+            assignment_row.push_back(literal);
+        }
+        builder.AddExactlyOne(assignment_row);
+    }
+
+    for (const MultigraphArcVariable& arc : selected_arcs) {
+        const EdgeRecord& edge =
+            graph.edges()[static_cast<std::size_t>(arc.original_edge_id)];
+        const std::int64_t duration =
+            edge_time[static_cast<std::size_t>(arc.original_edge_id)];
+        if (edge.u == 0) {
+            const int head = service_index(edge.v);
+            builder.AddImplication(
+                arc.literal,
+                assigned[static_cast<std::size_t>(head)]
+                        [static_cast<std::size_t>(arc.vehicle_index)]
+            );
+            builder.AddEquality(position[static_cast<std::size_t>(head)], 1)
+                .OnlyEnforceIf(arc.literal);
+            builder.AddEquality(after_service[static_cast<std::size_t>(head)], duration)
+                .OnlyEnforceIf(arc.literal);
+        } else if (edge.v == end_node) {
+            const int tail = service_index(edge.u);
+            builder.AddImplication(
+                arc.literal,
+                assigned[static_cast<std::size_t>(tail)]
+                        [static_cast<std::size_t>(arc.vehicle_index)]
+            );
+        } else {
+            const int tail = service_index(edge.u);
+            const int head = service_index(edge.v);
+            builder.AddEquality(
+                vehicle[static_cast<std::size_t>(head)],
+                vehicle[static_cast<std::size_t>(tail)]
+            ).OnlyEnforceIf(arc.literal);
+            builder.AddEquality(
+                position[static_cast<std::size_t>(head)],
+                position[static_cast<std::size_t>(tail)] + 1
+            ).OnlyEnforceIf(arc.literal);
+            builder.AddEquality(
+                after_service[static_cast<std::size_t>(head)],
+                after_service[static_cast<std::size_t>(tail)] + duration
+            ).OnlyEnforceIf(arc.literal);
+        }
+    }
+
+    std::vector<IntVar> completion;
+    completion.reserve(static_cast<std::size_t>(k_count));
+    for (int k = 0; k < k_count; ++k) {
+        completion.push_back(builder.NewIntVar(Domain(0, route_horizon)).WithName(
+            "mg_completion_" + std::to_string(k)
+        ));
+    }
+    for (const MultigraphArcVariable& arc : selected_arcs) {
+        const EdgeRecord& edge =
+            graph.edges()[static_cast<std::size_t>(arc.original_edge_id)];
+        if (edge.v != end_node) {
+            continue;
+        }
+        builder.AddEquality(
+            completion[static_cast<std::size_t>(arc.vehicle_index)],
+            after_service[static_cast<std::size_t>(service_index(edge.u))] +
+                edge_time[static_cast<std::size_t>(arc.original_edge_id)]
+        ).OnlyEnforceIf(arc.literal);
+    }
+
+    std::optional<IntVar> makespan;
+    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+        makespan.emplace(
+            builder.NewIntVar(Domain(0, route_horizon)).WithName("mg_makespan")
+        );
+        builder.AddMaxEquality(*makespan, completion);
+        builder.Minimize(*makespan);
+    }
+
+    std::set<int> types;
+    for (const Request& request : data.requests) {
+        types.insert(request.container_type);
+    }
+    if (options.redundant.terminal_balance) {
+        for (int k = 0; k < k_count; ++k) {
+            LinearExpr pickups;
+            LinearExpr deliveries;
+            for (int i = 0; i < n; ++i) {
+                pickups += assigned[static_cast<std::size_t>(i)]
+                                   [static_cast<std::size_t>(k)];
+                deliveries += assigned[static_cast<std::size_t>(n + i)]
+                                      [static_cast<std::size_t>(k)];
+            }
+            builder.AddEquality(pickups, deliveries);
+            ++result.build_stats.terminal_balance_constraint_count;
+            for (int type : types) {
+                LinearExpr typed_pickups;
+                LinearExpr typed_deliveries;
+                for (int i = 0; i < n; ++i) {
+                    if (data.requests[static_cast<std::size_t>(i)].container_type != type) {
+                        continue;
+                    }
+                    typed_pickups += assigned[static_cast<std::size_t>(i)]
+                                             [static_cast<std::size_t>(k)];
+                    typed_deliveries += assigned[static_cast<std::size_t>(n + i)]
+                                                [static_cast<std::size_t>(k)];
+                }
+                builder.AddEquality(typed_pickups, typed_deliveries);
+                ++result.build_stats.terminal_balance_constraint_count;
+            }
+        }
+    }
+
+    if (options.redundant.container_workload) {
+        for (int k = 0; k < k_count; ++k) {
+            LinearExpr service_twice;
+            LinearExpr workload;
+            std::map<std::pair<int, int>, BoolVar> matching;
+            for (int i = 0; i < n; ++i) {
+                const Request& request = data.requests[static_cast<std::size_t>(i)];
+                service_twice += 2 * (integer_data.pickup + integer_data.treatment) *
+                    assigned[static_cast<std::size_t>(i)][static_cast<std::size_t>(k)];
+                service_twice += 2 * integer_data.delivery *
+                    assigned[static_cast<std::size_t>(n + i)][static_cast<std::size_t>(k)];
+                workload += integer_data.travel[static_cast<std::size_t>(request.from_id)]
+                                               [static_cast<std::size_t>(request.to_id)] *
+                    assigned[static_cast<std::size_t>(i)][static_cast<std::size_t>(k)];
+                std::vector<BoolVar> outgoing;
+                for (int j = 0; j < n; ++j) {
+                    if (request.container_type !=
+                        data.requests[static_cast<std::size_t>(j)].container_type) {
+                        continue;
+                    }
+                    BoolVar lambda = builder.NewBoolVar().WithName(
+                        "mg_lambda_" + std::to_string(i) + "_" +
+                        std::to_string(j) + "_" + std::to_string(k)
+                    );
+                    matching.emplace(std::make_pair(i, j), lambda);
+                    outgoing.push_back(lambda);
+                    workload += integer_data.travel[static_cast<std::size_t>(request.to_id)]
+                                                   [static_cast<std::size_t>(
+                                                       data.requests[static_cast<std::size_t>(j)]
+                                                           .from_id)] * lambda;
+                }
+                builder.AddEquality(
+                    bool_sum(outgoing),
+                    assigned[static_cast<std::size_t>(i)][static_cast<std::size_t>(k)]
+                );
+                ++result.build_stats.container_workload_constraint_count;
+            }
+            for (int j = 0; j < n; ++j) {
+                std::vector<BoolVar> incoming;
+                for (int i = 0; i < n; ++i) {
+                    const auto found = matching.find(std::make_pair(i, j));
+                    if (found != matching.end()) {
+                        incoming.push_back(found->second);
+                    }
+                }
+                builder.AddEquality(
+                    bool_sum(incoming),
+                    assigned[static_cast<std::size_t>(n + j)]
+                            [static_cast<std::size_t>(k)]
+                );
+                ++result.build_stats.container_workload_constraint_count;
+            }
+            builder.AddLessOrEqual(
+                service_twice + workload,
+                2 * route_horizon
+            );
+            ++result.build_stats.container_workload_constraint_count;
+        }
+    }
+
+    if (options.redundant.aggregate_duration) {
+        LinearExpr total_duration;
+        for (const MultigraphArcVariable& arc : selected_arcs) {
+            total_duration +=
+                edge_time[static_cast<std::size_t>(arc.original_edge_id)] * arc.literal;
+        }
+        builder.AddLessOrEqual(total_duration, k_count * route_horizon);
+        result.build_stats.aggregate_duration_constraint_count = 1;
+    }
+
+    if (options.symmetry.first_pickup_vehicle_ordering) {
+        for (int k = 0; k + 1 < k_count; ++k) {
+            LinearExpr current;
+            LinearExpr next;
+            for (const MultigraphArcVariable& arc :
+                 start_arcs_by_vehicle[static_cast<std::size_t>(k)]) {
+                const EdgeRecord& edge =
+                    graph.edges()[static_cast<std::size_t>(arc.original_edge_id)];
+                current += (*graph.node(edge.v).request_idx + 1) * arc.literal;
+            }
+            for (const MultigraphArcVariable& arc :
+                 start_arcs_by_vehicle[static_cast<std::size_t>(k + 1)]) {
+                const EdgeRecord& edge =
+                    graph.edges()[static_cast<std::size_t>(arc.original_edge_id)];
+                next += (*graph.node(edge.v).request_idx + 1) * arc.literal;
+            }
+            builder.AddLessOrEqual(current + 1, next);
+            ++result.build_stats.first_pickup_symmetry_constraint_count;
+        }
+    }
+
+    if (options.symmetry.cor_43_identical_pickup_time_ordering) {
+        std::map<std::tuple<int, int, int>, std::vector<int>> groups;
+        for (int i = 0; i < n; ++i) {
+            const Request& request = data.requests[static_cast<std::size_t>(i)];
+            groups[{request.from_id, request.to_id, request.container_type}]
+                .push_back(i);
+        }
+        for (const auto& entry : groups) {
+            const std::vector<int>& requests = entry.second;
+            for (std::size_t left = 0; left < requests.size(); ++left) {
+                for (std::size_t right = left + 1; right < requests.size(); ++right) {
+                    builder.AddLessOrEqual(
+                        after_service[static_cast<std::size_t>(requests[left])],
+                        after_service[static_cast<std::size_t>(requests[right])]
+                    );
+                    ++result.build_stats.cor_43_constraint_count;
+                }
+            }
+        }
+    }
+
+    operations_research::sat::SatParameters parameters;
+    if (options.time_limit_seconds > 0.0) {
+        parameters.set_max_time_in_seconds(options.time_limit_seconds);
+    }
+    if (options.workers > 0) {
+        parameters.set_num_search_workers(options.workers);
+    }
+    parameters.set_log_search_progress(write_log_file);
+    parameters.set_log_to_stdout(false);
+    operations_research::sat::Model model;
+    model.Add(operations_research::sat::NewSatParameters(parameters));
+    if (write_log_file) {
+        operations_research::SolverLogger* logger =
+            model.GetOrCreate<operations_research::SolverLogger>();
+        logger->EnableLogging(true);
+        logger->SetLogToStdOut(false);
+        logger->AddInfoLoggingCallback([&log_file](const std::string& message) {
+            log_file << message;
+            if (message.empty() || message.back() != '\n') {
+                log_file << '\n';
+            }
+            log_file.flush();
+        });
+    }
+
+    std::mutex callback_mutex;
+    std::optional<CpSolverResponse> accepted_threshold_response;
+    bool stopped_by_bound_callback = false;
+    double callback_proving_bound = 0.0;
+    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+        model.Add(operations_research::sat::NewFeasibleSolutionObserver(
+            [&](const CpSolverResponse& candidate) {
+                if (candidate.objective_value() >
+                    static_cast<double>(integer_data.limit) + kObjectiveTolerance) {
+                    return;
+                }
+                bool should_stop = false;
+                {
+                    std::lock_guard<std::mutex> lock(callback_mutex);
+                    if (!accepted_threshold_response.has_value()) {
+                        accepted_threshold_response = candidate;
+                        should_stop = true;
+                    }
+                }
+                if (should_stop) {
+                    operations_research::sat::StopSearch(&model);
+                }
+            }
+        ));
+        model.Add(operations_research::sat::NewBestBoundCallback(
+            [&](double bound) {
+                if (!objective_bound_excludes_threshold(bound, integer_data.limit)) {
+                    return;
+                }
+                bool should_stop = false;
+                {
+                    std::lock_guard<std::mutex> lock(callback_mutex);
+                    callback_proving_bound =
+                        std::max(callback_proving_bound, bound);
+                    if (!stopped_by_bound_callback) {
+                        stopped_by_bound_callback = true;
+                        should_stop = true;
+                    }
+                }
+                if (should_stop) {
+                    operations_research::sat::StopSearch(&model);
+                }
+            }
+        ));
+    }
+
+    const CpSolverResponse response =
+        operations_research::sat::SolveCpModel(builder.Build(), &model);
+    std::optional<CpSolverResponse> saved_threshold_response;
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex);
+        saved_threshold_response = accepted_threshold_response;
+        result.stopped_by_feasible_observer =
+            accepted_threshold_response.has_value();
+        result.stopped_by_bound_callback = stopped_by_bound_callback;
+        if (stopped_by_bound_callback) {
+            result.has_objective_bound = true;
+            result.best_objective_bound = callback_proving_bound;
+        }
+    }
+
+    result.raw_status = static_cast<int>(response.status());
+    result.status_name =
+        operations_research::sat::CpSolverStatus_Name(response.status());
+    result.solution_info = response.solution_info();
+    result.wall_time_seconds = response.wall_time();
+    result.conflicts = response.num_conflicts();
+    result.branches = response.num_branches();
+    const bool raw_has_solution =
+        response.status() == operations_research::sat::CpSolverStatus::FEASIBLE ||
+        response.status() == operations_research::sat::CpSolverStatus::OPTIMAL;
+    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+        if (raw_has_solution) {
+            result.has_objective_value = true;
+            result.objective_value = response.objective_value();
+        }
+        if (std::isfinite(response.best_objective_bound())) {
+            result.has_objective_bound = true;
+            result.best_objective_bound = std::max(
+                result.best_objective_bound,
+                response.best_objective_bound()
+            );
+        }
+        if (saved_threshold_response.has_value()) {
+            result.has_objective_value = true;
+            result.objective_value = saved_threshold_response->objective_value();
+        }
+    }
+
+    auto append_final_log = [&]() {
+        if (!write_log_file) {
+            return;
+        }
+        log_file << "[spdp-cp-wrapper] graph_mode="
+                 << cp_graph_mode_name(result.graph_mode)
+                 << " mode=" << cp_solve_mode_name(result.solve_mode)
+                 << " horizon_factor=" << result.threshold_horizon_factor
+                 << " model_horizon=" << result.model_horizon
+                 << " termination=" << result.termination_name
+                 << " objective_value=" << result.objective_value
+                 << " best_objective_bound=" << result.best_objective_bound
+                 << " full_skip_reservoir_requested="
+                 << (options.redundant.full_skip_reservoir ? 1 : 0)
+                 << " full_skip_reservoir_effective=embedded-state"
+                 << " internal_arcs="
+                 << result.build_stats.created_multigraph_internal_arcs
+                 << " start_arc_copies="
+                 << result.build_stats.created_multigraph_start_arc_copies
+                 << " end_arc_copies="
+                 << result.build_stats.created_multigraph_end_arc_copies
+                 << '\n';
+        log_file.flush();
+    };
+
+    if (response.status() == operations_research::sat::CpSolverStatus::MODEL_INVALID) {
+        result.outcome = CpSolveOutcome::ModelInvalid;
+        result.termination_name = "model-invalid";
+        result.error_message = result.solution_info;
+        append_final_log();
+        return result;
+    }
+
+    const CpSolverResponse* solution_response = nullptr;
+    if (options.solve_mode == CpSolveMode::Satisfaction) {
+        if (response.status() == operations_research::sat::CpSolverStatus::INFEASIBLE) {
+            result.outcome = CpSolveOutcome::ProvenInfeasible;
+            result.termination_name = "proven-infeasible";
+            append_final_log();
+            return result;
+        }
+        if (raw_has_solution) {
+            result.outcome = CpSolveOutcome::Feasible;
+            result.termination_name = "feasible";
+            solution_response = &response;
+        }
+    } else {
+        if (saved_threshold_response.has_value()) {
+            result.outcome = CpSolveOutcome::Feasible;
+            result.termination_name = "threshold-feasible-witness";
+            solution_response = &*saved_threshold_response;
+        } else if (raw_has_solution &&
+                   response.objective_value() <=
+                       static_cast<double>(integer_data.limit) + kObjectiveTolerance) {
+            result.outcome = CpSolveOutcome::Feasible;
+            result.termination_name = "threshold-feasible-witness";
+            solution_response = &response;
+        } else if (result.stopped_by_bound_callback ||
+                   (result.has_objective_bound && objective_bound_excludes_threshold(
+                       result.best_objective_bound, integer_data.limit)) ||
+                   (response.status() ==
+                        operations_research::sat::CpSolverStatus::OPTIMAL &&
+                    raw_has_solution &&
+                    response.objective_value() >
+                        static_cast<double>(integer_data.limit) + kObjectiveTolerance)) {
+            result.outcome = CpSolveOutcome::ProvenInfeasible;
+            result.termination_name = "objective-bound-infeasible";
+            append_final_log();
+            return result;
+        } else if (response.status() ==
+                   operations_research::sat::CpSolverStatus::INFEASIBLE) {
+            result.outcome = CpSolveOutcome::ProvenInfeasible;
+            result.termination_name = "restricted-horizon-infeasible";
+            append_final_log();
+            return result;
+        }
+    }
+
+    if (solution_response == nullptr) {
+        result.outcome = classify_cp_unknown_outcome(
+            result.configured_time_limit_seconds,
+            result.wall_time_seconds
+        );
+        result.hit_time_limit =
+            result.outcome == CpSolveOutcome::TimedOutUnknown;
+        result.early_unknown = result.outcome == CpSolveOutcome::EarlyUnknown;
+        result.termination_name = result.hit_time_limit
+            ? "timed-out-unknown" : "early-unknown";
+        append_final_log();
+        return result;
+    }
+
+    std::set<int> seen_edge_ids;
+    for (const MultigraphArcVariable& arc : selected_arcs) {
+        if (!operations_research::sat::SolutionBooleanValue(
+                *solution_response, arc.literal)) {
+            continue;
+        }
+        if (!seen_edge_ids.insert(arc.original_edge_id).second) {
+            result.outcome = CpSolveOutcome::ModelInvalid;
+            result.termination_name = "model-invalid";
+            result.error_message =
+                "Multigraph CP witness selects one original edge more than once.";
+            result.active_edge_ids.clear();
+            append_final_log();
+            return result;
+        }
+        result.active_edge_ids.push_back(arc.original_edge_id);
+    }
+    if (result.active_edge_ids.size() !=
+        static_cast<std::size_t>(service_count + k_count)) {
+        result.outcome = CpSolveOutcome::ModelInvalid;
+        result.termination_name = "model-invalid";
+        result.error_message =
+            "Multigraph CP witness has an unexpected selected-edge count.";
+        result.active_edge_ids.clear();
+    }
+    append_final_log();
+    return result;
+}
+
+CpFixedKSolveResult solve_fixed_k_cp_sat(
+    const SPDPData& data,
+    const CpSatSolveOptions& options
+) {
+    CpSatSolveOptions original_options = options;
+    original_options.graph_mode = CpGraphMode::OriginalGraph;
+    return solve_fixed_k_original_graph_cp_sat(data, original_options);
+}
+
+CpFixedKSolveResult solve_fixed_k_cp_sat(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const CpSatSolveOptions& options
+) {
+    switch (options.graph_mode) {
+    case CpGraphMode::OriginalGraph:
+        return solve_fixed_k_original_graph_cp_sat(data, options);
+    case CpGraphMode::Multigraph:
+        return solve_fixed_k_multigraph_cp_sat(data, graph, options);
+    }
+    CpFixedKSolveResult result;
+    result.outcome = CpSolveOutcome::ModelInvalid;
+    result.status_name = "MODEL_INVALID";
+    result.termination_name = "model-invalid";
+    result.error_message = "Unsupported CP graph mode.";
     return result;
 }
 

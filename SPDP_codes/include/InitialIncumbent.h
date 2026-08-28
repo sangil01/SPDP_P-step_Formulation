@@ -65,6 +65,7 @@ struct InitialIncumbentSolveResult {
     double milp_best_objective_bound = 0.0;
     bool milp_stopped_by_feasible_callback = false;
     bool milp_stopped_by_bound_callback = false;
+    CpGraphMode cp_graph_mode = CpGraphMode::OriginalGraph;
     CpSolveMode cp_solve_mode = CpSolveMode::Satisfaction;
     double cp_threshold_horizon_factor = 0.0;
     std::int64_t cp_model_horizon = 0;
