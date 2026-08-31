@@ -69,6 +69,9 @@ struct CliOptions {
     int prune_dominated_edges = 1;
     int prune_symmetry_40 = 1;
     int prune_symmetry_41 = 1;
+    int duration_graph_prune_min_time_parallel = 1;
+    int duration_graph_prune_empty_state_connectors = 1;
+    int initial_incumbent_graph_prune_min_time_parallel = 1;
     int prune_pickup_symmetry_43 = 1;
     int prune_delivery_symmetry_43 = 1;
     int add_vi_35 = 0;
@@ -83,6 +86,7 @@ struct CliOptions {
     std::string vi_44_subproblem_type = "lp";
     double vi_44_subproblem_time_limit = 0.0;
     int vi_44_subproblem_add_time_constraints = 0;
+    int vi_44_duration_ip_rounded_bound_stop = 1;
     int vi_44_vehicle_assignment_add_tsp_bound = 0;
     int vi_44_vehicle_assignment_add_container_bound = 0;
     double vi_44_vehicle_assignment_time_limit = 0.0;
@@ -154,6 +158,9 @@ void print_usage(const char* executable) {
               << " [--vi-formulation theta|x] [--dump-psteps N] [--validate-psteps 0|1] [--solve 0|1]"
               << " [--prune-infeasible-edges 0|1] [--prune-dominated-edges 0|1]"
               << " [--prune-symmetry-40 0|1] [--prune-symmetry-41 0|1]"
+              << " [--duration-graph-prune-min-time-parallel 0|1]"
+              << " [--duration-graph-prune-empty-state-connectors 0|1]"
+              << " [--initial-incumbent-graph-prune-min-time-parallel 0|1]"
               << " [--prune-pickup-symmetry-43 0|1]"
               << " [--prune-delivery-symmetry-43 0|1]"
               << " [--add-vi-35 0|1]"
@@ -167,6 +174,7 @@ void print_usage(const char* executable) {
               << " [--vi-44-subproblem-type lp|ip]"
               << " [--vi-44-subproblem-time-limit T]"
               << " [--vi-44-subproblem-add-time-constraints 0|1]"
+              << " [--vi-44-duration-ip-rounded-bound-stop 0|1]"
               << " [--vi-44-vehicle-assignment-add-tsp-bound 0|1]"
               << " [--vi-44-vehicle-assignment-add-container-bound 0|1]"
               << " [--vi-44-vehicle-assignment-time-limit T]"
@@ -547,6 +555,8 @@ spdp::VI44KMinOptions make_vi_44_k_min_options(
     options.subproblem.add_time_constraints =
         args.vi_44_subproblem_add_time_constraints == 1;
     options.subproblem.time_limit = args.vi_44_subproblem_time_limit;
+    options.subproblem.rounded_bound_stop =
+        args.vi_44_duration_ip_rounded_bound_stop == 1;
     options.vehicle_assignment.add_tsp_bound =
         args.vi_44_vehicle_assignment_add_tsp_bound == 1;
     options.vehicle_assignment.add_container_bound =
@@ -1368,6 +1378,23 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--duration-graph-prune-min-time-parallel" ||
+            arg == "--duration-graph-prune-empty-state-connectors" ||
+            arg == "--initial-incumbent-graph-prune-min-time-parallel") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const int value = parse_binary_flag(argv[++idx], arg);
+            if (arg == "--duration-graph-prune-min-time-parallel") {
+                options.duration_graph_prune_min_time_parallel = value;
+            } else if (arg == "--duration-graph-prune-empty-state-connectors") {
+                options.duration_graph_prune_empty_state_connectors = value;
+            } else {
+                options.initial_incumbent_graph_prune_min_time_parallel = value;
+            }
+            continue;
+        }
+
         if (arg == "--prune-pickup-symmetry-43") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error("--prune-pickup-symmetry-43 requires a value.");
@@ -1543,6 +1570,17 @@ CliOptions parse_cli(int argc, char** argv) {
                     argv[++idx],
                     "--vi-44-subproblem-add-time-constraints"
             );
+            continue;
+        }
+
+        if (arg == "--vi-44-duration-ip-rounded-bound-stop") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(
+                    "--vi-44-duration-ip-rounded-bound-stop requires a value."
+                );
+            }
+            options.vi_44_duration_ip_rounded_bound_stop = parse_binary_flag(
+                argv[++idx], "--vi-44-duration-ip-rounded-bound-stop");
             continue;
         }
 
@@ -1806,6 +1844,12 @@ void print_instance_summary(
     out << "[main] prune_dominated_edges: " << args.prune_dominated_edges << '\n';
     out << "[main] prune_symmetry_40: " << args.prune_symmetry_40 << '\n';
     out << "[main] prune_symmetry_41: " << args.prune_symmetry_41 << '\n';
+    out << "[main] duration_graph_prune_min_time_parallel: "
+        << args.duration_graph_prune_min_time_parallel << '\n';
+    out << "[main] duration_graph_prune_empty_state_connectors: "
+        << args.duration_graph_prune_empty_state_connectors << '\n';
+    out << "[main] initial_incumbent_graph_prune_min_time_parallel: "
+        << args.initial_incumbent_graph_prune_min_time_parallel << '\n';
     out << "[main] prune_pickup_symmetry_43: " << args.prune_pickup_symmetry_43 << '\n';
     out << "[main] prune_delivery_symmetry_43: " << args.prune_delivery_symmetry_43 << '\n';
     out << "[main] add_vi_35: " << args.add_vi_35 << '\n';
@@ -1826,6 +1870,8 @@ void print_instance_summary(
         << args.vi_44_subproblem_time_limit << '\n';
     out << "[main] vi_44_subproblem_add_time_constraints: "
         << args.vi_44_subproblem_add_time_constraints << '\n';
+    out << "[main] vi_44_duration_ip_rounded_bound_stop: "
+        << args.vi_44_duration_ip_rounded_bound_stop << '\n';
     out << "[main] vi_44_vehicle_assignment_add_tsp_bound: "
         << args.vi_44_vehicle_assignment_add_tsp_bound << '\n';
     out << "[main] vi_44_vehicle_assignment_add_container_bound: "
@@ -1903,6 +1949,29 @@ void print_instance_summary(
     out << "[main] cg_reduced_cost_tolerance: "
         << std::scientific << std::setprecision(6) << args.cg_reduced_cost_tolerance << '\n';
     out << std::defaultfloat;
+}
+
+void print_graph_profile(
+    std::ostream& out,
+    const spdp::GraphProfileStats& stats,
+    bool prune_min_duration_parallel,
+    bool prune_empty_state_connectors
+) {
+    out << "[graph-profile] purpose="
+        << spdp::graph_purpose_name(stats.purpose)
+        << " node_count=" << stats.node_count
+        << " input_edge_count=" << stats.input_edge_count
+        << " prune_min_duration_parallel="
+        << (prune_min_duration_parallel ? 1 : 0)
+        << " removed_parallel_edges="
+        << stats.removed_parallel_edge_count
+        << " prune_empty_state_connectors="
+        << (prune_empty_state_connectors ? 1 : 0)
+        << " removed_empty_state_connectors="
+        << stats.removed_empty_connector_count
+        << " final_edge_count=" << stats.final_edge_count
+        << " build_seconds=" << format_double(stats.build_seconds)
+        << " fingerprint=" << stats.fingerprint << '\n';
 }
 
 void print_selected_edge_info(
@@ -2117,13 +2186,59 @@ int main(int argc, char** argv) {
             args.prune_symmetry_40 == 1,
             args.prune_symmetry_41 == 1,
         };
+        const auto main_graph_build_start = std::chrono::steady_clock::now();
         const spdp::MultiDiGraph graph = spdp::build_multigraph(
             data,
             graph_build_options,
             &output_file
         );
+        const double main_graph_build_seconds =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - main_graph_build_start
+            ).count();
+
+        const spdp::DerivedGraphOptions incumbent_graph_options{
+            args.initial_incumbent_graph_prune_min_time_parallel == 1,
+            false,
+        };
+        const spdp::DerivedMultiGraph incumbent_graph =
+            spdp::derive_multigraph(
+                graph,
+                spdp::GraphPurpose::InitialIncumbent,
+                incumbent_graph_options
+            );
+        const spdp::DerivedGraphOptions duration_graph_options{
+            args.duration_graph_prune_min_time_parallel == 1,
+            args.duration_graph_prune_empty_state_connectors == 1,
+        };
+        const spdp::DerivedMultiGraph duration_graph =
+            spdp::derive_multigraph(
+                graph,
+                spdp::GraphPurpose::DurationBound,
+                duration_graph_options
+            );
 
         print_instance_summary(output_file, args, data, graph);
+        spdp::GraphProfileStats main_graph_stats;
+        main_graph_stats.purpose = spdp::GraphPurpose::Main;
+        main_graph_stats.node_count = graph.number_of_nodes();
+        main_graph_stats.input_edge_count = graph.number_of_edges();
+        main_graph_stats.final_edge_count = graph.number_of_edges();
+        main_graph_stats.build_seconds = main_graph_build_seconds;
+        main_graph_stats.fingerprint = spdp::multigraph_fingerprint(graph);
+        print_graph_profile(output_file, main_graph_stats, false, false);
+        print_graph_profile(
+            output_file,
+            incumbent_graph.stats,
+            incumbent_graph_options.prune_min_duration_parallel,
+            incumbent_graph_options.prune_empty_state_connectors
+        );
+        print_graph_profile(
+            output_file,
+            duration_graph.stats,
+            duration_graph_options.prune_min_duration_parallel,
+            duration_graph_options.prune_empty_state_connectors
+        );
         print_selected_edge_info(output_file, graph);
 
         std::ofstream gurobi_log_file(gurobi_log_path, std::ios::trunc);
@@ -2138,10 +2253,47 @@ int main(int argc, char** argv) {
         double initial_incumbent_duration = -1.0;
         double initial_incumbent_original_cost = -1.0;
 
-        if (args.solve_model == 1 && args.initial_incumbent_enable == 1) {
+        if (args.solve_model == 1 &&
+            (args.initial_incumbent_enable == 1 || args.add_vi_44 == 1)) {
             spdp::VI44KMinOptions k_min_options = make_vi_44_k_min_options(args);
             precomputed_k_min_result =
-                spdp::compute_vi44_k_min(data, graph, k_min_options);
+                spdp::compute_vi44_k_min(
+                    data, duration_graph.graph, k_min_options);
+            output_file << "[duration-bound] graph_edge_count="
+                << duration_graph.graph.number_of_edges()
+                << " graph_fingerprint=" << duration_graph.stats.fingerprint
+                << " selected_k="
+                << precomputed_k_min_result->selected_k_min
+                << " subproblem_status="
+                << precomputed_k_min_result->subproblem_status
+                << " stopped_by_rounded_bound="
+                << (precomputed_k_min_result
+                            ->subproblem_stopped_by_rounded_bound
+                        ? 1 : 0)
+                << " rounded_bound_certified="
+                << (precomputed_k_min_result
+                            ->subproblem_rounded_bound_certified
+                        ? 1 : 0)
+                << " certified_rounded_k="
+                << precomputed_k_min_result
+                       ->subproblem_certified_rounded_k
+                << " callback_objective_ub="
+                << format_double(
+                    precomputed_k_min_result
+                        ->subproblem_callback_objective_ub)
+                << " callback_safe_objective_lb="
+                << format_double(
+                    precomputed_k_min_result
+                        ->subproblem_callback_safe_objective_lb)
+                << '\n';
+        }
+
+        if (args.solve_model == 1 && args.initial_incumbent_enable == 1) {
+            if (!precomputed_k_min_result.has_value()) {
+                throw std::runtime_error(
+                    "Initial-incumbent k_min was not precomputed."
+                );
+            }
             const int initial_k = precomputed_k_min_result->selected_k_min;
             if (initial_k <= 0) {
                 throw std::runtime_error(
@@ -2171,6 +2323,10 @@ int main(int argc, char** argv) {
                 << format_double(
                     args.initial_incumbent_cp_threshold_horizon_factor)
                 << '\n';
+            output_file << "[initial-incumbent] graph_edge_count="
+                << incumbent_graph.graph.number_of_edges() << '\n';
+            output_file << "[initial-incumbent] graph_fingerprint="
+                << incumbent_graph.stats.fingerprint << '\n';
 
             spdp::InitialIncumbentSearchOptions search_options;
             search_options.backend =
@@ -2217,7 +2373,7 @@ int main(int argc, char** argv) {
             const spdp::InitialIncumbentSearchResult search_result =
                 spdp::solve_iterative_initial_incumbent(
                     data,
-                    graph,
+                    incumbent_graph.graph,
                     search_options
                 );
             precomputed_k_min_result->selected_k_min =
@@ -2388,8 +2544,45 @@ int main(int argc, char** argv) {
             if (search_result.has_feasible_solution) {
                 const spdp::InitialIncumbentSolveResult& initial_result =
                     search_result.incumbent_result;
-                const std::vector<int>& active_edge_ids =
-                    initial_result.active_edge_ids;
+                std::vector<int> active_edge_ids;
+                active_edge_ids.reserve(initial_result.active_edge_ids.size());
+                for (int local_edge_id : initial_result.active_edge_ids) {
+                    if (local_edge_id < 0 ||
+                        static_cast<std::size_t>(local_edge_id) >=
+                            incumbent_graph.local_to_main_edge.size()) {
+                        throw std::runtime_error(
+                            "Initial-incumbent edge id is outside its graph."
+                        );
+                    }
+                    const std::size_t main_edge_id =
+                        incumbent_graph.local_to_main_edge[
+                            static_cast<std::size_t>(local_edge_id)];
+                    if (main_edge_id >= graph.number_of_edges()) {
+                        throw std::runtime_error(
+                            "Initial-incumbent edge mapping is outside main graph."
+                        );
+                    }
+                    const spdp::EdgeRecord& local_edge =
+                        incumbent_graph.graph.edges()[
+                            static_cast<std::size_t>(local_edge_id)];
+                    const spdp::EdgeRecord& main_edge =
+                        graph.edges()[main_edge_id];
+                    if (local_edge.u != main_edge.u ||
+                        local_edge.v != main_edge.v ||
+                        local_edge.data.sequence_pi !=
+                            main_edge.data.sequence_pi ||
+                        local_edge.data.time != main_edge.data.time ||
+                        local_edge.data.cost != main_edge.data.cost ||
+                        local_edge.data.start_state !=
+                            main_edge.data.start_state ||
+                        local_edge.data.end_state != main_edge.data.end_state) {
+                        throw std::runtime_error(
+                            "Initial-incumbent edge mapping is not canonical."
+                        );
+                    }
+                    active_edge_ids.push_back(
+                        static_cast<int>(main_edge_id));
+                }
                 spdp::RecoveredSolution recovered =
                     spdp::recover_selected_edge_solution(
                         data,
@@ -2420,6 +2613,7 @@ int main(int argc, char** argv) {
                 initial_incumbent_solution = std::move(recovered);
 
                 output_file << "[initial-incumbent] route_validation=passed\n";
+                output_file << "[initial-incumbent] edge_remap_to_main=passed\n";
                 output_file << "[initial-incumbent] route_count="
                     << initial_incumbent_solution->routes.size() << '\n';
                 output_file << "[initial-incumbent] total_duration="

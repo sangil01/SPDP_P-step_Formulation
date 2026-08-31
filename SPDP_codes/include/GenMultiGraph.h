@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <iosfwd>
 #include <optional>
 #include <string>
@@ -109,6 +110,8 @@ public:
     const NodeSpec& node(NodeId node_id) const;
     // 삽입된 순서대로 전체 edge 레코드를 반환한다.
     const std::vector<EdgeRecord>& edges() const;
+    // node id 오름차순으로 전체 노드 정보를 반환한다.
+    std::vector<NodeSpec> nodes() const;
     // 노드 u에서 나가는 edge들의 인덱스 목록을 반환한다.
     const std::vector<std::size_t>& outgoing_edge_indices(NodeId u) const;
     // 노드 v로 들어오는 edge들의 인덱스 목록을 반환한다.
@@ -141,12 +144,50 @@ struct GraphBuildOptions {
     bool prune_symmetry_41 = true;
 };
 
+enum class GraphPurpose {
+    Main,
+    InitialIncumbent,
+    DurationBound,
+};
+
+struct DerivedGraphOptions {
+    bool prune_min_duration_parallel = true;
+    bool prune_empty_state_connectors = false;
+};
+
+struct GraphProfileStats {
+    GraphPurpose purpose = GraphPurpose::Main;
+    std::size_t node_count = 0;
+    std::size_t input_edge_count = 0;
+    std::size_t removed_parallel_edge_count = 0;
+    std::size_t removed_empty_connector_count = 0;
+    std::size_t final_edge_count = 0;
+    double build_seconds = 0.0;
+    std::uint64_t fingerprint = 0;
+};
+
+struct DerivedMultiGraph {
+    MultiDiGraph graph;
+    std::vector<std::size_t> local_to_main_edge;
+    std::vector<int> main_to_local_edge;
+    GraphProfileStats stats;
+};
+
 // 필요하면 infeasible edge와 dominated edge를 제거하며 SPDP state-space MultiDiGraph를 생성한다.
 MultiDiGraph build_multigraph(
     const SPDPData& data,
     const GraphBuildOptions& options = {},
     std::ostream* log_stream = nullptr
 );
+
+DerivedMultiGraph derive_multigraph(
+    const MultiDiGraph& main_graph,
+    GraphPurpose purpose,
+    const DerivedGraphOptions& options
+);
+
+std::uint64_t multigraph_fingerprint(const MultiDiGraph& graph);
+const char* graph_purpose_name(GraphPurpose purpose);
 
 // 상태를 로깅과 디버깅에 쓰기 쉬운 문자열로 변환한다.
 std::string state_to_str(const State& state);

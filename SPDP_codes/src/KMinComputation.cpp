@@ -19,6 +19,17 @@ namespace {
 constexpr double kTolerance = 1e-9;
 constexpr double kAuxiliaryLPSolverTolerance = 1e-9;
 
+double safe_duration_lower_bound(
+    double objective_bound,
+    double route_time_limit
+) {
+    const double scale = std::max(
+        {1.0, route_time_limit, std::abs(objective_bound)}
+    );
+    const double tolerance = 10.0 * kAuxiliaryLPSolverTolerance * scale;
+    return std::max(0.0, objective_bound - tolerance);
+}
+
 using detail::TwoIndexCoreModel;
 using detail::TwoIndexCoreObjective;
 using detail::TwoIndexCoreOptions;
@@ -74,6 +85,72 @@ struct AuxiliaryDurationSubproblemResult {
     double objective_value = -1.0;
     double objective_bound = -1.0;
     double runtime_seconds = 0.0;
+    bool stopped_by_rounded_bound = false;
+    bool rounded_bound_certified = false;
+    int certified_rounded_k = 0;
+    double callback_objective_ub = -1.0;
+    double callback_safe_objective_lb = -1.0;
+};
+
+class RoundedDurationBoundCallback final : public GRBCallback {
+public:
+    RoundedDurationBoundCallback(
+        const MultiDiGraph& graph,
+        const std::vector<GRBVar>& y_vars,
+        double route_time_limit
+    )
+        : graph_(graph),
+          y_vars_(y_vars),
+          route_time_limit_(route_time_limit) {}
+
+    bool stopped() const { return stopped_; }
+    int certified_k() const { return certified_k_; }
+    double exact_upper_bound() const { return exact_upper_bound_; }
+    double safe_lower_bound() const { return safe_lower_bound_; }
+
+protected:
+    void callback() override {
+        try {
+            if (where == GRB_CB_MIPSOL) {
+                double exact_objective = 0.0;
+                for (std::size_t edge_id = 0; edge_id < y_vars_.size(); ++edge_id) {
+                    if (getSolution(y_vars_[edge_id]) > 0.5) {
+                        exact_objective += graph_.edges()[edge_id].data.time;
+                    }
+                }
+                exact_upper_bound_ = exact_objective;
+                maybe_stop(getDoubleInfo(GRB_CB_MIPSOL_OBJBND));
+                return;
+            }
+            if (where == GRB_CB_MIP && exact_upper_bound_ >= 0.0) {
+                maybe_stop(getDoubleInfo(GRB_CB_MIP_OBJBND));
+            }
+        } catch (const GRBException&) {
+            // Continue safely; post-solve attributes still give a valid result.
+        }
+    }
+
+private:
+    void maybe_stop(double objective_bound) {
+        const std::optional<int> certificate = certified_rounded_duration_bound(
+            exact_upper_bound_, objective_bound, route_time_limit_);
+        if (!certificate.has_value()) {
+            return;
+        }
+        stopped_ = true;
+        certified_k_ = certificate.value();
+        safe_lower_bound_ = safe_duration_lower_bound(
+            objective_bound, route_time_limit_);
+        abort();
+    }
+
+    const MultiDiGraph& graph_;
+    const std::vector<GRBVar>& y_vars_;
+    double route_time_limit_ = 0.0;
+    bool stopped_ = false;
+    int certified_k_ = 0;
+    double exact_upper_bound_ = -1.0;
+    double safe_lower_bound_ = -1.0;
 };
 
 AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
@@ -81,7 +158,8 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
     const MultiDiGraph& graph,
     double solver_time_limit,
     bool binary_y,
-    bool add_time_constraints
+    bool add_time_constraints,
+    bool rounded_bound_stop
 ) {
     TwoIndexCoreOptions core_options;
     core_options.objective = TwoIndexCoreObjective::Duration;
@@ -92,6 +170,13 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
     core_options.output_enabled = false;
     core_options.name_prefix = "vi44_aux";
     TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
+
+    std::unique_ptr<RoundedDurationBoundCallback> callback;
+    if (binary_y && rounded_bound_stop) {
+        callback = std::make_unique<RoundedDurationBoundCallback>(
+            graph, core.y_vars, data.time_limit);
+        core.model->setCallback(callback.get());
+    }
 
     const auto solve_start = std::chrono::steady_clock::now();
     core.model->optimize();
@@ -130,7 +215,29 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
         }
     }
 
-    if (result.status != GRB_OPTIMAL && result.status != GRB_TIME_LIMIT) {
+    if (callback != nullptr && callback->stopped()) {
+        result.stopped_by_rounded_bound = true;
+        result.certified_rounded_k = callback->certified_k();
+        result.callback_objective_ub = callback->exact_upper_bound();
+        result.callback_safe_objective_lb = callback->safe_lower_bound();
+        const std::optional<int> postsolve_certificate =
+            result.has_certified_bound
+                ? certified_rounded_duration_bound(
+                      result.callback_objective_ub,
+                      result.objective_bound,
+                      data.time_limit)
+                : std::nullopt;
+        result.rounded_bound_certified =
+            postsolve_certificate.has_value() &&
+            postsolve_certificate.value() == result.certified_rounded_k;
+    }
+
+    const bool supported_interrupted =
+        result.status == GRB_INTERRUPTED &&
+        result.stopped_by_rounded_bound &&
+        result.rounded_bound_certified;
+    if (result.status != GRB_OPTIMAL && result.status != GRB_TIME_LIMIT &&
+        !supported_interrupted) {
         throw std::runtime_error(
             "The auxiliary VI-44 subproblem stopped with an unsupported status (" +
             std::to_string(result.status) + ")."
@@ -881,7 +988,8 @@ VI44KMinResult compute_vi44_k_min(
                 graph,
                 options.subproblem.time_limit,
                 options.subproblem.type == VI44SubproblemType::IP,
-                options.subproblem.add_time_constraints
+                options.subproblem.add_time_constraints,
+                options.subproblem.rounded_bound_stop
             );
         result.subproblem_status = auxiliary.status;
         result.subproblem_hit_time_limit = auxiliary.hit_time_limit;
@@ -889,6 +997,16 @@ VI44KMinResult compute_vi44_k_min(
         result.subproblem_objective_value = auxiliary.objective_value;
         result.subproblem_objective_bound = auxiliary.objective_bound;
         result.subproblem_runtime_seconds = auxiliary.runtime_seconds;
+        result.subproblem_stopped_by_rounded_bound =
+            auxiliary.stopped_by_rounded_bound;
+        result.subproblem_rounded_bound_certified =
+            auxiliary.rounded_bound_certified;
+        result.subproblem_certified_rounded_k =
+            auxiliary.certified_rounded_k;
+        result.subproblem_callback_objective_ub =
+            auxiliary.callback_objective_ub;
+        result.subproblem_callback_safe_objective_lb =
+            auxiliary.callback_safe_objective_lb;
 
         if (auxiliary.has_certified_bound) {
             const double scale = std::max(
@@ -943,6 +1061,28 @@ VI44KMinResult compute_vi44_k_min(
     }
 
     return result;
+}
+
+std::optional<int> certified_rounded_duration_bound(
+    double exact_incumbent_upper_bound,
+    double solver_objective_lower_bound,
+    double route_time_limit
+) {
+    if (!std::isfinite(exact_incumbent_upper_bound) ||
+        !std::isfinite(solver_objective_lower_bound) ||
+        !std::isfinite(route_time_limit) || route_time_limit <= 0.0 ||
+        exact_incumbent_upper_bound < 0.0) {
+        return std::nullopt;
+    }
+    const double safe_lower = safe_duration_lower_bound(
+        solver_objective_lower_bound, route_time_limit);
+    const int lower_k = static_cast<int>(std::ceil(safe_lower / route_time_limit));
+    const int upper_k = static_cast<int>(
+        std::ceil(exact_incumbent_upper_bound / route_time_limit));
+    if (lower_k != upper_k) {
+        return std::nullopt;
+    }
+    return lower_k;
 }
 
 }  // namespace spdp

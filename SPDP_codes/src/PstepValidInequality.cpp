@@ -576,6 +576,16 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
                         << " subproblem_k_min=" << result.subproblem_k_min
                         << " subproblem_runtime_seconds="
                         << result.subproblem_runtime_seconds
+                        << " subproblem_stopped_by_rounded_bound="
+                        << (result.subproblem_stopped_by_rounded_bound ? 1 : 0)
+                        << " subproblem_rounded_bound_certified="
+                        << (result.subproblem_rounded_bound_certified ? 1 : 0)
+                        << " subproblem_certified_rounded_k="
+                        << result.subproblem_certified_rounded_k
+                        << " subproblem_callback_objective_ub="
+                        << result.subproblem_callback_objective_ub
+                        << " subproblem_callback_safe_objective_lb="
+                        << result.subproblem_callback_safe_objective_lb
                         // Backward-compatible token consumed by the summary script.
                         << " sub_lp_runtime_seconds="
                         << result.subproblem_runtime_seconds;

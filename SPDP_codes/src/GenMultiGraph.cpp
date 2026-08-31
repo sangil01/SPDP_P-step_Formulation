@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdint>
 #include <iostream>
+#include <map>
 #include <ostream>
 #include <optional>
 #include <set>
@@ -833,6 +836,22 @@ const std::vector<EdgeRecord>& MultiDiGraph::edges() const {
     return edges_;
 }
 
+std::vector<NodeSpec> MultiDiGraph::nodes() const {
+    std::vector<NodeSpec> result;
+    result.reserve(nodes_.size());
+    for (const auto& entry : nodes_) {
+        result.push_back(entry.second);
+    }
+    std::sort(
+        result.begin(),
+        result.end(),
+        [](const NodeSpec& left, const NodeSpec& right) {
+            return left.node_id < right.node_id;
+        }
+    );
+    return result;
+}
+
 const std::vector<std::size_t>& MultiDiGraph::outgoing_edge_indices(NodeId u) const {
     static const std::vector<std::size_t> kEmptyIndices;
 
@@ -1068,6 +1087,233 @@ MultiDiGraph build_multigraph(
     }
 
     return graph;
+}
+
+namespace {
+
+struct EndpointStateKey {
+    NodeId u = 0;
+    NodeId v = 0;
+    State start_state{};
+    State end_state{};
+
+    bool operator<(const EndpointStateKey& other) const {
+        if (u != other.u) {
+            return u < other.u;
+        }
+        if (v != other.v) {
+            return v < other.v;
+        }
+        if (start_state != other.start_state) {
+            return start_state < other.start_state;
+        }
+        return end_state < other.end_state;
+    }
+};
+
+bool is_empty_state(const State& state) {
+    return std::all_of(
+        state.begin(),
+        state.end(),
+        [](const StateToken& token) { return token.kind == 'N'; }
+    );
+}
+
+bool is_empty_delivery_pickup_connector(
+    const MultiDiGraph& graph,
+    const EdgeRecord& edge
+) {
+    return graph.node(edge.u).kind == NodeSpec::Kind::Delivery &&
+        graph.node(edge.v).kind == NodeSpec::Kind::Pickup &&
+        is_empty_state(edge.data.start_state) &&
+        edge.data.sequence_pi.empty();
+}
+
+bool better_duration_representative(
+    const EdgeRecord& candidate,
+    std::size_t candidate_id,
+    const EdgeRecord& incumbent,
+    std::size_t incumbent_id
+) {
+    if (candidate.data.time != incumbent.data.time) {
+        return candidate.data.time < incumbent.data.time;
+    }
+    if (candidate.data.cost != incumbent.data.cost) {
+        return candidate.data.cost < incumbent.data.cost;
+    }
+    if (candidate.data.sequence_pi != incumbent.data.sequence_pi) {
+        return candidate.data.sequence_pi < incumbent.data.sequence_pi;
+    }
+    return candidate_id < incumbent_id;
+}
+
+void fnv_mix_bytes(
+    std::uint64_t& hash,
+    const unsigned char* bytes,
+    std::size_t count
+) {
+    constexpr std::uint64_t kPrime = 1099511628211ULL;
+    for (std::size_t i = 0; i < count; ++i) {
+        hash ^= static_cast<std::uint64_t>(bytes[i]);
+        hash *= kPrime;
+    }
+}
+
+template <typename T>
+void fnv_mix(std::uint64_t& hash, const T& value) {
+    fnv_mix_bytes(
+        hash,
+        reinterpret_cast<const unsigned char*>(&value),
+        sizeof(T)
+    );
+}
+
+void fnv_mix_state(std::uint64_t& hash, const State& state) {
+    for (const StateToken& token : state) {
+        fnv_mix(hash, token.kind);
+        fnv_mix(hash, token.container_type);
+        fnv_mix(hash, token.landfill_location);
+    }
+}
+
+}  // namespace
+
+std::uint64_t multigraph_fingerprint(const MultiDiGraph& graph) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    const std::vector<NodeSpec> nodes = graph.nodes();
+    const std::size_t node_count = nodes.size();
+    const std::size_t edge_count = graph.number_of_edges();
+    fnv_mix(hash, node_count);
+    fnv_mix(hash, edge_count);
+    for (const NodeSpec& node : nodes) {
+        fnv_mix(hash, node.node_id);
+        const int kind = static_cast<int>(node.kind);
+        fnv_mix(hash, kind);
+        fnv_mix(hash, node.location);
+        const int request = node.request_idx.value_or(-1);
+        const int type = node.container_type.value_or(-1);
+        const int landfill = node.landfill_location.value_or(-1);
+        fnv_mix(hash, request);
+        fnv_mix(hash, type);
+        fnv_mix(hash, landfill);
+    }
+    for (const EdgeRecord& edge : graph.edges()) {
+        fnv_mix(hash, edge.u);
+        fnv_mix(hash, edge.v);
+        fnv_mix(hash, edge.key);
+        const std::size_t sequence_size = edge.data.sequence_pi.size();
+        fnv_mix(hash, sequence_size);
+        for (int location : edge.data.sequence_pi) {
+            fnv_mix(hash, location);
+        }
+        fnv_mix(hash, edge.data.time);
+        fnv_mix(hash, edge.data.cost);
+        fnv_mix_state(hash, edge.data.start_state);
+        fnv_mix_state(hash, edge.data.end_state);
+    }
+    return hash;
+}
+
+const char* graph_purpose_name(GraphPurpose purpose) {
+    switch (purpose) {
+        case GraphPurpose::Main:
+            return "main";
+        case GraphPurpose::InitialIncumbent:
+            return "initial-incumbent";
+        case GraphPurpose::DurationBound:
+            return "duration-bound";
+    }
+    return "unknown";
+}
+
+DerivedMultiGraph derive_multigraph(
+    const MultiDiGraph& main_graph,
+    GraphPurpose purpose,
+    const DerivedGraphOptions& options
+) {
+    if (purpose == GraphPurpose::InitialIncumbent &&
+        options.prune_empty_state_connectors) {
+        throw std::invalid_argument(
+            "Empty-state connector pruning is unsafe for an exact-K "
+            "initial-incumbent graph."
+        );
+    }
+    const auto build_start = std::chrono::steady_clock::now();
+    DerivedMultiGraph result;
+    result.stats.purpose = purpose;
+    result.stats.node_count = main_graph.number_of_nodes();
+    result.stats.input_edge_count = main_graph.number_of_edges();
+    result.main_to_local_edge.assign(main_graph.number_of_edges(), -1);
+
+    for (const NodeSpec& node : main_graph.nodes()) {
+        result.graph.add_node(node);
+    }
+
+    std::vector<bool> keep(main_graph.number_of_edges(), true);
+    if (options.prune_min_duration_parallel) {
+        std::map<EndpointStateKey, std::size_t> representative_by_key;
+        for (std::size_t edge_id = 0; edge_id < main_graph.edges().size(); ++edge_id) {
+            const EdgeRecord& edge = main_graph.edges()[edge_id];
+            const EndpointStateKey key{
+                edge.u,
+                edge.v,
+                edge.data.start_state,
+                edge.data.end_state,
+            };
+            const auto found = representative_by_key.find(key);
+            if (found == representative_by_key.end()) {
+                representative_by_key.emplace(key, edge_id);
+                continue;
+            }
+            const std::size_t incumbent_id = found->second;
+            if (better_duration_representative(
+                    edge,
+                    edge_id,
+                    main_graph.edges()[incumbent_id],
+                    incumbent_id)) {
+                keep[incumbent_id] = false;
+                found->second = edge_id;
+            } else {
+                keep[edge_id] = false;
+            }
+            ++result.stats.removed_parallel_edge_count;
+        }
+    }
+
+    if (options.prune_empty_state_connectors) {
+        for (std::size_t edge_id = 0; edge_id < main_graph.edges().size(); ++edge_id) {
+            if (!keep[edge_id]) {
+                continue;
+            }
+            if (is_empty_delivery_pickup_connector(
+                    main_graph,
+                    main_graph.edges()[edge_id])) {
+                keep[edge_id] = false;
+                ++result.stats.removed_empty_connector_count;
+            }
+        }
+    }
+
+    for (std::size_t main_edge_id = 0;
+         main_edge_id < main_graph.edges().size();
+         ++main_edge_id) {
+        if (!keep[main_edge_id]) {
+            continue;
+        }
+        const EdgeRecord& edge = main_graph.edges()[main_edge_id];
+        const int local_edge_id =
+            static_cast<int>(result.graph.number_of_edges());
+        result.graph.add_edge(edge.u, edge.v, edge.data);
+        result.local_to_main_edge.push_back(main_edge_id);
+        result.main_to_local_edge[main_edge_id] = local_edge_id;
+    }
+
+    result.stats.final_edge_count = result.graph.number_of_edges();
+    result.stats.fingerprint = multigraph_fingerprint(result.graph);
+    result.stats.build_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - build_start
+    ).count();
+    return result;
 }
 
 }  // namespace spdp

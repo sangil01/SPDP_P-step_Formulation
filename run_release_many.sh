@@ -26,8 +26,8 @@ INITIAL_INCUMBENT_ENABLE=1
 INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
-INITIAL_INCUMBENT_BACKEND=cp-sat # Options: two-index-milp, cp-sat
-INITIAL_INCUMBENT_MILP_MODE=makespan # Options: duration, makespan
+INITIAL_INCUMBENT_BACKEND=two-index-milp # Options: two-index-milp, cp-sat
+INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, makespan
 INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR=1.5 # Used only by makespan
 INITIAL_INCUMBENT_CP_GRAPH_MODE=multigraph # Options: original-graph, multigraph
 INITIAL_INCUMBENT_CP_WORKERS=0
@@ -57,6 +57,9 @@ PRUNE_SYMMETRY_40=1
 PRUNE_SYMMETRY_41=1
 PRUNE_PICKUP_SYMMETRY_43=1
 PRUNE_DELIVERY_SYMMETRY_43=1
+DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL=1
+DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS=1
+INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL=1
 ADD_VI_35=0
 ADD_VI_36_COMBINED=0
 VI_36_SUBSET_MAX_SIZE=0 # 0이면 비활성화, 1이면 기존 singleton Eq.(36)과 동일, 7이면 현재 instance들에 대해 전체 set까지 포함
@@ -69,6 +72,7 @@ VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT=0
 VI_44_SUBPROBLEM_TYPE=ip # Options: lp, ip
 VI_44_SUBPROBLEM_TIME_LIMIT=600 # seconds; 0 means no time limit
 VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS=1 # 1 adds state-time B variables and route-duration constraints
+VI_44_DURATION_IP_ROUNDED_BOUND_STOP=1
 VI_44_VEHICLE_ASSIGNMENT_ADD_TSP_BOUND=1
 VI_44_VEHICLE_ASSIGNMENT_ADD_CONTAINER_BOUND=1
 VI_44_VEHICLE_ASSIGNMENT_TIME_LIMIT=120 # seconds; 0 means no time limit
@@ -104,14 +108,14 @@ FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
 FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
     #=========Request 20 이하=========#
-    "RecDep_day_A1.dat"
+    '''"RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
     "RecDep_day_A4.dat"
     "RecDep_day_A5.dat"
     "RecDep_day_A6.dat"
     "RecDep_day_A7.dat"
-    '''"RecDep_day_A8.dat"
+    "RecDep_day_A8.dat"
     "RecDep_day_A9.dat"
     "RecDep_day_A10.dat"
     "RecDep_day_A11.dat"
@@ -146,14 +150,14 @@ DATA_LIST=(
     "RecDep_day_B14.dat"
     "RecDep_day_C5.dat"
     "RecDep_day_C6.dat"
-    "RecDep_day_C7.dat"
+    "RecDep_day_C7.dat"'''
     "RecDep_day_C8.dat"
-    "RecDep_day_C9.dat"
-    "RecDep_day_C10.dat"
+    #"RecDep_day_C9.dat"
+    #"RecDep_day_C10.dat"
     "RecDep_day_C11.dat"
-    "RecDep_day_C12.dat"
-    "RecDep_day_D1.dat"
-    "RecDep_day_D2.dat"'''
+    #"RecDep_day_C12.dat"
+    #"RecDep_day_D1.dat"
+    #"RecDep_day_D2.dat"
     #=================================#
     #=====Request 50 초과 100 이하=====#
     '''"RecDep_day_B15.dat"
@@ -164,17 +168,17 @@ DATA_LIST=(
     "RecDep_day_B20.dat"
     "RecDep_day_C13.dat"
     "RecDep_day_C14.dat"
-    "RecDep_day_C15.dat"'''
-    '''"RecDep_day_C16.dat"
+    "RecDep_day_C15.dat"
+    "RecDep_day_C16.dat"
     "RecDep_day_C17.dat"
     "RecDep_day_C18.dat"
     "RecDep_day_C19.dat"
     "RecDep_day_C20.dat"
     "RecDep_day_D3.dat"
-    "RecDep_day_D4.dat"'''
+    "RecDep_day_D4.dat"
     "RecDep_day_D5.dat"
     "RecDep_day_D6.dat"
-    "RecDep_day_D7.dat"
+    "RecDep_day_D7.dat"'''
     #=================================#
     #====Request 100 초과 200 이하====#
     '''"RecDep_day_D8.dat"
@@ -201,6 +205,7 @@ if [[ "$SOLVER_MODE" == "enumeration" ]]; then
     ENUMERATION_SOS1_TAG="_${ENUMERATION_SOS1_MODE}_${ENUMERATION_OBJECTIVE}"
 fi
 RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}${ENUMERATION_SOS1_TAG}${RUN_TAG_SUFFIX}"
+RUN_TAG+="_dgmp${DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL}-dges${DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS}-igmp${INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL}-rbs${VI_44_DURATION_IP_ROUNDED_BOUND_STOP}"
 if [[ "$INITIAL_INCUMBENT_ENABLE" == "1" ]]; then
     RUN_TAG+="_initial-incumbent-${INITIAL_INCUMBENT_BACKEND}-${INITIAL_INCUMBENT_TIME_LIMIT}s-kinc${INITIAL_INCUMBENT_MAX_K_INCREMENTS}-timeout-${INITIAL_INCUMBENT_TIMEOUT_ACTION}"
     if [[ "$INITIAL_INCUMBENT_BACKEND" == "two-index-milp" ]]; then
@@ -325,6 +330,9 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "full-enumeration-rc-detail-log: $FULL_ENUMERATION_RC_DETAIL_LOG"
         echo "prune-pickup-symmetry-43: $PRUNE_PICKUP_SYMMETRY_43"
         echo "prune-delivery-symmetry-43: $PRUNE_DELIVERY_SYMMETRY_43"
+        echo "duration-graph-prune-min-time-parallel: $DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL"
+        echo "duration-graph-prune-empty-state-connectors: $DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS"
+        echo "initial-incumbent-graph-prune-min-time-parallel: $INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL"
         echo "add-vi-35: $ADD_VI_35"
         echo "add-vi-36-combined: $ADD_VI_36_COMBINED"
         echo "vi-36-subset-max-size: $VI_36_SUBSET_MAX_SIZE"
@@ -337,6 +345,7 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "vi-44-subproblem-type: $VI_44_SUBPROBLEM_TYPE"
         echo "vi-44-subproblem-time-limit: $VI_44_SUBPROBLEM_TIME_LIMIT"
         echo "vi-44-subproblem-add-time-constraints: $VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS"
+        echo "vi-44-duration-ip-rounded-bound-stop: $VI_44_DURATION_IP_ROUNDED_BOUND_STOP"
         echo "vi-44-vehicle-assignment-add-tsp-bound: $VI_44_VEHICLE_ASSIGNMENT_ADD_TSP_BOUND"
         echo "vi-44-vehicle-assignment-add-container-bound: $VI_44_VEHICLE_ASSIGNMENT_ADD_CONTAINER_BOUND"
         echo "vi-44-vehicle-assignment-time-limit: $VI_44_VEHICLE_ASSIGNMENT_TIME_LIMIT"
@@ -386,6 +395,9 @@ for data_name in "${DATA_LIST[@]}"; do
         --prune-dominated-edges "$PRUNE_DOMINATED_EDGES" \
         --prune-symmetry-40 "$PRUNE_SYMMETRY_40" \
         --prune-symmetry-41 "$PRUNE_SYMMETRY_41" \
+        --duration-graph-prune-min-time-parallel "$DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL" \
+        --duration-graph-prune-empty-state-connectors "$DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS" \
+        --initial-incumbent-graph-prune-min-time-parallel "$INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL" \
         --prune-pickup-symmetry-43 "$PRUNE_PICKUP_SYMMETRY_43" \
         --prune-delivery-symmetry-43 "$PRUNE_DELIVERY_SYMMETRY_43" \
         --add-vi-35 "$ADD_VI_35" \
@@ -400,6 +412,7 @@ for data_name in "${DATA_LIST[@]}"; do
         --vi-44-subproblem-type "$VI_44_SUBPROBLEM_TYPE" \
         --vi-44-subproblem-time-limit "$VI_44_SUBPROBLEM_TIME_LIMIT" \
         --vi-44-subproblem-add-time-constraints "$VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS" \
+        --vi-44-duration-ip-rounded-bound-stop "$VI_44_DURATION_IP_ROUNDED_BOUND_STOP" \
         --vi-44-vehicle-assignment-add-tsp-bound "$VI_44_VEHICLE_ASSIGNMENT_ADD_TSP_BOUND" \
         --vi-44-vehicle-assignment-add-container-bound "$VI_44_VEHICLE_ASSIGNMENT_ADD_CONTAINER_BOUND" \
         --vi-44-vehicle-assignment-time-limit "$VI_44_VEHICLE_ASSIGNMENT_TIME_LIMIT" \

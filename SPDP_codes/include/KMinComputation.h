@@ -1,6 +1,7 @@
 #ifndef SPDP_K_MIN_COMPUTATION_H
 #define SPDP_K_MIN_COMPUTATION_H
 
+#include <optional>
 #include <vector>
 
 #include "GenMultiGraph.h"
@@ -17,6 +18,7 @@ struct VI44SubproblemOptions {
     VI44SubproblemType type = VI44SubproblemType::LP;
     bool add_time_constraints = false;
     double time_limit = 0.0;  // 0 means no time limit.
+    bool rounded_bound_stop = true;
 };
 
 struct VI44VehicleAssignmentOptions {
@@ -61,6 +63,11 @@ struct VI44KMinResult {
     double subproblem_safe_lower_bound = -1.0;
     double subproblem_numerical_tolerance = 0.0;
     double subproblem_runtime_seconds = 0.0;
+    bool subproblem_stopped_by_rounded_bound = false;
+    bool subproblem_rounded_bound_certified = false;
+    int subproblem_certified_rounded_k = 0;
+    double subproblem_callback_objective_ub = -1.0;
+    double subproblem_callback_safe_objective_lb = -1.0;
     bool vehicle_assignment_enabled = false;
     int vehicle_assignment_k_min = 0;
     int vehicle_assignment_status = 0;
@@ -78,6 +85,14 @@ VI44KMinResult compute_vi44_k_min(
     const SPDPData& data,
     const MultiDiGraph& graph,
     const VI44KMinOptions& options
+);
+
+// Returns the common rounded duration bound only when the safe lower bound
+// and an exact feasible incumbent objective certify the same value.
+std::optional<int> certified_rounded_duration_bound(
+    double exact_incumbent_upper_bound,
+    double solver_objective_lower_bound,
+    double route_time_limit
 );
 
 }  // namespace spdp
