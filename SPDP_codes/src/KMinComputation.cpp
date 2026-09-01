@@ -17,7 +17,6 @@ namespace spdp {
 namespace {
 
 constexpr double kTolerance = 1e-9;
-constexpr double kAuxiliaryLPSolverTolerance = 1e-9;
 
 double safe_duration_lower_bound(
     double objective_bound,
@@ -26,7 +25,8 @@ double safe_duration_lower_bound(
     const double scale = std::max(
         {1.0, route_time_limit, std::abs(objective_bound)}
     );
-    const double tolerance = 10.0 * kAuxiliaryLPSolverTolerance * scale;
+    const double tolerance =
+        10.0 * detail::kGurobiSolverTolerance * scale;
     return std::max(0.0, objective_bound - tolerance);
 }
 
@@ -299,8 +299,8 @@ VehicleAssignmentFeasibilityResult solve_vehicle_assignment_feasibility(
     model.set(GRB_IntParam_Threads, 1);
     model.set(GRB_IntParam_DualReductions, 0);
     model.set(GRB_IntParam_SolutionLimit, 1);
-    model.set(GRB_DoubleParam_FeasibilityTol, kAuxiliaryLPSolverTolerance);
-    model.set(GRB_DoubleParam_OptimalityTol, kAuxiliaryLPSolverTolerance);
+    model.set(GRB_DoubleParam_FeasibilityTol, detail::kGurobiSolverTolerance);
+    model.set(GRB_DoubleParam_OptimalityTol, detail::kGurobiSolverTolerance);
     if (solver_time_limit > 0.0) {
         model.set(GRB_DoubleParam_TimeLimit, solver_time_limit);
     }
@@ -1013,7 +1013,7 @@ VI44KMinResult compute_vi44_k_min(
                 {1.0, data.time_limit, std::abs(auxiliary.objective_bound)}
             );
             result.subproblem_numerical_tolerance =
-                10.0 * kAuxiliaryLPSolverTolerance * scale;
+                10.0 * detail::kGurobiSolverTolerance * scale;
             result.subproblem_safe_lower_bound = std::max(
                 0.0,
                 auxiliary.objective_bound -

@@ -11,7 +11,6 @@ namespace spdp::detail {
 namespace {
 
 constexpr double kTolerance = 1e-9;
-constexpr double kAuxiliaryLPSolverTolerance = 1e-9;
 
 State canonical_auxiliary_state(State state) {
     if (state[1] < state[0]) {
@@ -154,8 +153,8 @@ TwoIndexCoreModel build_two_index_model_core(
     if (options.gurobi_threads >= 0) {
         core.model->set(GRB_IntParam_Threads, options.gurobi_threads);
     }
-    core.model->set(GRB_DoubleParam_FeasibilityTol, kAuxiliaryLPSolverTolerance);
-    core.model->set(GRB_DoubleParam_OptimalityTol, kAuxiliaryLPSolverTolerance);
+    core.model->set(GRB_DoubleParam_FeasibilityTol, kGurobiSolverTolerance);
+    core.model->set(GRB_DoubleParam_OptimalityTol, kGurobiSolverTolerance);
     if (options.solver_time_limit > 0.0) {
         core.model->set(GRB_DoubleParam_TimeLimit, options.solver_time_limit);
     }

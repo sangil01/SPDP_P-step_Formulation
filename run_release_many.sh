@@ -155,10 +155,10 @@ DATA_LIST=(
     "RecDep_day_C5.dat"
     "RecDep_day_C6.dat"
     "RecDep_day_C7.dat"'''
-    "RecDep_day_C8.dat"
+    #"RecDep_day_C8.dat"
     #"RecDep_day_C9.dat"
     #"RecDep_day_C10.dat"
-    "RecDep_day_C11.dat"
+    #"RecDep_day_C11.dat"
     #"RecDep_day_C12.dat"
     #"RecDep_day_D1.dat"
     #"RecDep_day_D2.dat"
@@ -180,7 +180,7 @@ DATA_LIST=(
     #"RecDep_day_C20.dat"
     #"RecDep_day_D3.dat"
     #"RecDep_day_D4.dat"
-    "RecDep_day_D5.dat"
+    #"RecDep_day_D5.dat"
     #"RecDep_day_D6.dat"
     #"RecDep_day_D7.dat"
     #=================================#

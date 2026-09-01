@@ -12,6 +12,12 @@
 
 namespace spdp::detail {
 
+// Shared by every Gurobi model whose returned primal values or bounds are
+// interpreted by the two-index/VI44 incumbent pipeline.  Keeping this value in
+// one place prevents solver parameters and post-solve certification checks
+// from silently using different numerical accuracies.
+inline constexpr double kGurobiSolverTolerance = 1e-6;
+
 enum class TwoIndexCoreObjective {
     None,
     OriginalCost,

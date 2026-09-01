@@ -11,8 +11,6 @@
 namespace spdp {
 namespace {
 
-constexpr double kTolerance = 1e-9;
-
 using detail::TwoIndexCoreModel;
 using detail::TwoIndexCoreObjective;
 using detail::TwoIndexCoreOptions;
@@ -117,7 +115,8 @@ DirectTwoIndexResult solve_direct_two_index_ip(
     }
 
     result.objective_value = core.model->get(GRB_DoubleAttr_ObjVal);
-    if (result.has_certified_bound && std::abs(result.objective_value) > kTolerance) {
+    if (result.has_certified_bound &&
+        std::abs(result.objective_value) > detail::kGurobiSolverTolerance) {
         result.gap_percent =
             100.0 * std::abs(result.objective_value - result.objective_bound) /
             std::abs(result.objective_value);
@@ -164,7 +163,7 @@ DirectTwoIndexResult solve_direct_two_index_ip(
     const double objective_scale =
         std::max({1.0, std::abs(result.objective_value), std::abs(recomputed_objective)});
     if (std::abs(result.objective_value - recomputed_objective) >
-        1e-7 * objective_scale) {
+        detail::kGurobiSolverTolerance * objective_scale) {
         throw std::runtime_error(
             "The direct two-index objective value is inconsistent with its components."
         );

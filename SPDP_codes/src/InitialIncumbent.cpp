@@ -130,10 +130,6 @@ InitialIncumbentSearchState advance_initial_incumbent_search(
     return next;
 }
 
-// Match the 1e-9 feasibility tolerance used by the two-index core and route
-// validator. A larger scaled tolerance could accept a route that validation rejects.
-constexpr double kMakespanThresholdTolerance = 1e-9;
-
 class MakespanThresholdCallback final : public GRBCallback {
 public:
     MakespanThresholdCallback(double threshold, double tolerance)
@@ -348,7 +344,9 @@ InitialIncumbentSolveResult solve_fixed_k_makespan_impl(
     const double horizon = std::ceil(
         options.milp_makespan_horizon_factor * threshold
     );
-    const double tolerance = kMakespanThresholdTolerance;
+    // Match the Gurobi feasibility/optimality tolerance used by the model so
+    // callback classification cannot be stricter than the solve it interprets.
+    const double tolerance = detail::kGurobiSolverTolerance;
 
     TwoIndexCoreOptions core_options;
     core_options.objective = TwoIndexCoreObjective::None;

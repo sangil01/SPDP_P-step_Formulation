@@ -6,7 +6,7 @@
       {
         "id": "242db59fe749fd4f",
         "type": "tabs",
-        "dimension": 63.111668757841905,
+        "dimension": 52.755376344086024,
         "children": [
           {
             "id": "a730609999747ef0",
@@ -14,12 +14,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "9_5. Initial-incumbent warm start.md",
+                "file": "0. TO DO.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "9_5. Initial-incumbent warm start"
+              "title": "0. TO DO"
             }
           }
         ]
@@ -27,7 +27,7 @@
       {
         "id": "5b4569e2f57c5e3d",
         "type": "tabs",
-        "dimension": 36.888331242158095,
+        "dimension": 47.24462365591398,
         "children": [
           {
             "id": "731ec9fecafc0bba",
@@ -159,7 +159,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 470.5
+    "width": 259.5
   },
   "right": {
     "id": "b90d585d0fa44aa9",
@@ -266,15 +266,15 @@
   },
   "active": "a730609999747ef0",
   "lastOpenFiles": [
-    "9_7. Acceleration method duration IP and incumbent solution.md",
+    "2. Skip Pick-up and Delivery Problem (SPDP).md",
+    "9_6. CP for exact K_min.md",
     "9_5. Initial-incumbent warm start.md",
+    "9_7. Acceleration method duration IP and incumbent solution.md",
     "11. Route enumeration using LP bound.md",
     "0. TO DO.md",
-    "9_6. CP for exact K_min.md",
     "9_5. Initial-incumbent warm start.md~",
     "104. Forward dominance rule exactness proof.md",
     "109. SPDP difficulty analysis.md",
-    "2. Skip Pick-up and Delivery Problem (SPDP).md",
     "3. P-step Formulation for SPDP-flexible.md",
     "9_1. Valid inequalities for tightening LP bound.md",
     "9_4. Exact minimum number of vehicles.md",
