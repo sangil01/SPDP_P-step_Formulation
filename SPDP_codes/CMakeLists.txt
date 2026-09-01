@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(SPDP_ENABLE_ONEMKL "Enable optional Intel oneMKL backend support" OFF)
 
-set(GUROBI_HOME "/opt/gurobi1301/linux64" CACHE PATH "Path to the Gurobi installation")
+set(GUROBI_HOME "/opt/gurobi1303/linux64" CACHE PATH "Path to the Gurobi installation")
 set(ORTOOLS_HOME "/opt/or-tools" CACHE PATH "Path to the OR-Tools installation")
 
 list(PREPEND CMAKE_PREFIX_PATH "${ORTOOLS_HOME}")

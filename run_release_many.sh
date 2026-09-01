@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -u
 
+export GUROBI_HOME="/opt/gurobi1303/linux64"
+export PATH="$GUROBI_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$GUROBI_HOME/lib"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXE="$SCRIPT_DIR/SPDP_codes/build-release/SPDP_P_step"
 SUMMARY_EXE="$SCRIPT_DIR/generate_root_cg_summary_xlsx.py"
@@ -21,7 +25,7 @@ ENUMERATION_OBJECTIVE=original-cost  # Options: original-cost, travel-cost-only,
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=60 # seconds
+SOLVER_TIME_LIMIT=3600 # seconds
 INITIAL_INCUMBENT_ENABLE=1
 INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
@@ -57,9 +61,9 @@ PRUNE_SYMMETRY_40=1
 PRUNE_SYMMETRY_41=1
 PRUNE_PICKUP_SYMMETRY_43=1
 PRUNE_DELIVERY_SYMMETRY_43=1
-DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL=1
-DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS=1
-INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL=1
+DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL=0
+DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS=0
+INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL=0
 ADD_VI_35=0
 ADD_VI_36_COMBINED=0
 VI_36_SUBSET_MAX_SIZE=0 # 0이면 비활성화, 1이면 기존 singleton Eq.(36)과 동일, 7이면 현재 instance들에 대해 전체 set까지 포함
@@ -170,15 +174,15 @@ DATA_LIST=(
     "RecDep_day_C14.dat"
     "RecDep_day_C15.dat"
     "RecDep_day_C16.dat"
-    "RecDep_day_C17.dat"
+    "RecDep_day_C17.dat"'''
     "RecDep_day_C18.dat"
     "RecDep_day_C19.dat"
-    "RecDep_day_C20.dat"
-    "RecDep_day_D3.dat"
-    "RecDep_day_D4.dat"
+    #"RecDep_day_C20.dat"
+    #"RecDep_day_D3.dat"
+    #"RecDep_day_D4.dat"
     "RecDep_day_D5.dat"
-    "RecDep_day_D6.dat"
-    "RecDep_day_D7.dat"'''
+    #"RecDep_day_D6.dat"
+    #"RecDep_day_D7.dat"
     #=================================#
     #====Request 100 초과 200 이하====#
     '''"RecDep_day_D8.dat"
