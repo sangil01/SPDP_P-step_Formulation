@@ -175,7 +175,7 @@ DATA_LIST=(
     "RecDep_day_C15.dat"
     "RecDep_day_C16.dat"
     "RecDep_day_C17.dat"'''
-    "RecDep_day_C18.dat"
+    #"RecDep_day_C18.dat"
     "RecDep_day_C19.dat"
     #"RecDep_day_C20.dat"
     #"RecDep_day_D3.dat"
