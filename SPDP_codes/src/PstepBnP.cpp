@@ -3754,6 +3754,20 @@ bool theta_solution_is_integral(
     return true;
 }
 
+std::vector<int> collect_integral_active_edge_ids(
+    const std::vector<double>& theta_values,
+    double theta_integrality_tolerance
+) {
+    std::vector<int> active_edge_ids;
+    active_edge_ids.reserve(theta_values.size());
+    for (std::size_t edge_id = 0; edge_id < theta_values.size(); ++edge_id) {
+        if (theta_values[edge_id] >= 1.0 - theta_integrality_tolerance) {
+            active_edge_ids.push_back(static_cast<int>(edge_id));
+        }
+    }
+    return active_edge_ids;
+}
+
 bool column_uses_forbidden_edge(
     const CGColumn& column,
     const std::vector<std::uint8_t>& forbidden_edge_mask
@@ -4144,11 +4158,25 @@ BranchAndPriceResult solve_branch_and_price(
 
             if (nodes[node_id].is_integer) {
                 if (nodes[node_id].lower_bound < incumbent_value) {
+                    const std::vector<int> active_edge_ids =
+                        collect_integral_active_edge_ids(
+                            nodes[node_id].theta_values,
+                            options.theta_integrality_tolerance
+                        );
+                    RecoveredSolution recovered =
+                        recover_selected_edge_solution(
+                            data,
+                            graph,
+                            active_edge_ids,
+                            nodes[node_id].lower_bound,
+                            0.0
+                        );
                     incumbent_value = nodes[node_id].lower_bound;
                     result.has_incumbent = true;
                     result.incumbent_updated = true;
                     result.incumbent_value = incumbent_value;
-                    result.incumbent_recovered_solution.reset();
+                    result.incumbent_recovered_solution =
+                        std::move(recovered);
                     result.incumbent_theta_values = nodes[node_id].theta_values;
                     result.incumbent_columns = nodes[node_id].master_columns;
                     result.incumbent_column_values = nodes[node_id].column_values;

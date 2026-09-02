@@ -618,59 +618,98 @@ std::optional<State> apply_service(const NodeSpec& node, const State& state) {
     throw std::runtime_error("Unknown node kind in apply_service.");
 }
 
-std::vector<std::vector<int>> candidate_sequences(const State& state) {
-    std::vector<int> full_locations;
-    full_locations.reserve(2);
+struct EmptyingOutcome {
+    std::vector<int> sequence_pi;
+    State arrival_state{};
+    int emptied_count = 0;
+};
 
-    for (const StateToken& token : state) {
-        if (token.kind == 'F') {
-            full_locations.push_back(token.landfill_location);
-        }
-    }
-
-    if (full_locations.empty()) {
-        return {std::vector<int>{}};
-    }
-
-    if (full_locations.size() == 1U) {
-        return {std::vector<int>{}, std::vector<int>{full_locations[0]}};
-    }
-
-    if (full_locations.size() == 2U) {
-        const int l1 = full_locations[0];
-        const int l2 = full_locations[1];
-
-        if (l1 == l2) {
-            return {std::vector<int>{}, std::vector<int>{l1}};
-        }
-
-        std::vector<std::vector<int>> seq = {
-            std::vector<int>{},
-            std::vector<int>{l1},
-            std::vector<int>{l2},
-            std::vector<int>{l1, l2},
-            std::vector<int>{l2, l1},
-        };
-        return seq;
-    }
-
-    throw std::runtime_error("Capacity is 2, so full skip count must be <= 2");
+bool same_emptying_outcome(
+    const EmptyingOutcome& left,
+    const EmptyingOutcome& right
+) {
+    return left.sequence_pi == right.sequence_pi &&
+           left.arrival_state == right.arrival_state &&
+           left.emptied_count == right.emptied_count;
 }
 
-std::pair<State, int> apply_emptying(const State& state, const std::vector<int>& sequence_pi) {
-    State tokens = state;
-    int emptied_count = 0;
+void append_unique_emptying_outcome(
+    std::vector<EmptyingOutcome>& outcomes,
+    EmptyingOutcome outcome
+) {
+    const bool duplicate = std::any_of(
+        outcomes.begin(),
+        outcomes.end(),
+        [&outcome](const EmptyingOutcome& existing) {
+            return same_emptying_outcome(existing, outcome);
+        }
+    );
+    if (!duplicate) {
+        outcomes.push_back(std::move(outcome));
+    }
+}
 
-    for (int treatment_location : sequence_pi) {
-        for (StateToken& token : tokens) {
-            if (token.kind == 'F' && token.landfill_location == treatment_location) {
-                token = make_e(token.container_type);
-                ++emptied_count;
-            }
+// Enumerates the exact state transitions obtainable by emptying any nonempty
+// subset of the onboard full skips. sequence_pi remains only the physical
+// treatment-location sequence; which skips were emptied is encoded implicitly
+// by the resulting state. The empty subset represents direct travel.
+std::vector<EmptyingOutcome> candidate_emptying_outcomes(const State& state) {
+    std::vector<std::size_t> full_token_indices;
+    full_token_indices.reserve(2);
+    for (std::size_t index = 0; index < state.size(); ++index) {
+        if (state[index].kind == 'F') {
+            full_token_indices.push_back(index);
         }
     }
 
-    return {canonical_state(tokens), emptied_count};
+    if (full_token_indices.size() > 2U) {
+        throw std::runtime_error("Capacity is 2, so full skip count must be <= 2");
+    }
+
+    std::vector<EmptyingOutcome> outcomes;
+    append_unique_emptying_outcome(
+        outcomes,
+        EmptyingOutcome{std::vector<int>{}, canonical_state(state), 0}
+    );
+
+    const unsigned int subset_count = 1U << full_token_indices.size();
+    for (unsigned int mask = 1U; mask < subset_count; ++mask) {
+        State emptied_state = state;
+        std::vector<int> selected_locations;
+        selected_locations.reserve(full_token_indices.size());
+        int emptied_count = 0;
+
+        for (std::size_t bit = 0; bit < full_token_indices.size(); ++bit) {
+            if ((mask & (1U << bit)) == 0U) {
+                continue;
+            }
+            StateToken& token = emptied_state[full_token_indices[bit]];
+            selected_locations.push_back(token.landfill_location);
+            token = make_e(token.container_type);
+            ++emptied_count;
+        }
+
+        std::sort(selected_locations.begin(), selected_locations.end());
+        selected_locations.erase(
+            std::unique(selected_locations.begin(), selected_locations.end()),
+            selected_locations.end()
+        );
+
+        do {
+            append_unique_emptying_outcome(
+                outcomes,
+                EmptyingOutcome{
+                    selected_locations,
+                    canonical_state(emptied_state),
+                    emptied_count,
+                }
+            );
+        } while (std::next_permutation(
+            selected_locations.begin(), selected_locations.end()
+        ));
+    }
+
+    return outcomes;
 }
 
 bool violates_single_request_state_rules(
@@ -959,14 +998,14 @@ MultiDiGraph build_multigraph(
         }
     }
 
-    std::unordered_map<State, std::vector<std::vector<int>>, StateHash> sequence_cache;
+    std::unordered_map<State, std::vector<EmptyingOutcome>, StateHash> emptying_outcome_cache;
     std::unordered_map<State, bool, StateHash> violates_cache;
 
-    sequence_cache.reserve(all_states.size());
+    emptying_outcome_cache.reserve(all_states.size());
     violates_cache.reserve(all_states.size());
 
     for (const State& state : all_states) {
-        sequence_cache.emplace(state, candidate_sequences(state));
+        emptying_outcome_cache.emplace(state, candidate_emptying_outcomes(state));
         violates_cache.emplace(
             state,
             violates_single_request_state_rules(state, singleton_types, singleton_full_pairs)
@@ -1026,14 +1065,12 @@ MultiDiGraph build_multigraph(
             for (const State& sigma_u : feasible_states_u) {
                 const bool sigma_u_violates =
                     violates_node_state_rules(u, sigma_u, violates_cache);
-                const std::vector<std::vector<int>>& sequences = sequence_cache.at(sigma_u);
+                const std::vector<EmptyingOutcome>& emptying_outcomes =
+                    emptying_outcome_cache.at(sigma_u);
                 
-                for (const std::vector<int>& sequence_pi : sequences) {
-                    auto emptying_result = apply_emptying(sigma_u, sequence_pi);
-                    const State& sigma_arrival = emptying_result.first;
-                    const int emptied_count = emptying_result.second;
-
-                    const std::optional<State> sigma_v = apply_service(v, sigma_arrival);
+                for (const EmptyingOutcome& outcome : emptying_outcomes) {
+                    const std::optional<State> sigma_v =
+                        apply_service(v, outcome.arrival_state);
                     try_add_edge_candidate(
                         data,
                         u,
@@ -1041,8 +1078,8 @@ MultiDiGraph build_multigraph(
                         sigma_u,
                         sigma_u_violates,
                         sigma_v,
-                        sequence_pi,
-                        emptied_count,
+                        outcome.sequence_pi,
+                        outcome.emptied_count,
                         violates_cache,
                         singleton_types,
                         options,

@@ -20,6 +20,7 @@ public:
     explicit RouteState(std::vector<OnboardSkip> onboard);
 
     bool try_pickup(OnboardSkip skip);
+    bool try_empty_request(int request_index, int treatment_location);
     int empty_at_treatment(int treatment_location);
     bool try_delivery(int container_type);
 

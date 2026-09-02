@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -31,24 +30,14 @@ int service_node_id(CpActionKind kind, int request, int n) {
     return -1;
 }
 
-std::vector<CpActionVisit> normalize_treatments(
+std::vector<CpActionVisit> validate_and_preserve_treatments(
     const SPDPData& data,
     const CpActionRoute& route
 ) {
     const int n = static_cast<int>(data.requests.size());
-    std::vector<bool> handled(static_cast<std::size_t>(n), false);
-    std::set<int> expected_treatments;
-    for (const CpActionVisit& visit : route.actions) {
-        if (visit.kind == CpActionKind::Treatment) {
-            if (!expected_treatments.insert(visit.request_index).second) {
-                throw std::runtime_error(
-                    "CP route repeats a treatment action."
-                );
-            }
-        }
-    }
-    std::vector<CpActionVisit> normalized;
-    normalized.reserve(route.actions.size());
+    std::vector<bool> treated(static_cast<std::size_t>(n), false);
+    std::vector<CpActionVisit> validated;
+    validated.reserve(route.actions.size());
     RouteState state;
 
     for (const CpActionVisit& visit : route.actions) {
@@ -68,7 +57,7 @@ std::vector<CpActionVisit> normalize_treatments(
                     "CP route violates capacity during treatment normalization."
                 );
             }
-            normalized.push_back(visit);
+            validated.push_back(visit);
             continue;
         }
         if (visit.kind == CpActionKind::Delivery) {
@@ -77,60 +66,27 @@ std::vector<CpActionVisit> normalize_treatments(
                     "CP route delivers without a compatible empty skip."
                 );
             }
-            normalized.push_back(visit);
+            validated.push_back(visit);
             continue;
         }
-        if (handled[static_cast<std::size_t>(visit.request_index)]) {
-            continue;
+        if (treated[static_cast<std::size_t>(visit.request_index)]) {
+            throw std::runtime_error("CP route repeats a treatment action.");
         }
-
-        std::vector<int> block;
-        for (const OnboardSkip& skip : state.onboard()) {
-            if (skip.is_full && skip.treatment_location == request.to_id &&
-                !handled[static_cast<std::size_t>(skip.request_index)]) {
-                block.push_back(skip.request_index);
-            }
-        }
-        if (std::find(block.begin(), block.end(), visit.request_index) == block.end()) {
+        if (!state.try_empty_request(visit.request_index, request.to_id)) {
             throw std::runtime_error(
                 "CP treatment action does not match a full onboard skip."
             );
         }
-        std::sort(block.begin(), block.end());
-        for (int request_index : block) {
-            handled[static_cast<std::size_t>(request_index)] = true;
-            normalized.push_back(CpActionVisit{
-                CpActionKind::Treatment,
-                request_index,
-                -1,
-                -1,
-            });
-        }
-        if (state.empty_at_treatment(request.to_id) !=
-            static_cast<int>(block.size())) {
-            throw std::runtime_error(
-                "Treatment normalization failed to batch all eligible skips."
-            );
-        }
+        treated[static_cast<std::size_t>(visit.request_index)] = true;
+        validated.push_back(visit);
     }
 
-    const bool all_expected_handled = std::all_of(
-        expected_treatments.begin(),
-        expected_treatments.end(),
-        [&handled](int request_index) {
-            return request_index >= 0 &&
-                static_cast<std::size_t>(request_index) < handled.size() &&
-                handled[static_cast<std::size_t>(request_index)];
-        }
-    );
-    if (!state.is_empty() || !all_expected_handled ||
-        std::count(handled.begin(), handled.end(), true) !=
-            static_cast<int>(expected_treatments.size())) {
+    if (!state.is_empty()) {
         throw std::runtime_error(
-            "Normalized CP route does not end empty or omits a treatment action."
+            "CP route does not end empty or omits a treatment action."
         );
     }
-    return normalized;
+    return validated;
 }
 
 double normalized_transition_time(
@@ -168,29 +124,19 @@ int find_edge(
     double normalized_time
 ) {
     int exact = -1;
-    int fallback = -1;
-    double fallback_time = std::numeric_limits<double>::infinity();
     for (std::size_t edge_id : graph.outgoing_edge_indices(u)) {
         const EdgeRecord& edge = graph.edges()[edge_id];
         if (edge.v != v || !same_state(edge.data.start_state, start_state) ||
-            !same_state(edge.data.end_state, end_state)) {
+            !same_state(edge.data.end_state, end_state) ||
+            edge.data.sequence_pi != sequence ||
+            std::fabs(edge.data.time - normalized_time) > kTolerance) {
             continue;
         }
-        if (edge.data.sequence_pi == sequence) {
-            if (exact < 0 || static_cast<int>(edge_id) < exact) {
-                exact = static_cast<int>(edge_id);
-            }
-            continue;
-        }
-        if (edge.data.time <= normalized_time + kTolerance &&
-            (edge.data.time < fallback_time - kTolerance ||
-             (std::fabs(edge.data.time - fallback_time) <= kTolerance &&
-              (fallback < 0 || static_cast<int>(edge_id) < fallback)))) {
-            fallback = static_cast<int>(edge_id);
-            fallback_time = edge.data.time;
+        if (exact < 0 || static_cast<int>(edge_id) < exact) {
+            exact = static_cast<int>(edge_id);
         }
     }
-    return exact >= 0 ? exact : fallback;
+    return exact;
 }
 
 }  // namespace
@@ -205,13 +151,14 @@ CpMappedIncumbent map_cp_incumbent_to_multigraph(
         const int n = static_cast<int>(data.requests.size());
         std::set<int> globally_seen_service_nodes;
         for (const CpActionRoute& route : routes) {
-            const std::vector<CpActionVisit> normalized =
-                normalize_treatments(data, route);
+            const std::vector<CpActionVisit> validated_actions =
+                validate_and_preserve_treatments(data, route);
             RouteState state;
             NodeId current_node = 0;
             int current_location = -1;
             State transition_start_state = state.canonical_state();
             std::vector<int> treatments;
+            std::vector<int> treatment_request_ids;
             int treatment_action_count = 0;
 
             auto flush_to = [&](NodeId next_node,
@@ -219,8 +166,17 @@ CpMappedIncumbent map_cp_incumbent_to_multigraph(
                                 double destination_service,
                                 const CpActionVisit* destination) {
                 const State start_state = transition_start_state;
-                for (int treatment : treatments) {
-                    state.empty_at_treatment(treatment);
+                for (int request_index : treatment_request_ids) {
+                    const Request& treated_request =
+                        data.requests[static_cast<std::size_t>(request_index)];
+                    if (!state.try_empty_request(
+                            request_index,
+                            treated_request.to_id
+                        )) {
+                        throw std::runtime_error(
+                            "CP transition cannot empty the requested skip."
+                        );
+                    }
                 }
                 if (destination != nullptr) {
                     const Request& request = data.requests[static_cast<std::size_t>(
@@ -233,12 +189,12 @@ CpMappedIncumbent map_cp_incumbent_to_multigraph(
                                 true
                             })) {
                             throw std::runtime_error(
-                                "Normalized route exceeds capacity at pickup."
+                                "CP route exceeds capacity at pickup."
                             );
                         }
                     } else if (!state.try_delivery(request.container_type)) {
                         throw std::runtime_error(
-                            "Normalized route has an incompatible delivery."
+                            "CP route has an incompatible delivery."
                         );
                     }
                 }
@@ -268,11 +224,12 @@ CpMappedIncumbent map_cp_incumbent_to_multigraph(
                 current_location = next_location;
                 transition_start_state = end_state;
                 treatments.clear();
+                treatment_request_ids.clear();
                 treatment_action_count = 0;
             };
 
             int last_treatment = -1;
-            for (const CpActionVisit& visit : normalized) {
+            for (const CpActionVisit& visit : validated_actions) {
                 const Request& request =
                     data.requests[static_cast<std::size_t>(visit.request_index)];
                 if (visit.kind == CpActionKind::Treatment) {
@@ -280,6 +237,7 @@ CpMappedIncumbent map_cp_incumbent_to_multigraph(
                         treatments.push_back(request.to_id);
                         last_treatment = request.to_id;
                     }
+                    treatment_request_ids.push_back(visit.request_index);
                     ++treatment_action_count;
                     continue;
                 }
@@ -300,9 +258,10 @@ CpMappedIncumbent map_cp_incumbent_to_multigraph(
                     &visit
                 );
             }
-            if (!treatments.empty() || treatment_action_count != 0) {
+            if (!treatments.empty() || !treatment_request_ids.empty() ||
+                treatment_action_count != 0) {
                 throw std::runtime_error(
-                    "Normalized CP route ends with treatment actions."
+                    "CP route ends with treatment actions."
                 );
             }
             flush_to(graph.end_node_id(), -1, 0.0, nullptr);

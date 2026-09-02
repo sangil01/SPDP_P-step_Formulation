@@ -530,6 +530,131 @@ State make_state_from_onboard(
     return RouteState(onboard_requests).canonical_state();
 }
 
+struct EmptiedRequestTrace {
+    int request_index = -1;
+    int treatment_location = -1;
+};
+
+struct EdgeTransitionTrace {
+    std::vector<OnboardSkip> next_onboard;
+    std::vector<EmptiedRequestTrace> emptied_requests;
+};
+
+bool realize_treatment_sequence(
+    const EdgeRecord& edge,
+    const MultiDiGraph& graph,
+    std::size_t sequence_position,
+    const RouteState& current_state,
+    const std::vector<EmptiedRequestTrace>& current_trace,
+    EdgeTransitionTrace& result
+) {
+    if (sequence_position == edge.data.sequence_pi.size()) {
+        RouteState arrival_state = current_state;
+        const NodeSpec& arrival_node = graph.node(edge.v);
+        if (arrival_node.kind == NodeSpec::Kind::Pickup) {
+            if (!arrival_state.try_pickup(OnboardSkip{
+                    arrival_node.request_idx.value(),
+                    arrival_node.container_type.value(),
+                    arrival_node.landfill_location.value(),
+                    true,
+                })) {
+                return false;
+            }
+        } else if (arrival_node.kind == NodeSpec::Kind::Delivery) {
+            if (!arrival_state.try_delivery(arrival_node.container_type.value())) {
+                return false;
+            }
+        }
+
+        const State realized_end_state = arrival_state.canonical_state();
+        const bool end_state_matches =
+            same_state(realized_end_state, edge.data.end_state);
+        if (!end_state_matches) {
+            return false;
+        }
+
+        result.next_onboard = arrival_state.onboard();
+        result.emptied_requests = current_trace;
+        return true;
+    }
+
+    const int treatment_location =
+        edge.data.sequence_pi[sequence_position];
+    std::vector<int> eligible_request_ids;
+    eligible_request_ids.reserve(2);
+    for (const OnboardSkip& skip : current_state.onboard()) {
+        if (skip.is_full && skip.treatment_location == treatment_location) {
+            eligible_request_ids.push_back(skip.request_index);
+        }
+    }
+    std::sort(eligible_request_ids.begin(), eligible_request_ids.end());
+    if (eligible_request_ids.empty()) {
+        return false;
+    }
+
+    const unsigned int subset_count = 1U << eligible_request_ids.size();
+    for (unsigned int mask = 1U; mask < subset_count; ++mask) {
+        RouteState next_state = current_state;
+        std::vector<EmptiedRequestTrace> next_trace = current_trace;
+        bool valid_subset = true;
+        for (std::size_t bit = 0; bit < eligible_request_ids.size(); ++bit) {
+            if ((mask & (1U << bit)) == 0U) {
+                continue;
+            }
+            const int request_index = eligible_request_ids[bit];
+            if (!next_state.try_empty_request(
+                    request_index,
+                    treatment_location
+                )) {
+                valid_subset = false;
+                break;
+            }
+            next_trace.push_back(EmptiedRequestTrace{
+                request_index,
+                treatment_location,
+            });
+        }
+        if (!valid_subset) {
+            continue;
+        }
+        if (realize_treatment_sequence(
+                edge,
+                graph,
+                sequence_position + 1U,
+                next_state,
+                next_trace,
+                result
+            )) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool realize_edge_transition(
+    const EdgeRecord& edge,
+    const MultiDiGraph& graph,
+    const std::vector<OnboardSkip>& current_onboard,
+    EdgeTransitionTrace& result
+) {
+    if (!same_state(
+            make_state_from_onboard(current_onboard),
+            edge.data.start_state
+        )) {
+        return false;
+    }
+
+    return realize_treatment_sequence(
+        edge,
+        graph,
+        0U,
+        RouteState(current_onboard),
+        {},
+        result
+    );
+}
+
 // 하나의 edge를 현재 onboard 상태에 적용할 수 있는지 확인하고, 가능하면 다음 상태를 만든다.
 // 즉 "현재 차량 적재 상태에서 이 edge를 실제로 탈 수 있는가"를 시뮬레이션하는 함수다.
 // 성공하면 next_onboard는 edge 적용 후의 적재 상태가 된다.
@@ -540,44 +665,12 @@ bool try_apply_edge_to_onboard(
     const std::vector<OnboardSkip>& current_onboard,
     std::vector<OnboardSkip>& next_onboard
 ) {
-    const State current_state = make_state_from_onboard(current_onboard);
-    if (!same_state(current_state, edge.data.start_state)) {
+    (void)data;
+    EdgeTransitionTrace trace;
+    if (!realize_edge_transition(edge, graph, current_onboard, trace)) {
         return false;
     }
-
-    RouteState route_state(current_onboard);
-
-    // edge 내부의 treatment sequence를 따라 full container를 empty로 바꾼다.
-    for (int treatment_location : edge.data.sequence_pi) {
-        route_state.empty_at_treatment(treatment_location);
-    }
-
-    const NodeSpec& arrival_node = graph.node(edge.v);
-    if (arrival_node.kind == NodeSpec::Kind::Pickup) {
-        // Pickup node에 도착하면 새로운 full container 요청이 onboard에 추가된다.
-        if (!route_state.try_pickup(OnboardSkip{
-            arrival_node.request_idx.value(),
-            arrival_node.container_type.value(),
-            arrival_node.landfill_location.value(),
-            true,
-        })) {
-            return false;
-        }
-    } else if (arrival_node.kind == NodeSpec::Kind::Delivery) {
-        // Delivery node에 도착하면 대응되는 empty container 하나를 내려야 한다.
-        const int container_type = arrival_node.container_type.value();
-        if (!route_state.try_delivery(container_type)) {
-            return false;
-        }
-    }
-
-    // 시뮬레이션 결과가 edge가 요구하는 end_state와 일치해야만 이 edge를 탈 수 있다.
-    const State next_state = route_state.canonical_state();
-    if (!same_state(next_state, edge.data.end_state)) {
-        return false;
-    }
-
-    next_onboard = route_state.onboard();
+    next_onboard = std::move(trace.next_onboard);
     return true;
 }
 
@@ -779,29 +872,26 @@ RecoveredRouteSolution build_route_solution(
         route.total_time += edge.data.time;
         route.total_cost += edge.data.cost;
 
-        // edge 내부 sequence_pi에 따라 full container가 treatment를 거쳐 empty가 된다.
-        // 출력에서는 pattern=1로 기록한다.
-        for (int treatment_location : edge.data.sequence_pi) {
-            bool emptied_any_container = false;
-            for (auto it = onboard_requests.rbegin(); it != onboard_requests.rend(); ++it) {
-                if (!it->is_full || it->treatment_location != treatment_location) {
-                    continue;
-                }
+        EdgeTransitionTrace transition;
+        require_condition(
+            realize_edge_transition(
+                edge,
+                graph,
+                onboard_requests,
+                transition
+            ),
+            "Recovered route contains an unrealizable edge transition."
+        );
 
-                emptied_any_container = true;
-                route.actions.push_back(RouteSolutionAction{
-                    it->request_index,
-                    treatment_location,
-                    1,
-                    load,
-                });
-                it->is_full = false;
-            }
-
-            require_condition(
-                emptied_any_container,
-                "Recovered route visits a treatment location without a matching full container onboard."
-            );
+        // A partial-emptying edge emits only the request-level treatment
+        // actions selected by the transition that realizes edge.end_state.
+        for (const EmptiedRequestTrace& emptied : transition.emptied_requests) {
+            route.actions.push_back(RouteSolutionAction{
+                emptied.request_index,
+                emptied.treatment_location,
+                1,
+                load,
+            });
         }
 
         const NodeSpec& arrival_node = graph.node(edge.v);
@@ -813,12 +903,6 @@ RecoveredRouteSolution build_route_solution(
                 "Recovered route exceeds vehicle capacity at pickup."
             );
             const int request_id = arrival_node.request_idx.value();
-            onboard_requests.push_back(OnboardSkip{
-                request_id,
-                arrival_node.container_type.value(),
-                arrival_node.landfill_location.value(),
-                true,
-            });
             ++load;
             route.actions.push_back(RouteSolutionAction{
                 request_id,
@@ -830,20 +914,6 @@ RecoveredRouteSolution build_route_solution(
             // Delivery 도착 시 대응되는 empty container 요청을 차량에서 내린다.
             // 출력에서는 pattern=2로 기록한다.
             const int request_id = arrival_node.request_idx.value();
-            const int container_type = arrival_node.container_type.value();
-            auto found = onboard_requests.end();
-            for (auto it = onboard_requests.begin(); it != onboard_requests.end(); ++it) {
-                if (!it->is_full && it->container_type == container_type) {
-                    found = it;
-                }
-            }
-
-            require_condition(
-                found != onboard_requests.end(),
-                "Recovered route tries to deliver without a matching empty container onboard."
-            );
-
-            onboard_requests.erase(found);
             --load;
             route.actions.push_back(RouteSolutionAction{
                 request_id,
@@ -852,6 +922,7 @@ RecoveredRouteSolution build_route_solution(
                 load,
             });
         }
+        onboard_requests = std::move(transition.next_onboard);
 
         require_condition(
             load >= 0 && load <= 2,

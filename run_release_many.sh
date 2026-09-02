@@ -25,7 +25,7 @@ ENUMERATION_OBJECTIVE=original-cost  # Options: original-cost, travel-cost-only,
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=3600 # seconds
+SOLVER_TIME_LIMIT=600 # seconds
 INITIAL_INCUMBENT_ENABLE=1
 INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
@@ -61,9 +61,9 @@ PRUNE_SYMMETRY_40=1
 PRUNE_SYMMETRY_41=1
 PRUNE_PICKUP_SYMMETRY_43=1
 PRUNE_DELIVERY_SYMMETRY_43=1
-DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL=0
-DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS=0
-INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL=0
+DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL=1
+DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS=1
+INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL=1
 ADD_VI_35=0
 ADD_VI_36_COMBINED=0
 VI_36_SUBSET_MAX_SIZE=0 # 0이면 비활성화, 1이면 기존 singleton Eq.(36)과 동일, 7이면 현재 instance들에 대해 전체 set까지 포함
@@ -112,7 +112,7 @@ FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
 FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
     #=========Request 20 이하=========#
-    '''"RecDep_day_A1.dat"
+    "RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
     "RecDep_day_A4.dat"
@@ -128,10 +128,10 @@ DATA_LIST=(
     "RecDep_day_C1.dat"
     "RecDep_day_C2.dat"
     "RecDep_day_C3.dat"
-    "RecDep_day_C4.dat"'''
+    "RecDep_day_C4.dat"
     #=================================#
     #=========Request 50 이하=========#
-    '''"RecDep_day_A12.dat"
+    "RecDep_day_A12.dat"
     "RecDep_day_A13.dat"
     "RecDep_day_A14.dat"
     "RecDep_day_A15.dat"
@@ -154,17 +154,17 @@ DATA_LIST=(
     "RecDep_day_B14.dat"
     "RecDep_day_C5.dat"
     "RecDep_day_C6.dat"
-    "RecDep_day_C7.dat"'''
-    #"RecDep_day_C8.dat"
-    #"RecDep_day_C9.dat"
-    #"RecDep_day_C10.dat"
-    #"RecDep_day_C11.dat"
-    #"RecDep_day_C12.dat"
-    #"RecDep_day_D1.dat"
-    #"RecDep_day_D2.dat"
+    "RecDep_day_C7.dat"
+    "RecDep_day_C8.dat"
+    "RecDep_day_C9.dat"
+    "RecDep_day_C10.dat"
+    "RecDep_day_C11.dat"
+    "RecDep_day_C12.dat"
+    "RecDep_day_D1.dat"
+    "RecDep_day_D2.dat"
     #=================================#
     #=====Request 50 초과 100 이하=====#
-    '''"RecDep_day_B15.dat"
+    "RecDep_day_B15.dat"
     "RecDep_day_B16.dat"
     "RecDep_day_B17.dat"
     "RecDep_day_B18.dat"
@@ -174,15 +174,15 @@ DATA_LIST=(
     "RecDep_day_C14.dat"
     "RecDep_day_C15.dat"
     "RecDep_day_C16.dat"
-    "RecDep_day_C17.dat"'''
-    #"RecDep_day_C18.dat"
+    "RecDep_day_C17.dat"
+    "RecDep_day_C18.dat"
     "RecDep_day_C19.dat"
-    #"RecDep_day_C20.dat"
-    #"RecDep_day_D3.dat"
-    #"RecDep_day_D4.dat"
-    #"RecDep_day_D5.dat"
-    #"RecDep_day_D6.dat"
-    #"RecDep_day_D7.dat"
+    "RecDep_day_C20.dat"
+    "RecDep_day_D3.dat"
+    "RecDep_day_D4.dat"
+    "RecDep_day_D5.dat"
+    "RecDep_day_D6.dat"
+    "RecDep_day_D7.dat"
     #=================================#
     #====Request 100 초과 200 이하====#
     '''"RecDep_day_D8.dat"

@@ -21,6 +21,22 @@ bool RouteState::try_pickup(OnboardSkip skip) {
     return true;
 }
 
+bool RouteState::try_empty_request(
+    int request_index,
+    int treatment_location
+) {
+    for (OnboardSkip& skip : onboard_) {
+        if (skip.request_index != request_index ||
+            skip.treatment_location != treatment_location ||
+            !skip.is_full) {
+            continue;
+        }
+        skip.is_full = false;
+        return true;
+    }
+    return false;
+}
+
 int RouteState::empty_at_treatment(int treatment_location) {
     int emptied_count = 0;
     for (OnboardSkip& skip : onboard_) {
