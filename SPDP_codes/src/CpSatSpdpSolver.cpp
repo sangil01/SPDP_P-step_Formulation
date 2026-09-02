@@ -208,6 +208,8 @@ const char* cp_solve_mode_name(CpSolveMode mode) {
     switch (mode) {
     case CpSolveMode::Satisfaction:
         return "satisfaction";
+    case CpSolveMode::Duration:
+        return "duration";
     case CpSolveMode::ThresholdOptimization:
         return "threshold-optimization";
     }
@@ -517,7 +519,13 @@ static CpFixedKSolveResult solve_fixed_k_original_graph_cp_sat(
     }
 
     std::optional<IntVar> makespan;
-    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+    if (options.solve_mode == CpSolveMode::Duration) {
+        LinearExpr total_duration;
+        for (const IntVar& route_completion : completion) {
+            total_duration += route_completion;
+        }
+        builder.Minimize(total_duration);
+    } else if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
         makespan.emplace(
             builder.NewIntVar(Domain(0, route_horizon)).WithName("makespan")
         );
@@ -754,23 +762,29 @@ static CpFixedKSolveResult solve_fixed_k_original_graph_cp_sat(
         });
     }
 
+    const bool uses_objective =
+        options.solve_mode != CpSolveMode::Satisfaction;
+    const std::int64_t objective_feasibility_threshold =
+        options.solve_mode == CpSolveMode::Duration
+            ? static_cast<std::int64_t>(k_count) * integer_data.limit
+            : integer_data.limit;
     std::mutex callback_mutex;
-    std::optional<CpSolverResponse> accepted_threshold_response;
+    std::optional<CpSolverResponse> accepted_objective_response;
     bool stopped_by_bound_callback = false;
     double callback_proving_bound = 0.0;
-    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+    if (uses_objective) {
         model.Add(operations_research::sat::NewFeasibleSolutionObserver(
             [&](const CpSolverResponse& candidate) {
                 if (candidate.objective_value() >
-                    static_cast<double>(integer_data.limit) +
+                    static_cast<double>(objective_feasibility_threshold) +
                         kObjectiveTolerance) {
                     return;
                 }
                 bool should_stop = false;
                 {
                     std::lock_guard<std::mutex> lock(callback_mutex);
-                    if (!accepted_threshold_response.has_value()) {
-                        accepted_threshold_response = candidate;
+                    if (!accepted_objective_response.has_value()) {
+                        accepted_objective_response = candidate;
                         should_stop = true;
                     }
                 }
@@ -782,7 +796,7 @@ static CpFixedKSolveResult solve_fixed_k_original_graph_cp_sat(
         model.Add(operations_research::sat::NewBestBoundCallback(
             [&](double bound) {
                 if (!objective_bound_excludes_threshold(
-                        bound, integer_data.limit)) {
+                        bound, objective_feasibility_threshold)) {
                     return;
                 }
                 bool should_stop = false;
@@ -807,12 +821,12 @@ static CpFixedKSolveResult solve_fixed_k_original_graph_cp_sat(
     const CpSolverResponse response =
         operations_research::sat::SolveCpModel(builder.Build(), &model);
 
-    std::optional<CpSolverResponse> saved_threshold_response;
+    std::optional<CpSolverResponse> saved_objective_response;
     {
         std::lock_guard<std::mutex> lock(callback_mutex);
-        saved_threshold_response = accepted_threshold_response;
+        saved_objective_response = accepted_objective_response;
         result.stopped_by_feasible_observer =
-            accepted_threshold_response.has_value();
+            accepted_objective_response.has_value();
         result.stopped_by_bound_callback = stopped_by_bound_callback;
         if (stopped_by_bound_callback) {
             result.has_objective_bound = true;
@@ -829,7 +843,7 @@ static CpFixedKSolveResult solve_fixed_k_original_graph_cp_sat(
     const bool raw_has_solution =
         response.status() == operations_research::sat::CpSolverStatus::FEASIBLE ||
         response.status() == operations_research::sat::CpSolverStatus::OPTIMAL;
-    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+    if (uses_objective) {
         if (raw_has_solution) {
             result.has_objective_value = true;
             result.objective_value = response.objective_value();
@@ -841,10 +855,10 @@ static CpFixedKSolveResult solve_fixed_k_original_graph_cp_sat(
             }
             result.has_objective_bound = true;
         }
-        if (saved_threshold_response.has_value()) {
+        if (saved_objective_response.has_value()) {
             result.has_objective_value = true;
             result.objective_value =
-                saved_threshold_response->objective_value();
+                saved_objective_response->objective_value();
         }
     }
 
@@ -856,6 +870,8 @@ static CpFixedKSolveResult solve_fixed_k_original_graph_cp_sat(
                  << cp_solve_mode_name(result.solve_mode)
                  << " horizon_factor=" << result.threshold_horizon_factor
                  << " model_horizon=" << result.model_horizon
+                 << " objective_feasibility_threshold="
+                 << (uses_objective ? objective_feasibility_threshold : 0)
                  << " termination=" << result.termination_name
                  << " has_objective_value="
                  << (result.has_objective_value ? 1 : 0)
@@ -893,35 +909,46 @@ static CpFixedKSolveResult solve_fixed_k_original_graph_cp_sat(
             solution_response = &response;
         }
     } else {
-        if (saved_threshold_response.has_value()) {
+        const bool duration_mode = options.solve_mode == CpSolveMode::Duration;
+        const char* feasible_termination = duration_mode
+            ? "duration-feasible-witness"
+            : "threshold-feasible-witness";
+        const char* bound_termination = duration_mode
+            ? "duration-objective-bound-infeasible"
+            : "objective-bound-infeasible";
+        const char* model_infeasible_termination = duration_mode
+            ? "proven-infeasible"
+            : "restricted-horizon-infeasible";
+        if (saved_objective_response.has_value()) {
             result.outcome = CpSolveOutcome::Feasible;
-            result.termination_name = "threshold-feasible-witness";
-            solution_response = &*saved_threshold_response;
+            result.termination_name = feasible_termination;
+            solution_response = &*saved_objective_response;
         } else if (raw_has_solution &&
                    response.objective_value() <=
-                       static_cast<double>(integer_data.limit) +
+                       static_cast<double>(objective_feasibility_threshold) +
                            kObjectiveTolerance) {
             result.outcome = CpSolveOutcome::Feasible;
-            result.termination_name = "threshold-feasible-witness";
+            result.termination_name = feasible_termination;
             solution_response = &response;
         } else if (result.stopped_by_bound_callback ||
                    (result.has_objective_bound &&
                     objective_bound_excludes_threshold(
-                        result.best_objective_bound, integer_data.limit)) ||
+                        result.best_objective_bound,
+                        objective_feasibility_threshold)) ||
                    (response.status() ==
                         operations_research::sat::CpSolverStatus::OPTIMAL &&
                     raw_has_solution &&
                     response.objective_value() >
-                        static_cast<double>(integer_data.limit) +
+                        static_cast<double>(objective_feasibility_threshold) +
                             kObjectiveTolerance)) {
             result.outcome = CpSolveOutcome::ProvenInfeasible;
-            result.termination_name = "objective-bound-infeasible";
+            result.termination_name = bound_termination;
             append_final_log();
             return result;
         } else if (response.status() ==
                    operations_research::sat::CpSolverStatus::INFEASIBLE) {
             result.outcome = CpSolveOutcome::ProvenInfeasible;
-            result.termination_name = "restricted-horizon-infeasible";
+            result.termination_name = model_infeasible_termination;
             append_final_log();
             return result;
         }
@@ -1338,7 +1365,13 @@ static CpFixedKSolveResult solve_fixed_k_multigraph_cp_sat(
     }
 
     std::optional<IntVar> makespan;
-    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+    if (options.solve_mode == CpSolveMode::Duration) {
+        LinearExpr total_duration;
+        for (const IntVar& route_completion : completion) {
+            total_duration += route_completion;
+        }
+        builder.Minimize(total_duration);
+    } else if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
         makespan.emplace(
             builder.NewIntVar(Domain(0, route_horizon)).WithName("mg_makespan")
         );
@@ -1517,22 +1550,29 @@ static CpFixedKSolveResult solve_fixed_k_multigraph_cp_sat(
         });
     }
 
+    const bool uses_objective =
+        options.solve_mode != CpSolveMode::Satisfaction;
+    const std::int64_t objective_feasibility_threshold =
+        options.solve_mode == CpSolveMode::Duration
+            ? static_cast<std::int64_t>(k_count) * integer_data.limit
+            : integer_data.limit;
     std::mutex callback_mutex;
-    std::optional<CpSolverResponse> accepted_threshold_response;
+    std::optional<CpSolverResponse> accepted_objective_response;
     bool stopped_by_bound_callback = false;
     double callback_proving_bound = 0.0;
-    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+    if (uses_objective) {
         model.Add(operations_research::sat::NewFeasibleSolutionObserver(
             [&](const CpSolverResponse& candidate) {
                 if (candidate.objective_value() >
-                    static_cast<double>(integer_data.limit) + kObjectiveTolerance) {
+                    static_cast<double>(objective_feasibility_threshold) +
+                        kObjectiveTolerance) {
                     return;
                 }
                 bool should_stop = false;
                 {
                     std::lock_guard<std::mutex> lock(callback_mutex);
-                    if (!accepted_threshold_response.has_value()) {
-                        accepted_threshold_response = candidate;
+                    if (!accepted_objective_response.has_value()) {
+                        accepted_objective_response = candidate;
                         should_stop = true;
                     }
                 }
@@ -1543,7 +1583,8 @@ static CpFixedKSolveResult solve_fixed_k_multigraph_cp_sat(
         ));
         model.Add(operations_research::sat::NewBestBoundCallback(
             [&](double bound) {
-                if (!objective_bound_excludes_threshold(bound, integer_data.limit)) {
+                if (!objective_bound_excludes_threshold(
+                        bound, objective_feasibility_threshold)) {
                     return;
                 }
                 bool should_stop = false;
@@ -1565,12 +1606,12 @@ static CpFixedKSolveResult solve_fixed_k_multigraph_cp_sat(
 
     const CpSolverResponse response =
         operations_research::sat::SolveCpModel(builder.Build(), &model);
-    std::optional<CpSolverResponse> saved_threshold_response;
+    std::optional<CpSolverResponse> saved_objective_response;
     {
         std::lock_guard<std::mutex> lock(callback_mutex);
-        saved_threshold_response = accepted_threshold_response;
+        saved_objective_response = accepted_objective_response;
         result.stopped_by_feasible_observer =
-            accepted_threshold_response.has_value();
+            accepted_objective_response.has_value();
         result.stopped_by_bound_callback = stopped_by_bound_callback;
         if (stopped_by_bound_callback) {
             result.has_objective_bound = true;
@@ -1588,7 +1629,7 @@ static CpFixedKSolveResult solve_fixed_k_multigraph_cp_sat(
     const bool raw_has_solution =
         response.status() == operations_research::sat::CpSolverStatus::FEASIBLE ||
         response.status() == operations_research::sat::CpSolverStatus::OPTIMAL;
-    if (options.solve_mode == CpSolveMode::ThresholdOptimization) {
+    if (uses_objective) {
         if (raw_has_solution) {
             result.has_objective_value = true;
             result.objective_value = response.objective_value();
@@ -1600,9 +1641,9 @@ static CpFixedKSolveResult solve_fixed_k_multigraph_cp_sat(
                 response.best_objective_bound()
             );
         }
-        if (saved_threshold_response.has_value()) {
+        if (saved_objective_response.has_value()) {
             result.has_objective_value = true;
-            result.objective_value = saved_threshold_response->objective_value();
+            result.objective_value = saved_objective_response->objective_value();
         }
     }
 
@@ -1615,6 +1656,8 @@ static CpFixedKSolveResult solve_fixed_k_multigraph_cp_sat(
                  << " mode=" << cp_solve_mode_name(result.solve_mode)
                  << " horizon_factor=" << result.threshold_horizon_factor
                  << " model_horizon=" << result.model_horizon
+                 << " objective_feasibility_threshold="
+                 << (uses_objective ? objective_feasibility_threshold : 0)
                  << " termination=" << result.termination_name
                  << " objective_value=" << result.objective_value
                  << " best_objective_bound=" << result.best_objective_bound
@@ -1653,32 +1696,45 @@ static CpFixedKSolveResult solve_fixed_k_multigraph_cp_sat(
             solution_response = &response;
         }
     } else {
-        if (saved_threshold_response.has_value()) {
+        const bool duration_mode = options.solve_mode == CpSolveMode::Duration;
+        const char* feasible_termination = duration_mode
+            ? "duration-feasible-witness"
+            : "threshold-feasible-witness";
+        const char* bound_termination = duration_mode
+            ? "duration-objective-bound-infeasible"
+            : "objective-bound-infeasible";
+        const char* model_infeasible_termination = duration_mode
+            ? "proven-infeasible"
+            : "restricted-horizon-infeasible";
+        if (saved_objective_response.has_value()) {
             result.outcome = CpSolveOutcome::Feasible;
-            result.termination_name = "threshold-feasible-witness";
-            solution_response = &*saved_threshold_response;
+            result.termination_name = feasible_termination;
+            solution_response = &*saved_objective_response;
         } else if (raw_has_solution &&
                    response.objective_value() <=
-                       static_cast<double>(integer_data.limit) + kObjectiveTolerance) {
+                       static_cast<double>(objective_feasibility_threshold) +
+                           kObjectiveTolerance) {
             result.outcome = CpSolveOutcome::Feasible;
-            result.termination_name = "threshold-feasible-witness";
+            result.termination_name = feasible_termination;
             solution_response = &response;
         } else if (result.stopped_by_bound_callback ||
                    (result.has_objective_bound && objective_bound_excludes_threshold(
-                       result.best_objective_bound, integer_data.limit)) ||
+                       result.best_objective_bound,
+                       objective_feasibility_threshold)) ||
                    (response.status() ==
                         operations_research::sat::CpSolverStatus::OPTIMAL &&
                     raw_has_solution &&
                     response.objective_value() >
-                        static_cast<double>(integer_data.limit) + kObjectiveTolerance)) {
+                        static_cast<double>(objective_feasibility_threshold) +
+                            kObjectiveTolerance)) {
             result.outcome = CpSolveOutcome::ProvenInfeasible;
-            result.termination_name = "objective-bound-infeasible";
+            result.termination_name = bound_termination;
             append_final_log();
             return result;
         } else if (response.status() ==
                    operations_research::sat::CpSolverStatus::INFEASIBLE) {
             result.outcome = CpSolveOutcome::ProvenInfeasible;
-            result.termination_name = "restricted-horizon-infeasible";
+            result.termination_name = model_infeasible_termination;
             append_final_log();
             return result;
         }

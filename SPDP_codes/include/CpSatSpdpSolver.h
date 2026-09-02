@@ -13,6 +13,7 @@ namespace spdp {
 enum class CpActionKind { Pickup, Treatment, Delivery };
 enum class CpSolveMode {
     Satisfaction,
+    Duration,
     ThresholdOptimization,
 };
 enum class CpGraphMode {

@@ -130,11 +130,11 @@ void print_usage(const char* executable) {
               << " [--initial-incumbent-max-k-increments N]"
               << " [--initial-incumbent-timeout-action stop|advance]"
               << " [--initial-incumbent-backend two-index-milp|cp-sat]"
-              << " [--initial-incumbent-milp-mode duration|makespan]"
+              << " [--initial-incumbent-milp-mode duration|feasibility|makespan]"
               << " [--initial-incumbent-milp-makespan-horizon-factor F]"
               << " [--initial-incumbent-cp-graph-mode original-graph|multigraph]"
               << " [--initial-incumbent-cp-workers N]"
-              << " [--initial-incumbent-cp-mode satisfaction|threshold-optimization]"
+              << " [--initial-incumbent-cp-mode satisfaction|duration|threshold-optimization]"
               << " [--initial-incumbent-cp-threshold-horizon-factor F]"
               << " [--initial-incumbent-cp-redundant-terminal-balance 0|1]"
               << " [--initial-incumbent-cp-redundant-full-reservoir 0|1]"
@@ -281,12 +281,13 @@ std::string parse_initial_incumbent_backend(const std::string& value) {
 }
 
 std::string parse_initial_incumbent_milp_mode(const std::string& value) {
-    if (value == "duration" || value == "makespan") {
+    if (value == "duration" || value == "feasibility" ||
+        value == "makespan") {
         return value;
     }
     throw std::runtime_error(
         "Invalid value for --initial-incumbent-milp-mode: " + value +
-        " (expected duration or makespan)"
+        " (expected duration, feasibility, or makespan)"
     );
 }
 
@@ -301,12 +302,13 @@ std::string parse_initial_incumbent_cp_graph_mode(const std::string& value) {
 }
 
 std::string parse_initial_incumbent_cp_mode(const std::string& value) {
-    if (value == "satisfaction" || value == "threshold-optimization") {
+    if (value == "satisfaction" || value == "duration" ||
+        value == "threshold-optimization") {
         return value;
     }
     throw std::runtime_error(
         "Invalid value for --initial-incumbent-cp-mode: " + value +
-        " (expected satisfaction or threshold-optimization)"
+        " (expected satisfaction, duration, or threshold-optimization)"
     );
 }
 
@@ -515,6 +517,9 @@ spdp::InitialIncumbentMilpMode to_initial_incumbent_milp_mode(
     if (value == "duration") {
         return spdp::InitialIncumbentMilpMode::Duration;
     }
+    if (value == "feasibility") {
+        return spdp::InitialIncumbentMilpMode::Feasibility;
+    }
     if (value == "makespan") {
         return spdp::InitialIncumbentMilpMode::Makespan;
     }
@@ -534,6 +539,9 @@ spdp::CpGraphMode to_cp_graph_mode(const std::string& value) {
 spdp::CpSolveMode to_cp_solve_mode(const std::string& value) {
     if (value == "satisfaction") {
         return spdp::CpSolveMode::Satisfaction;
+    }
+    if (value == "duration") {
+        return spdp::CpSolveMode::Duration;
     }
     if (value == "threshold-optimization") {
         return spdp::CpSolveMode::ThresholdOptimization;

@@ -271,13 +271,16 @@ void validate_initial_incumbent_solve_options(
 
 InitialIncumbentSolveResult make_base_milp_result(
     const InitialIncumbentSolveOptions& options,
-    GRBModel& model
+    GRBModel& model,
+    bool has_meaningful_objective = true
 ) {
     InitialIncumbentSolveResult result;
     result.backend = InitialIncumbentBackend::TwoIndexMilp;
     result.milp_mode = options.milp_mode;
     result.milp_makespan_horizon_factor =
-        options.milp_makespan_horizon_factor;
+        options.milp_mode == InitialIncumbentMilpMode::Makespan
+            ? options.milp_makespan_horizon_factor
+            : 0.0;
     result.status = model.get(GRB_IntAttr_Status);
     result.raw_status = result.status;
     result.status_name = std::to_string(result.status);
@@ -285,17 +288,20 @@ InitialIncumbentSolveResult make_base_milp_result(
     result.hit_solution_limit = result.status == GRB_SOLUTION_LIMIT;
     result.runtime_seconds = model.get(GRB_DoubleAttr_Runtime);
     result.configured_time_limit_seconds = options.solver_time_limit;
-    record_milp_objective_metadata(model, result);
+    if (has_meaningful_objective) {
+        record_milp_objective_metadata(model, result);
+    }
     return result;
 }
 
-InitialIncumbentSolveResult solve_fixed_k_duration_impl(
+InitialIncumbentSolveResult solve_fixed_k_hard_horizon_impl(
     const SPDPData& data,
     const MultiDiGraph& graph,
-    const InitialIncumbentSolveOptions& options
+    const InitialIncumbentSolveOptions& options,
+    TwoIndexCoreObjective objective
 ) {
     TwoIndexCoreOptions core_options;
-    core_options.objective = TwoIndexCoreObjective::Duration;
+    core_options.objective = objective;
     core_options.binary_y = true;
     core_options.add_time_constraints = true;
     core_options.solver_time_limit = options.solver_time_limit;
@@ -311,7 +317,11 @@ InitialIncumbentSolveResult solve_fixed_k_duration_impl(
     core.model->optimize();
 
     InitialIncumbentSolveResult result =
-        make_base_milp_result(options, *core.model);
+        make_base_milp_result(
+            options,
+            *core.model,
+            objective != TwoIndexCoreObjective::None
+        );
     result.milp_model_horizon = data.time_limit;
     result.has_feasible_solution = core.model->get(GRB_IntAttr_SolCount) > 0;
     if (result.has_feasible_solution) {
@@ -333,6 +343,26 @@ InitialIncumbentSolveResult solve_fixed_k_duration_impl(
         extract_milp_incumbent(graph, core, result);
     }
     return result;
+}
+
+InitialIncumbentSolveResult solve_fixed_k_duration_impl(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const InitialIncumbentSolveOptions& options
+) {
+    return solve_fixed_k_hard_horizon_impl(
+        data, graph, options, TwoIndexCoreObjective::Duration
+    );
+}
+
+InitialIncumbentSolveResult solve_fixed_k_feasibility_impl(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const InitialIncumbentSolveOptions& options
+) {
+    return solve_fixed_k_hard_horizon_impl(
+        data, graph, options, TwoIndexCoreObjective::None
+    );
 }
 
 InitialIncumbentSolveResult solve_fixed_k_makespan_impl(
@@ -442,6 +472,8 @@ const char* initial_incumbent_milp_mode_name(InitialIncumbentMilpMode mode) {
     switch (mode) {
         case InitialIncumbentMilpMode::Duration:
             return "duration";
+        case InitialIncumbentMilpMode::Feasibility:
+            return "feasibility";
         case InitialIncumbentMilpMode::Makespan:
             return "makespan";
     }
@@ -457,6 +489,8 @@ InitialIncumbentSolveResult solve_fixed_k_initial_incumbent(
     switch (options.milp_mode) {
         case InitialIncumbentMilpMode::Duration:
             return solve_fixed_k_duration_impl(data, graph, options);
+        case InitialIncumbentMilpMode::Feasibility:
+            return solve_fixed_k_feasibility_impl(data, graph, options);
         case InitialIncumbentMilpMode::Makespan:
             return solve_fixed_k_makespan_impl(data, graph, options);
     }

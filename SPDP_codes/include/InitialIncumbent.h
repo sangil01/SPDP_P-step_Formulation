@@ -19,6 +19,7 @@ enum class InitialIncumbentBackend {
 
 enum class InitialIncumbentMilpMode {
     Duration,
+    Feasibility,
     Makespan,
 };
 
