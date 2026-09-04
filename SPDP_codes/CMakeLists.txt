@@ -50,6 +50,7 @@ add_library(spdp_core STATIC
     src/ReadData.cpp
     src/GenMultiGraph.cpp
     src/RouteState.cpp
+    src/DualFeasibleFunctions.cpp
     src/CpSatSpdpSolver.cpp
     src/CpIncumbentAdapter.cpp
     src/TwoIndexModelCore.cpp

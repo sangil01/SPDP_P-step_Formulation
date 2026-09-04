@@ -2,6 +2,7 @@
 #define SPDP_K_MIN_COMPUTATION_H
 
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "GenMultiGraph.h"
@@ -19,6 +20,8 @@ struct VI44SubproblemOptions {
     bool add_time_constraints = false;
     double time_limit = 0.0;  // 0 means no time limit.
     bool rounded_bound_stop = true;
+    bool dff_fs_enabled = false;
+    std::vector<double> dff_fs_lambdas;
 };
 
 struct VI44VehicleAssignmentOptions {
@@ -50,6 +53,27 @@ struct VI44VehicleAssignmentVehicleResult {
     double active_duration_lb = 0.0;
 };
 
+struct VI44DffSubproblemResult {
+    std::string family;
+    double parameter = 0.0;
+    int status = 0;
+    bool hit_time_limit = false;
+    bool has_certified_bound = false;
+    double objective_value = -1.0;
+    double objective_bound = -1.0;
+    double safe_lower_bound = -1.0;
+    double numerical_tolerance = 0.0;
+    double runtime_seconds = 0.0;
+    int k_min = 0;
+    bool stopped_by_rounded_bound = false;
+    bool rounded_bound_certified = false;
+    int certified_rounded_k = 0;
+    double callback_objective_ub = -1.0;
+    double callback_safe_objective_lb = -1.0;
+    bool skipped_duplicate = false;
+    double duplicate_of_parameter = -1.0;
+};
+
 struct VI44KMinResult {
     bool cor_enabled = false;
     int cor_k_min = 0;
@@ -68,6 +92,9 @@ struct VI44KMinResult {
     int subproblem_certified_rounded_k = 0;
     double subproblem_callback_objective_ub = -1.0;
     double subproblem_callback_safe_objective_lb = -1.0;
+    bool dff_subproblem_fs_enabled = false;
+    int dff_subproblem_k_min = 0;
+    std::vector<VI44DffSubproblemResult> dff_subproblem_results;
     bool vehicle_assignment_enabled = false;
     int vehicle_assignment_k_min = 0;
     int vehicle_assignment_status = 0;

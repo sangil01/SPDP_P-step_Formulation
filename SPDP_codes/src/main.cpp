@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "GenMultiGraph.h"
+#include "DualFeasibleFunctions.h"
 #include "InitialIncumbent.h"
 #include "KMinComputation.h"
 #include "PstepBnP.h"
@@ -37,6 +38,9 @@ struct CliOptions {
     std::string initial_incumbent_backend = "two-index-milp";
     std::string initial_incumbent_milp_mode = "duration";
     double initial_incumbent_milp_makespan_horizon_factor = 1.5;
+    int initial_incumbent_milp_direct_dff_identity_enable = 0;
+    int initial_incumbent_milp_direct_dff_fs_enable = 0;
+    std::vector<double> dff_fs_lambdas;
     std::string initial_incumbent_cp_graph_mode = "original-graph";
     int initial_incumbent_cp_workers = 0;
     std::string initial_incumbent_cp_mode = "satisfaction";
@@ -87,6 +91,7 @@ struct CliOptions {
     double vi_44_subproblem_time_limit = 0.0;
     int vi_44_subproblem_add_time_constraints = 0;
     int vi_44_duration_ip_rounded_bound_stop = 1;
+    int vi_44_subproblem_dff_fs_enable = 0;
     int vi_44_vehicle_assignment_add_tsp_bound = 0;
     int vi_44_vehicle_assignment_add_container_bound = 0;
     double vi_44_vehicle_assignment_time_limit = 0.0;
@@ -132,6 +137,9 @@ void print_usage(const char* executable) {
               << " [--initial-incumbent-backend two-index-milp|cp-sat]"
               << " [--initial-incumbent-milp-mode duration|feasibility|makespan]"
               << " [--initial-incumbent-milp-makespan-horizon-factor F]"
+              << " [--initial-incumbent-milp-direct-dff-identity-enable 0|1]"
+              << " [--initial-incumbent-milp-direct-dff-fs-enable 0|1]"
+              << " [--dff-fs-lambda-list L1,L2,...]"
               << " [--initial-incumbent-cp-graph-mode original-graph|multigraph]"
               << " [--initial-incumbent-cp-workers N]"
               << " [--initial-incumbent-cp-mode satisfaction|duration|threshold-optimization]"
@@ -175,6 +183,7 @@ void print_usage(const char* executable) {
               << " [--vi-44-subproblem-time-limit T]"
               << " [--vi-44-subproblem-add-time-constraints 0|1]"
               << " [--vi-44-duration-ip-rounded-bound-stop 0|1]"
+              << " [--vi-44-subproblem-dff-fs-enable 0|1]"
               << " [--vi-44-vehicle-assignment-add-tsp-bound 0|1]"
               << " [--vi-44-vehicle-assignment-add-container-bound 0|1]"
               << " [--vi-44-vehicle-assignment-time-limit T]"
@@ -233,6 +242,39 @@ double parse_double(const std::string& value, const std::string& field_name) {
     } catch (const std::exception&) {
         throw std::runtime_error("Invalid numeric value for " + field_name + ": " + value);
     }
+}
+
+std::vector<double> parse_double_list(
+    const std::string& value,
+    const std::string& field_name
+) {
+    std::vector<double> parsed;
+    if (value.empty()) {
+        return parsed;
+    }
+    std::istringstream input(value);
+    std::string token;
+    while (std::getline(input, token, ',')) {
+        if (token.empty()) {
+            throw std::runtime_error(
+                "Empty entry in comma-separated list for " + field_name + "."
+            );
+        }
+        parsed.push_back(parse_double(token, field_name));
+    }
+    return parsed;
+}
+
+std::string format_double_list(const std::vector<double>& values) {
+    std::ostringstream out;
+    out << std::setprecision(15);
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index > 0) {
+            out << ',';
+        }
+        out << values[index];
+    }
+    return out.str();
 }
 
 int parse_binary_flag(const std::string& value, const std::string& field_name) {
@@ -565,6 +607,9 @@ spdp::VI44KMinOptions make_vi_44_k_min_options(
     options.subproblem.time_limit = args.vi_44_subproblem_time_limit;
     options.subproblem.rounded_bound_stop =
         args.vi_44_duration_ip_rounded_bound_stop == 1;
+    options.subproblem.dff_fs_enabled =
+        args.vi_44_subproblem_dff_fs_enable == 1;
+    options.subproblem.dff_fs_lambdas = args.dff_fs_lambdas;
     options.vehicle_assignment.add_tsp_bound =
         args.vi_44_vehicle_assignment_add_tsp_bound == 1;
     options.vehicle_assignment.add_container_bound =
@@ -885,6 +930,30 @@ CliOptions parse_cli(int argc, char** argv) {
                 throw std::runtime_error(arg + " must be finite.");
             }
             options.initial_incumbent_milp_makespan_horizon_factor = value;
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-milp-direct-dff-identity-enable" ||
+            arg == "--initial-incumbent-milp-direct-dff-fs-enable") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const int value = parse_binary_flag(argv[++idx], arg);
+            if (arg ==
+                "--initial-incumbent-milp-direct-dff-identity-enable") {
+                options.initial_incumbent_milp_direct_dff_identity_enable =
+                    value;
+            } else {
+                options.initial_incumbent_milp_direct_dff_fs_enable = value;
+            }
+            continue;
+        }
+
+        if (arg == "--dff-fs-lambda-list") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.dff_fs_lambdas = parse_double_list(argv[++idx], arg);
             continue;
         }
 
@@ -1592,6 +1661,16 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--vi-44-subproblem-dff-fs-enable") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.vi_44_subproblem_dff_fs_enable = parse_binary_flag(
+                argv[++idx], arg
+            );
+            continue;
+        }
+
         if (arg == "--vi-44-vehicle-assignment-add-tsp-bound") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(
@@ -1675,6 +1754,43 @@ CliOptions parse_cli(int argc, char** argv) {
             "--initial-incumbent-milp-makespan-horizon-factor must be greater "
             "than one in makespan mode."
         );
+    }
+    const bool direct_dff_enabled =
+        options.initial_incumbent_milp_direct_dff_identity_enable == 1 ||
+        options.initial_incumbent_milp_direct_dff_fs_enable == 1;
+    if (direct_dff_enabled &&
+        options.initial_incumbent_backend != "two-index-milp") {
+        throw std::runtime_error(
+            "Initial-incumbent direct DFF inequalities require the "
+            "two-index-milp backend."
+        );
+    }
+    if (direct_dff_enabled &&
+        options.initial_incumbent_milp_mode == "makespan") {
+        throw std::runtime_error(
+            "Initial-incumbent direct DFF inequalities are supported only "
+            "in duration or feasibility MILP mode."
+        );
+    }
+    if (options.vi_44_subproblem_dff_fs_enable == 1 &&
+        options.vi_44_k_min_use_subproblem == 0) {
+        throw std::runtime_error(
+            "--vi-44-subproblem-dff-fs-enable requires "
+            "--vi-44-k-min-use-subproblem 1."
+        );
+    }
+    const bool fs_dff_enabled =
+        options.initial_incumbent_milp_direct_dff_fs_enable == 1 ||
+        options.vi_44_subproblem_dff_fs_enable == 1;
+    if (fs_dff_enabled) {
+        options.dff_fs_lambdas =
+            spdp::canonicalize_fs_lambdas(options.dff_fs_lambdas);
+        if (options.dff_fs_lambdas.empty()) {
+            throw std::runtime_error(
+                "At least one 0 < lambda < 0.5 value is required in "
+                "--dff-fs-lambda-list when an FS DFF option is enabled."
+            );
+        }
     }
     if (options.initial_incumbent_cp_mode == "threshold-optimization" &&
         options.initial_incumbent_cp_threshold_horizon_factor <= 1.0) {
@@ -1824,6 +1940,12 @@ void print_instance_summary(
         << format_double(
             args.initial_incumbent_milp_makespan_horizon_factor)
         << '\n';
+    out << "[main] initial_incumbent_milp_direct_dff_identity_enable: "
+        << args.initial_incumbent_milp_direct_dff_identity_enable << '\n';
+    out << "[main] initial_incumbent_milp_direct_dff_fs_enable: "
+        << args.initial_incumbent_milp_direct_dff_fs_enable << '\n';
+    out << "[main] dff_fs_lambda_list: "
+        << format_double_list(args.dff_fs_lambdas) << '\n';
     out << "[main] initial_incumbent_timeout_action: "
         << args.initial_incumbent_timeout_action << '\n';
     out << "[main] initial_incumbent_cp_graph_mode: "
@@ -1880,6 +2002,8 @@ void print_instance_summary(
         << args.vi_44_subproblem_add_time_constraints << '\n';
     out << "[main] vi_44_duration_ip_rounded_bound_stop: "
         << args.vi_44_duration_ip_rounded_bound_stop << '\n';
+    out << "[main] vi_44_subproblem_dff_fs_enable: "
+        << args.vi_44_subproblem_dff_fs_enable << '\n';
     out << "[main] vi_44_vehicle_assignment_add_tsp_bound: "
         << args.vi_44_vehicle_assignment_add_tsp_bound << '\n';
     out << "[main] vi_44_vehicle_assignment_add_container_bound: "
@@ -2272,6 +2396,11 @@ int main(int argc, char** argv) {
                 << " graph_fingerprint=" << duration_graph.stats.fingerprint
                 << " selected_k="
                 << precomputed_k_min_result->selected_k_min
+                << " dff_fs_enabled="
+                << (precomputed_k_min_result->dff_subproblem_fs_enabled
+                        ? 1 : 0)
+                << " dff_k="
+                << precomputed_k_min_result->dff_subproblem_k_min
                 << " subproblem_status="
                 << precomputed_k_min_result->subproblem_status
                 << " stopped_by_rounded_bound="
@@ -2294,6 +2423,40 @@ int main(int argc, char** argv) {
                     precomputed_k_min_result
                         ->subproblem_callback_safe_objective_lb)
                 << '\n';
+            for (const spdp::VI44DffSubproblemResult& dff_result :
+                 precomputed_k_min_result->dff_subproblem_results) {
+                output_file << std::setprecision(15)
+                    << "[vi44-dff-subproblem] family="
+                    << dff_result.family
+                    << " parameter=" << dff_result.parameter
+                    << " subproblem_type=" << args.vi_44_subproblem_type
+                    << " status=" << dff_result.status
+                    << " hit_time_limit="
+                    << (dff_result.hit_time_limit ? 1 : 0)
+                    << " has_certified_bound="
+                    << (dff_result.has_certified_bound ? 1 : 0)
+                    << " objective=" << dff_result.objective_value
+                    << " bound=" << dff_result.objective_bound
+                    << " safe_bound=" << dff_result.safe_lower_bound
+                    << " tolerance=" << dff_result.numerical_tolerance
+                    << " rounded_k=" << dff_result.k_min
+                    << " runtime_seconds=" << dff_result.runtime_seconds
+                    << " stopped_by_rounded_bound="
+                    << (dff_result.stopped_by_rounded_bound ? 1 : 0)
+                    << " rounded_bound_certified="
+                    << (dff_result.rounded_bound_certified ? 1 : 0)
+                    << " certified_rounded_k="
+                    << dff_result.certified_rounded_k
+                    << " callback_objective_ub="
+                    << dff_result.callback_objective_ub
+                    << " callback_safe_objective_lb="
+                    << dff_result.callback_safe_objective_lb
+                    << " skipped_duplicate="
+                    << (dff_result.skipped_duplicate ? 1 : 0)
+                    << " duplicate_of_parameter="
+                    << dff_result.duplicate_of_parameter
+                    << '\n';
+            }
         }
 
         if (args.solve_model == 1 && args.initial_incumbent_enable == 1) {
@@ -2323,6 +2486,13 @@ int main(int argc, char** argv) {
                 << format_double(
                     args.initial_incumbent_milp_makespan_horizon_factor)
                 << '\n';
+            output_file << "[initial-incumbent] milp_direct_dff_identity_enable="
+                << args.initial_incumbent_milp_direct_dff_identity_enable
+                << '\n';
+            output_file << "[initial-incumbent] milp_direct_dff_fs_enable="
+                << args.initial_incumbent_milp_direct_dff_fs_enable << '\n';
+            output_file << "[initial-incumbent] dff_fs_lambda_list="
+                << format_double_list(args.dff_fs_lambdas) << '\n';
             output_file << "[initial-incumbent] cp_graph_mode="
                 << args.initial_incumbent_cp_graph_mode << '\n';
             output_file << "[initial-incumbent] cp_mode="
@@ -2344,6 +2514,11 @@ int main(int argc, char** argv) {
                     args.initial_incumbent_milp_mode);
             search_options.milp_makespan_horizon_factor =
                 args.initial_incumbent_milp_makespan_horizon_factor;
+            search_options.milp_direct_dff_identity_enabled =
+                args.initial_incumbent_milp_direct_dff_identity_enable == 1;
+            search_options.milp_direct_dff_fs_enabled =
+                args.initial_incumbent_milp_direct_dff_fs_enable == 1;
+            search_options.dff_fs_lambdas = args.dff_fs_lambdas;
             search_options.initial_vehicle_count = initial_k;
             search_options.max_k_increments =
                 args.initial_incumbent_max_k_increments;
@@ -2444,6 +2619,15 @@ int main(int argc, char** argv) {
                     << " milp_stopped_by_bound_callback="
                     << (attempt.solve_result.milp_stopped_by_bound_callback
                         ? 1 : 0)
+                    << " milp_direct_dff_identity_enable="
+                    << (attempt.solve_result
+                                .milp_direct_dff_identity_enabled
+                            ? 1 : 0)
+                    << " milp_direct_dff_fs_enable="
+                    << (attempt.solve_result.milp_direct_dff_fs_enabled
+                            ? 1 : 0)
+                    << " milp_direct_dff_cut_count="
+                    << attempt.solve_result.milp_direct_dff_cut_count
                     << " cp_graph_mode="
                     << spdp::cp_graph_mode_name(
                         attempt.solve_result.cp_graph_mode)

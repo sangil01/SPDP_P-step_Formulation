@@ -41,6 +41,9 @@ struct InitialIncumbentSolveOptions {
     std::string gurobi_log_path;
     InitialIncumbentMilpMode milp_mode = InitialIncumbentMilpMode::Duration;
     double milp_makespan_horizon_factor = 1.5;
+    bool milp_direct_dff_identity_enabled = false;
+    bool milp_direct_dff_fs_enabled = false;
+    std::vector<double> dff_fs_lambdas;
 };
 
 struct InitialIncumbentSolveResult {
@@ -66,6 +69,9 @@ struct InitialIncumbentSolveResult {
     double milp_best_objective_bound = 0.0;
     bool milp_stopped_by_feasible_callback = false;
     bool milp_stopped_by_bound_callback = false;
+    bool milp_direct_dff_identity_enabled = false;
+    bool milp_direct_dff_fs_enabled = false;
+    int milp_direct_dff_cut_count = 0;
     CpGraphMode cp_graph_mode = CpGraphMode::OriginalGraph;
     CpSolveMode cp_solve_mode = CpSolveMode::Satisfaction;
     double cp_threshold_horizon_factor = 0.0;
@@ -98,6 +104,9 @@ struct InitialIncumbentSearchOptions {
     InitialIncumbentBackend backend = InitialIncumbentBackend::TwoIndexMilp;
     InitialIncumbentMilpMode milp_mode = InitialIncumbentMilpMode::Duration;
     double milp_makespan_horizon_factor = 1.5;
+    bool milp_direct_dff_identity_enabled = false;
+    bool milp_direct_dff_fs_enabled = false;
+    std::vector<double> dff_fs_lambdas;
     int initial_vehicle_count = 0;
     int max_k_increments = 0;
     InitialIncumbentTimeoutAction timeout_action =

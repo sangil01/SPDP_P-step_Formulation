@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "CpIncumbentAdapter.h"
+#include "DualFeasibleFunctions.h"
 #include "TwoIndexModelCore.h"
 #include "gurobi_c++.h"
 
@@ -267,6 +268,69 @@ void validate_initial_incumbent_solve_options(
             "The MILP makespan horizon factor must be finite and greater than one."
         );
     }
+    if ((options.milp_direct_dff_identity_enabled ||
+         options.milp_direct_dff_fs_enabled) &&
+        options.milp_mode == InitialIncumbentMilpMode::Makespan) {
+        throw std::runtime_error(
+            "Direct DFF inequalities are supported only by the duration and "
+            "feasibility initial-incumbent MILP modes."
+        );
+    }
+    if (options.milp_direct_dff_fs_enabled &&
+        canonicalize_fs_lambdas(options.dff_fs_lambdas).empty()) {
+        throw std::runtime_error(
+            "At least one Fekete--Schepers lambda is required when direct FS "
+            "DFF inequalities are enabled."
+        );
+    }
+}
+
+int add_direct_dff_constraints(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    TwoIndexCoreModel& core,
+    const InitialIncumbentSolveOptions& options
+) {
+    std::vector<DffSpec> specs;
+    if (options.milp_direct_dff_identity_enabled) {
+        specs.push_back(DffSpec{DffFamily::Identity, 0.0});
+    }
+    if (options.milp_direct_dff_fs_enabled) {
+        for (double lambda : canonicalize_fs_lambdas(
+                 options.dff_fs_lambdas)) {
+            specs.push_back(DffSpec{DffFamily::FeketeSchepers, lambda});
+        }
+    }
+    if (specs.empty()) {
+        return 0;
+    }
+
+    GRBLinExpr route_count = 0.0;
+    const NodeId end_node_id = graph.end_node_id();
+    for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
+        const EdgeRecord& edge = graph.edges()[edge_id];
+        if (edge.u == 0 && edge.v != end_node_id) {
+            route_count += core.y_vars[edge_id];
+        }
+    }
+
+    int cut_count = 0;
+    for (const DffSpec& spec : specs) {
+        const std::vector<double> coefficients =
+            build_dff_edge_coefficients(data, graph, spec);
+        GRBLinExpr transformed_workload = 0.0;
+        for (std::size_t edge_id = 0;
+             edge_id < coefficients.size(); ++edge_id) {
+            transformed_workload +=
+                coefficients[edge_id] * core.y_vars[edge_id];
+        }
+        core.model->addConstr(
+            transformed_workload <= route_count,
+            "initial_incumbent_direct_dff_" + std::to_string(cut_count)
+        );
+        ++cut_count;
+    }
+    return cut_count;
 }
 
 InitialIncumbentSolveResult make_base_milp_result(
@@ -281,6 +345,10 @@ InitialIncumbentSolveResult make_base_milp_result(
         options.milp_mode == InitialIncumbentMilpMode::Makespan
             ? options.milp_makespan_horizon_factor
             : 0.0;
+    result.milp_direct_dff_identity_enabled =
+        options.milp_direct_dff_identity_enabled;
+    result.milp_direct_dff_fs_enabled =
+        options.milp_direct_dff_fs_enabled;
     result.status = model.get(GRB_IntAttr_Status);
     result.raw_status = result.status;
     result.status_name = std::to_string(result.status);
@@ -312,6 +380,9 @@ InitialIncumbentSolveResult solve_fixed_k_hard_horizon_impl(
     TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
 
     add_fixed_vehicle_count_constraint(core, graph, options.vehicle_count);
+    const int direct_dff_cut_count = add_direct_dff_constraints(
+        data, graph, core, options
+    );
     core.model->set(GRB_IntParam_SolutionLimit, 1);
     core.model->update();
     core.model->optimize();
@@ -323,6 +394,7 @@ InitialIncumbentSolveResult solve_fixed_k_hard_horizon_impl(
             objective != TwoIndexCoreObjective::None
         );
     result.milp_model_horizon = data.time_limit;
+    result.milp_direct_dff_cut_count = direct_dff_cut_count;
     result.has_feasible_solution = core.model->get(GRB_IntAttr_SolCount) > 0;
     if (result.has_feasible_solution) {
         result.outcome = FixedKSolveOutcome::Feasible;
@@ -694,6 +766,11 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
             attempt_options.milp_mode = options.milp_mode;
             attempt_options.milp_makespan_horizon_factor =
                 options.milp_makespan_horizon_factor;
+            attempt_options.milp_direct_dff_identity_enabled =
+                options.milp_direct_dff_identity_enabled;
+            attempt_options.milp_direct_dff_fs_enabled =
+                options.milp_direct_dff_fs_enabled;
+            attempt_options.dff_fs_lambdas = options.dff_fs_lambdas;
             attempt_options.gurobi_log_path = log_path_for_k(
                 options.gurobi_log_base_path, "gurobi", vehicle_count
             );

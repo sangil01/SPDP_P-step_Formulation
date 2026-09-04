@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "DualFeasibleFunctions.h"
 #include "TwoIndexModelCore.h"
 #include "gurobi_c++.h"
 
@@ -18,16 +19,41 @@ namespace {
 
 constexpr double kTolerance = 1e-9;
 
-double safe_duration_lower_bound(
+double safe_objective_lower_bound(
     double objective_bound,
-    double route_time_limit
+    double objective_scale
 ) {
     const double scale = std::max(
-        {1.0, route_time_limit, std::abs(objective_bound)}
+        {1.0, objective_scale, std::abs(objective_bound)}
     );
     const double tolerance =
         10.0 * detail::kGurobiSolverTolerance * scale;
     return std::max(0.0, objective_bound - tolerance);
+}
+
+std::optional<int> certified_rounded_objective_bound(
+    double exact_incumbent_upper_bound,
+    double solver_objective_lower_bound,
+    double rounding_divisor
+) {
+    if (!std::isfinite(exact_incumbent_upper_bound) ||
+        !std::isfinite(solver_objective_lower_bound) ||
+        !std::isfinite(rounding_divisor) || rounding_divisor <= 0.0 ||
+        exact_incumbent_upper_bound < 0.0) {
+        return std::nullopt;
+    }
+    const double safe_lower = safe_objective_lower_bound(
+        solver_objective_lower_bound, rounding_divisor);
+    const int lower_k = static_cast<int>(
+        std::ceil(safe_lower / rounding_divisor)
+    );
+    const int upper_k = static_cast<int>(
+        std::ceil(exact_incumbent_upper_bound / rounding_divisor)
+    );
+    if (lower_k != upper_k) {
+        return std::nullopt;
+    }
+    return lower_k;
 }
 
 using detail::TwoIndexCoreModel;
@@ -92,16 +118,22 @@ struct AuxiliaryDurationSubproblemResult {
     double callback_safe_objective_lb = -1.0;
 };
 
-class RoundedDurationBoundCallback final : public GRBCallback {
+class RoundedObjectiveBoundCallback final : public GRBCallback {
 public:
-    RoundedDurationBoundCallback(
-        const MultiDiGraph& graph,
+    RoundedObjectiveBoundCallback(
         const std::vector<GRBVar>& y_vars,
-        double route_time_limit
+        std::vector<double> objective_coefficients,
+        double rounding_divisor
     )
-        : graph_(graph),
-          y_vars_(y_vars),
-          route_time_limit_(route_time_limit) {}
+        : y_vars_(y_vars),
+          objective_coefficients_(std::move(objective_coefficients)),
+          rounding_divisor_(rounding_divisor) {
+        if (objective_coefficients_.size() != y_vars_.size()) {
+            throw std::runtime_error(
+                "Rounded-bound callback coefficient size mismatch."
+            );
+        }
+    }
 
     bool stopped() const { return stopped_; }
     int certified_k() const { return certified_k_; }
@@ -115,7 +147,7 @@ protected:
                 double exact_objective = 0.0;
                 for (std::size_t edge_id = 0; edge_id < y_vars_.size(); ++edge_id) {
                     if (getSolution(y_vars_[edge_id]) > 0.5) {
-                        exact_objective += graph_.edges()[edge_id].data.time;
+                        exact_objective += objective_coefficients_[edge_id];
                     }
                 }
                 exact_upper_bound_ = exact_objective;
@@ -132,21 +164,21 @@ protected:
 
 private:
     void maybe_stop(double objective_bound) {
-        const std::optional<int> certificate = certified_rounded_duration_bound(
-            exact_upper_bound_, objective_bound, route_time_limit_);
+        const std::optional<int> certificate = certified_rounded_objective_bound(
+            exact_upper_bound_, objective_bound, rounding_divisor_);
         if (!certificate.has_value()) {
             return;
         }
         stopped_ = true;
         certified_k_ = certificate.value();
-        safe_lower_bound_ = safe_duration_lower_bound(
-            objective_bound, route_time_limit_);
+        safe_lower_bound_ = safe_objective_lower_bound(
+            objective_bound, rounding_divisor_);
         abort();
     }
 
-    const MultiDiGraph& graph_;
     const std::vector<GRBVar>& y_vars_;
-    double route_time_limit_ = 0.0;
+    std::vector<double> objective_coefficients_;
+    double rounding_divisor_ = 1.0;
     bool stopped_ = false;
     int certified_k_ = 0;
     double exact_upper_bound_ = -1.0;
@@ -171,10 +203,15 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
     core_options.name_prefix = "vi44_aux";
     TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
 
-    std::unique_ptr<RoundedDurationBoundCallback> callback;
+    std::unique_ptr<RoundedObjectiveBoundCallback> callback;
     if (binary_y && rounded_bound_stop) {
-        callback = std::make_unique<RoundedDurationBoundCallback>(
-            graph, core.y_vars, data.time_limit);
+        std::vector<double> coefficients;
+        coefficients.reserve(graph.number_of_edges());
+        for (const EdgeRecord& edge : graph.edges()) {
+            coefficients.push_back(edge.data.time);
+        }
+        callback = std::make_unique<RoundedObjectiveBoundCallback>(
+            core.y_vars, std::move(coefficients), data.time_limit);
         core.model->setCallback(callback.get());
     }
 
@@ -222,7 +259,7 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
         result.callback_safe_objective_lb = callback->safe_lower_bound();
         const std::optional<int> postsolve_certificate =
             result.has_certified_bound
-                ? certified_rounded_duration_bound(
+                ? certified_rounded_objective_bound(
                       result.callback_objective_ub,
                       result.objective_bound,
                       data.time_limit)
@@ -246,6 +283,119 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
     if (result.status == GRB_OPTIMAL && !result.has_certified_bound) {
         throw std::runtime_error(
             "The optimal auxiliary VI-44 subproblem returned no finite certified bound."
+        );
+    }
+    return result;
+}
+
+AuxiliaryDurationSubproblemResult solve_auxiliary_dff_subproblem(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const std::vector<double>& coefficients,
+    double solver_time_limit,
+    bool binary_y,
+    bool add_time_constraints,
+    bool rounded_bound_stop,
+    const std::string& name_prefix
+) {
+    if (coefficients.size() != graph.number_of_edges()) {
+        throw std::runtime_error(
+            "DFF subproblem coefficient size does not match the graph."
+        );
+    }
+
+    TwoIndexCoreOptions core_options;
+    core_options.objective = TwoIndexCoreObjective::None;
+    core_options.binary_y = binary_y;
+    core_options.add_time_constraints = add_time_constraints;
+    core_options.solver_time_limit = solver_time_limit;
+    core_options.gurobi_threads = 1;
+    core_options.output_enabled = false;
+    core_options.name_prefix = name_prefix;
+    TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
+
+    GRBLinExpr objective = 0.0;
+    for (std::size_t edge_id = 0; edge_id < coefficients.size(); ++edge_id) {
+        objective += coefficients[edge_id] * core.y_vars[edge_id];
+    }
+    core.model->setObjective(objective, GRB_MINIMIZE);
+
+    std::unique_ptr<RoundedObjectiveBoundCallback> callback;
+    if (binary_y && rounded_bound_stop) {
+        callback = std::make_unique<RoundedObjectiveBoundCallback>(
+            core.y_vars, coefficients, 1.0);
+        core.model->setCallback(callback.get());
+    }
+
+    const auto solve_start = std::chrono::steady_clock::now();
+    core.model->optimize();
+    const auto solve_end = std::chrono::steady_clock::now();
+
+    AuxiliaryDurationSubproblemResult result;
+    result.status = core.model->get(GRB_IntAttr_Status);
+    result.hit_time_limit = result.status == GRB_TIME_LIMIT;
+    result.runtime_seconds =
+        std::chrono::duration<double>(solve_end - solve_start).count();
+
+    if (core.model->get(GRB_IntAttr_SolCount) > 0) {
+        try {
+            const double objective_value = core.model->get(GRB_DoubleAttr_ObjVal);
+            if (std::isfinite(objective_value) &&
+                std::abs(objective_value) < 0.5 * GRB_INFINITY) {
+                result.objective_value = objective_value;
+            }
+        } catch (const GRBException& error) {
+            if (error.getErrorCode() != GRB_ERROR_DATA_NOT_AVAILABLE) {
+                throw;
+            }
+        }
+    }
+
+    try {
+        const double objective_bound = core.model->get(GRB_DoubleAttr_ObjBound);
+        if (std::isfinite(objective_bound) &&
+            std::abs(objective_bound) < 0.5 * GRB_INFINITY) {
+            result.objective_bound = objective_bound;
+            result.has_certified_bound = true;
+        }
+    } catch (const GRBException& error) {
+        if (error.getErrorCode() != GRB_ERROR_DATA_NOT_AVAILABLE) {
+            throw;
+        }
+    }
+
+    if (callback != nullptr && callback->stopped()) {
+        result.stopped_by_rounded_bound = true;
+        result.certified_rounded_k = callback->certified_k();
+        result.callback_objective_ub = callback->exact_upper_bound();
+        result.callback_safe_objective_lb = callback->safe_lower_bound();
+        const std::optional<int> postsolve_certificate =
+            result.has_certified_bound
+                ? certified_rounded_objective_bound(
+                      result.callback_objective_ub,
+                      result.objective_bound,
+                      1.0)
+                : std::nullopt;
+        result.rounded_bound_certified =
+            postsolve_certificate.has_value() &&
+            postsolve_certificate.value() == result.certified_rounded_k;
+    }
+
+    const bool supported_interrupted =
+        result.status == GRB_INTERRUPTED &&
+        result.stopped_by_rounded_bound &&
+        result.rounded_bound_certified;
+    if (result.status != GRB_OPTIMAL && result.status != GRB_TIME_LIMIT &&
+        !supported_interrupted) {
+        throw std::runtime_error(
+            "The auxiliary DFF VI-44 subproblem stopped with an unsupported "
+            "status (" + std::to_string(result.status) + ")."
+        );
+    }
+    if (result.status == GRB_OPTIMAL && !result.has_certified_bound) {
+        throw std::runtime_error(
+            "The optimal auxiliary DFF VI-44 subproblem returned no finite "
+            "certified bound."
         );
     }
     return result;
@@ -959,6 +1109,12 @@ VI44KMinResult compute_vi44_k_min(
     if (options.precomputed_result != nullptr) {
         return *options.precomputed_result;
     }
+    if (options.subproblem.dff_fs_enabled && !options.use_subproblem) {
+        throw std::runtime_error(
+            "Fekete--Schepers VI-44 subproblems require the VI-44 subproblem "
+            "method to be enabled."
+        );
+    }
     if (!options.use_cor && !options.use_subproblem &&
         !options.use_vehicle_assignment) {
         throw std::runtime_error(
@@ -1030,6 +1186,124 @@ VI44KMinResult compute_vi44_k_min(
             result.selected_k_min =
                 std::max(result.selected_k_min, result.subproblem_k_min);
         }
+
+        if (options.subproblem.dff_fs_enabled) {
+            const std::vector<double> lambdas = canonicalize_fs_lambdas(
+                options.subproblem.dff_fs_lambdas
+            );
+            if (lambdas.empty()) {
+                throw std::runtime_error(
+                    "At least one Fekete--Schepers lambda is required when "
+                    "VI-44 DFF subproblems are enabled."
+                );
+            }
+            result.dff_subproblem_fs_enabled = true;
+            std::vector<std::vector<double>> unique_coefficients;
+            std::vector<std::size_t> unique_result_indices;
+            for (double lambda : lambdas) {
+                VI44DffSubproblemResult dff_result;
+                dff_result.family = dff_family_name(
+                    DffFamily::FeketeSchepers
+                );
+                dff_result.parameter = lambda;
+
+                const DffSpec spec{
+                    DffFamily::FeketeSchepers,
+                    lambda,
+                };
+                const std::vector<double> coefficients =
+                    build_dff_edge_coefficients(data, graph, spec);
+
+                std::optional<std::size_t> duplicate_index;
+                for (std::size_t index = 0;
+                     index < unique_coefficients.size(); ++index) {
+                    if (same_dff_coefficients(
+                            coefficients, unique_coefficients[index])) {
+                        duplicate_index = index;
+                        break;
+                    }
+                }
+                if (duplicate_index.has_value()) {
+                    const VI44DffSubproblemResult& original =
+                        result.dff_subproblem_results[
+                            unique_result_indices[duplicate_index.value()]
+                        ];
+                    dff_result = original;
+                    dff_result.parameter = lambda;
+                    dff_result.runtime_seconds = 0.0;
+                    dff_result.skipped_duplicate = true;
+                    dff_result.duplicate_of_parameter = original.parameter;
+                    result.dff_subproblem_results.push_back(
+                        std::move(dff_result)
+                    );
+                    continue;
+                }
+
+                const AuxiliaryDurationSubproblemResult dff_auxiliary =
+                    solve_auxiliary_dff_subproblem(
+                        data,
+                        graph,
+                        coefficients,
+                        options.subproblem.time_limit,
+                        options.subproblem.type == VI44SubproblemType::IP,
+                        options.subproblem.add_time_constraints,
+                        options.subproblem.rounded_bound_stop,
+                        "vi44_fs_" + std::to_string(
+                            unique_coefficients.size())
+                    );
+                dff_result.status = dff_auxiliary.status;
+                dff_result.hit_time_limit = dff_auxiliary.hit_time_limit;
+                dff_result.has_certified_bound =
+                    dff_auxiliary.has_certified_bound;
+                dff_result.objective_value = dff_auxiliary.objective_value;
+                dff_result.objective_bound = dff_auxiliary.objective_bound;
+                dff_result.runtime_seconds = dff_auxiliary.runtime_seconds;
+                dff_result.stopped_by_rounded_bound =
+                    dff_auxiliary.stopped_by_rounded_bound;
+                dff_result.rounded_bound_certified =
+                    dff_auxiliary.rounded_bound_certified;
+                dff_result.certified_rounded_k =
+                    dff_auxiliary.certified_rounded_k;
+                dff_result.callback_objective_ub =
+                    dff_auxiliary.callback_objective_ub;
+                dff_result.callback_safe_objective_lb =
+                    dff_auxiliary.callback_safe_objective_lb;
+                if (dff_auxiliary.has_certified_bound) {
+                    dff_result.safe_lower_bound =
+                        safe_objective_lower_bound(
+                            dff_auxiliary.objective_bound, 1.0);
+                    dff_result.numerical_tolerance = std::max(
+                        0.0,
+                        dff_auxiliary.objective_bound -
+                            dff_result.safe_lower_bound
+                    );
+                    // The transformed objective is already normalized to one
+                    // unit per route; unlike the duration objective, it must
+                    // not be divided by T before rounding.
+                    dff_result.k_min = std::max(
+                        0,
+                        static_cast<int>(
+                            std::ceil(dff_result.safe_lower_bound)
+                        )
+                    );
+                    result.dff_subproblem_k_min = std::max(
+                        result.dff_subproblem_k_min,
+                        dff_result.k_min
+                    );
+                    result.selected_k_min = std::max(
+                        result.selected_k_min,
+                        dff_result.k_min
+                    );
+                }
+                unique_coefficients.push_back(coefficients);
+                unique_result_indices.push_back(
+                    result.dff_subproblem_results.size()
+                );
+                result.dff_subproblem_results.push_back(
+                    std::move(dff_result)
+                );
+            }
+        }
     }
 
     if (options.use_vehicle_assignment) {
@@ -1074,15 +1348,11 @@ std::optional<int> certified_rounded_duration_bound(
         exact_incumbent_upper_bound < 0.0) {
         return std::nullopt;
     }
-    const double safe_lower = safe_duration_lower_bound(
-        solver_objective_lower_bound, route_time_limit);
-    const int lower_k = static_cast<int>(std::ceil(safe_lower / route_time_limit));
-    const int upper_k = static_cast<int>(
-        std::ceil(exact_incumbent_upper_bound / route_time_limit));
-    if (lower_k != upper_k) {
-        return std::nullopt;
-    }
-    return lower_k;
+    return certified_rounded_objective_bound(
+        exact_incumbent_upper_bound,
+        solver_objective_lower_bound,
+        route_time_limit
+    );
 }
 
 }  // namespace spdp

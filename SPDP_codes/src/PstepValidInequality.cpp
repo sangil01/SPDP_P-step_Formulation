@@ -590,6 +590,9 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
                         << " sub_lp_runtime_seconds="
                         << result.subproblem_runtime_seconds;
             }
+            message << " dff_fs_enabled="
+                    << (result.dff_subproblem_fs_enabled ? 1 : 0)
+                    << " dff_k_min=" << result.dff_subproblem_k_min;
             message << " vehicle_assignment_enabled="
                     << (result.vehicle_assignment_enabled ? 1 : 0);
             if (result.vehicle_assignment_enabled) {
@@ -622,6 +625,37 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
             }
             message << " selected=" << result.selected_k_min;
             *options.log_stream << message.str() << '\n';
+
+            for (const VI44DffSubproblemResult& dff_result :
+                 result.dff_subproblem_results) {
+                *options.log_stream
+                    << std::setprecision(15)
+                    << "[pstep-vi] VI44 dff_subproblem_family="
+                    << dff_result.family
+                    << " parameter=" << dff_result.parameter
+                    << " status=" << dff_result.status
+                    << " hit_time_limit="
+                    << (dff_result.hit_time_limit ? 1 : 0)
+                    << " has_certified_bound="
+                    << (dff_result.has_certified_bound ? 1 : 0)
+                    << " objective=" << dff_result.objective_value
+                    << " bound=" << dff_result.objective_bound
+                    << " safe_bound=" << dff_result.safe_lower_bound
+                    << " tolerance=" << dff_result.numerical_tolerance
+                    << " rounded_k=" << dff_result.k_min
+                    << " runtime_seconds=" << dff_result.runtime_seconds
+                    << " stopped_by_rounded_bound="
+                    << (dff_result.stopped_by_rounded_bound ? 1 : 0)
+                    << " rounded_bound_certified="
+                    << (dff_result.rounded_bound_certified ? 1 : 0)
+                    << " certified_rounded_k="
+                    << dff_result.certified_rounded_k
+                    << " skipped_duplicate="
+                    << (dff_result.skipped_duplicate ? 1 : 0)
+                    << " duplicate_of_parameter="
+                    << dff_result.duplicate_of_parameter
+                    << '\n';
+            }
 
             for (const VI44VehicleAssignmentVehicleResult& vehicle :
                  result.vehicle_assignment_vehicles) {
