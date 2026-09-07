@@ -54,7 +54,9 @@ struct CliOptions {
     int gurobi_threads = -1;
     std::string solver_mode = "enumeration";
     std::string enumeration_sos1_mode = "default";
+    std::string enumeration_model_type = "ip";
     std::string enumeration_objective = "original-cost";
+    int add_fixed_vehicle_number = 0;
     std::string bnp_tree_mode = "root-only";
     std::string node_cg_phase_one_mode = "exact-cg";
     std::string node_cg_phase_two_pricing_mode = "exact-pricing";
@@ -152,7 +154,9 @@ void print_usage(const char* executable) {
               << " [--initial-incumbent-cp-symmetry-43 0|1]"
               << " [--solver-mode enumeration|branch-and-price]"
               << " [--enumeration-sos1-mode default|sos1-auto|sos1-native]"
+              << " [--enumeration-model-type ip|lp]"
               << " [--enumeration-objective original-cost|travel-cost-only|duration|duration-plus-fixed]"
+              << " [--add-fixed-vehicle-number 0|1]"
               << " [--bnp-tree-mode root-only|full-tree]"
               << " [--node-cg-phase1-mode exact-cg|heuristic-cg|heuristic-cg-3-step]"
               << " [--node-cg-phase2-pricing-mode exact-pricing|heuristic-pricing-then-exact|full-enumeration]"
@@ -371,6 +375,16 @@ std::string parse_enumeration_sos1_mode(const std::string& value) {
     throw std::runtime_error(
         "Invalid value for --enumeration-sos1-mode: " + value +
         " (expected default, sos1-auto, or sos1-native)"
+    );
+}
+
+std::string parse_enumeration_model_type(const std::string& value) {
+    if (value == "ip" || value == "lp") {
+        return value;
+    }
+    throw std::runtime_error(
+        "Invalid value for --enumeration-model-type: " + value +
+        " (expected ip or lp)"
     );
 }
 
@@ -712,6 +726,26 @@ CliOptions parse_cli(int argc, char** argv) {
             }
             options.enumeration_objective =
                 parse_enumeration_objective(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--enumeration-model-type") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--enumeration-model-type requires a value.");
+            }
+            options.enumeration_model_type =
+                parse_enumeration_model_type(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--add-fixed-vehicle-number") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error("--add-fixed-vehicle-number requires a value.");
+            }
+            options.add_fixed_vehicle_number = parse_binary_flag(
+                argv[++idx],
+                "--add-fixed-vehicle-number"
+            );
             continue;
         }
 
@@ -1730,12 +1764,14 @@ CliOptions parse_cli(int argc, char** argv) {
         }
     }
 
-    if ((options.add_vi_44 == 1 || options.initial_incumbent_enable == 1) &&
+    if ((options.add_vi_44 == 1 || options.initial_incumbent_enable == 1 ||
+         options.add_fixed_vehicle_number == 1) &&
         options.vi_44_k_min_use_cor == 0 &&
         options.vi_44_k_min_use_subproblem == 0 &&
         options.vi_44_k_min_use_vehicle_assignment == 0) {
         throw std::runtime_error(
-            "VI-44 or initial-incumbent generation is enabled, but all k_min methods are disabled."
+            "A k_min-dependent constraint or initial-incumbent generation is enabled, "
+            "but all k_min methods are disabled."
         );
     }
     if (options.add_vi_44 == 1 &&
@@ -1920,7 +1956,10 @@ void print_instance_summary(
     out << "[main] output_dir: " << args.output_dir << '\n';
     out << "[main] Solver mode: " << args.solver_mode << '\n';
     out << "[main] Enumeration SOS1 mode: " << args.enumeration_sos1_mode << '\n';
+    out << "[main] Enumeration model type: " << args.enumeration_model_type << '\n';
     out << "[main] Enumeration objective: " << args.enumeration_objective << '\n';
+    out << "[main] add_fixed_vehicle_number: "
+        << args.add_fixed_vehicle_number << '\n';
     out << "[main] BnP tree mode: " << args.bnp_tree_mode << '\n';
     out << "[main] Node CG phase-1 mode: " << args.node_cg_phase_one_mode << '\n';
     out << "[main] Node CG phase-2 pricing mode: "
@@ -2198,6 +2237,9 @@ void print_direct_two_index_summary(
     std::ostream& out,
     const spdp::DirectTwoIndexResult& result
 ) {
+    out << "[main] Direct two-index model type: "
+        << (result.model_type == spdp::DirectTwoIndexModelType::LP ? "lp" : "ip")
+        << '\n';
     out << "[main] Direct two-index Gurobi status: " << result.status << '\n';
     out << "[main] Direct two-index solved to optimality: "
         << (result.solved_to_optimality ? 1 : 0) << '\n';
@@ -2209,6 +2251,8 @@ void print_direct_two_index_summary(
         << result.constraint_count << '\n';
     out << "[main] Direct two-index valid inequality count: "
         << result.valid_inequality_count << '\n';
+    out << "[main] Direct two-index fixed vehicle constraint count: "
+        << result.fixed_vehicle_constraint_count << '\n';
     out << "[main] Direct two-index solver runtime (sec): "
         << format_double(result.runtime_seconds) << '\n';
     if (!result.has_feasible_solution) {
@@ -2237,8 +2281,12 @@ void print_direct_two_index_summary(
         << format_double(result.total_travel_cost) << '\n';
     out << "[main] Direct two-index total original cost: "
         << format_double(result.total_original_cost) << '\n';
-    out << "[main] Direct two-index vehicle count: "
-        << result.vehicle_count << '\n';
+    out << "[main] Direct two-index departure flow: "
+        << format_double(result.departure_flow) << '\n';
+    if (result.model_type == spdp::DirectTwoIndexModelType::IP) {
+        out << "[main] Direct two-index vehicle count: "
+            << result.vehicle_count << '\n';
+    }
 }
 
 void write_direct_two_index_solution(
@@ -2249,6 +2297,23 @@ void write_direct_two_index_solution(
 ) {
     if (!result.has_feasible_solution) {
         spdp::write_recovered_solution(out, spdp::RecoveredSolution{});
+        return;
+    }
+
+    if (result.model_type == spdp::DirectTwoIndexModelType::LP) {
+        out << std::setprecision(15);
+        out << "Solution:\n";
+        out << "  Direct two-index LP relaxation\n"
+            << "  Objective value: " << result.objective_value << '\n'
+            << "  Departure flow: " << result.departure_flow << '\n';
+        out << "  Positive edge values:\n";
+        for (std::size_t edge_id = 0; edge_id < result.edge_values.size(); ++edge_id) {
+            const double value = result.edge_values[edge_id];
+            if (value > 1e-6) {
+                out << "    y_" << edge_id << " = " << value << '\n';
+            }
+        }
+        out << "Solution done \n";
         return;
     }
 
@@ -2289,6 +2354,20 @@ int main(int argc, char** argv) {
         if (args.p == 0 && args.vi_formulation != "theta") {
             throw std::runtime_error(
                 "The P=0 direct two-index IP supports only --vi-formulation theta."
+            );
+        }
+        if (args.enumeration_model_type == "lp" &&
+            (args.solver_mode != "enumeration" || args.p != 0)) {
+            throw std::runtime_error(
+                "--enumeration-model-type lp is currently supported only by "
+                "the P=0 direct two-index enumeration model."
+            );
+        }
+        if (args.add_fixed_vehicle_number == 1 &&
+            (args.solver_mode != "enumeration" || args.p != 0)) {
+            throw std::runtime_error(
+                "--add-fixed-vehicle-number is currently supported only by "
+                "the P=0 direct two-index enumeration model."
             );
         }
         const spdp::SPDPData data = spdp::read_spdp_data(args.instance);
@@ -2386,7 +2465,8 @@ int main(int argc, char** argv) {
         double initial_incumbent_original_cost = -1.0;
 
         if (args.solve_model == 1 &&
-            (args.initial_incumbent_enable == 1 || args.add_vi_44 == 1)) {
+            (args.initial_incumbent_enable == 1 || args.add_vi_44 == 1 ||
+             args.add_fixed_vehicle_number == 1)) {
             spdp::VI44KMinOptions k_min_options = make_vi_44_k_min_options(args);
             precomputed_k_min_result =
                 spdp::compute_vi44_k_min(
@@ -3035,9 +3115,13 @@ int main(int argc, char** argv) {
                 solution_file << "Solution done \n";
             }
         } else if (args.p == 0) {
-            output_file << "[main] Model type: direct-two-index-IP\n";
+            const bool solve_lp = args.enumeration_model_type == "lp";
+            output_file << "[main] Model type: direct-two-index-"
+                        << (solve_lp ? "LP" : "IP") << '\n';
             output_file << "[main] P-step variables: disabled\n";
-            output_file << "[main] Edge selection variables: y_e (binary)\n";
+            output_file << "[main] Edge selection variables: y_e ("
+                        << (solve_lp ? "continuous [0,1]" : "binary")
+                        << ")\n";
             output_file << "[main] Effective VI formulation: edge-y\n";
             output_file << "[main] Direct two-index objective: "
                         << args.enumeration_objective << '\n';
@@ -3057,9 +3141,25 @@ int main(int argc, char** argv) {
                 vi_options.add_vi_44 = args.add_vi_44 == 1;
                 vi_options.vi_44_k_min_options =
                     make_vi_44_k_min_options(args, cached_k_min);
+                vi_options.add_fixed_vehicle_number =
+                    args.add_fixed_vehicle_number == 1;
+                if (vi_options.add_fixed_vehicle_number) {
+                    if (cached_k_min == nullptr ||
+                        cached_k_min->selected_k_min <= 0) {
+                        throw std::runtime_error(
+                            "The fixed vehicle-number constraint requires a "
+                            "positive precomputed k_min."
+                        );
+                    }
+                    vi_options.fixed_vehicle_number =
+                        cached_k_min->selected_k_min;
+                }
                 vi_options.log_stream = &output_file;
 
                 spdp::DirectTwoIndexOptions direct_options;
+                direct_options.model_type = solve_lp
+                    ? spdp::DirectTwoIndexModelType::LP
+                    : spdp::DirectTwoIndexModelType::IP;
                 direct_options.objective =
                     to_direct_two_index_objective(args.enumeration_objective);
                 direct_options.add_time_constraints =
@@ -3067,13 +3167,15 @@ int main(int argc, char** argv) {
                 direct_options.solver_time_limit = args.solver_time_limit;
                 direct_options.gurobi_threads = args.gurobi_threads;
                 direct_options.gurobi_log_path = gurobi_log_path.string();
-                direct_options.initial_edge_start = initial_edge_start;
+                if (!solve_lp) {
+                    direct_options.initial_edge_start = initial_edge_start;
+                }
                 direct_options.valid_inequalities = std::move(vi_options);
                 output_file << "[initial-incumbent] direct_y_mip_start_applied="
                     << (!direct_options.initial_edge_start.empty() ? 1 : 0) << '\n';
 
                 const spdp::DirectTwoIndexResult direct_result =
-                    spdp::solve_direct_two_index_ip(
+                    spdp::solve_direct_two_index_model(
                         data,
                         graph,
                         direct_options

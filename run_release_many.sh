@@ -18,23 +18,25 @@ fi
 # ============================================
 # INPUT PARAMETERS
 # ============================================
-P=0 # 0 uses the direct binary two-index IP when SOLVER_MODE=enumeration
+P=0 # 0 uses the direct two-index model when SOLVER_MODE=enumeration
 SOLVER_MODE=enumeration # Options: enumeration, branch-and-price
 ENUMERATION_SOS1_MODE=default # Options: default, sos1-auto, sos1-native (used only with SOLVER_MODE=enumeration)
-ENUMERATION_OBJECTIVE=original-cost  # Options: original-cost, travel-cost-only, duration, duration-plus-fixed (used only with SOLVER_MODE=enumeration)
+ENUMERATION_MODEL_TYPE=lp # Options: ip, lp (lp is supported for P=0 direct two-index enumeration)
+ENUMERATION_OBJECTIVE=travel-cost-only  # Options: original-cost, travel-cost-only, duration, duration-plus-fixed (used only with SOLVER_MODE=enumeration)
+ADD_FIXED_VEHICLE_NUMBER=1 # Uses the selected k_min; supported for P=0 direct two-index enumeration
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=5 # seconds
-INITIAL_INCUMBENT_ENABLE=1
+SOLVER_TIME_LIMIT=3600 # seconds
+INITIAL_INCUMBENT_ENABLE=0
 INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
 INITIAL_INCUMBENT_BACKEND=two-index-milp # Options: two-index-milp, cp-sat
 INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
 INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR=1.5 # Used only by makespan
-INITIAL_INCUMBENT_MILP_DIRECT_DFF_IDENTITY_ENABLE=1
-INITIAL_INCUMBENT_MILP_DIRECT_DFF_FS_ENABLE=1
+INITIAL_INCUMBENT_MILP_DIRECT_DFF_IDENTITY_ENABLE=0
+INITIAL_INCUMBENT_MILP_DIRECT_DFF_FS_ENABLE=0
 DFF_FS_LAMBDA_LIST="0.1,0.2,0.3,0.4" # Each value must satisfy 0 < lambda < 0.5; lambda=0 is identity.
 INITIAL_INCUMBENT_CP_GRAPH_MODE=original-graph # Options: original-graph, multigraph
 INITIAL_INCUMBENT_CP_WORKERS=0
@@ -80,7 +82,7 @@ VI_44_SUBPROBLEM_TYPE=ip # Options: lp, ip
 VI_44_SUBPROBLEM_TIME_LIMIT=600 # seconds; 0 means no time limit
 VI_44_SUBPROBLEM_ADD_TIME_CONSTRAINTS=1 # 1 adds state-time B variables and route-duration constraints
 VI_44_DURATION_IP_ROUNDED_BOUND_STOP=1
-VI_44_SUBPROBLEM_DFF_FS_ENABLE=1
+VI_44_SUBPROBLEM_DFF_FS_ENABLE=0
 VI_44_VEHICLE_ASSIGNMENT_ADD_TSP_BOUND=1
 VI_44_VEHICLE_ASSIGNMENT_ADD_CONTAINER_BOUND=1
 VI_44_VEHICLE_ASSIGNMENT_TIME_LIMIT=120 # seconds; 0 means no time limit
@@ -116,7 +118,7 @@ FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
 FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
     #=========Request 20 이하=========#
-    '''"RecDep_day_A1.dat"
+    "RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
     "RecDep_day_A4.dat"
@@ -132,10 +134,10 @@ DATA_LIST=(
     "RecDep_day_C1.dat"
     "RecDep_day_C2.dat"
     "RecDep_day_C3.dat"
-    "RecDep_day_C4.dat"'''
+    "RecDep_day_C4.dat"
     #=================================#
     #=========Request 50 이하=========#
-    '''"RecDep_day_A12.dat"
+    "RecDep_day_A12.dat"
     "RecDep_day_A13.dat"
     "RecDep_day_A14.dat"
     "RecDep_day_A15.dat"
@@ -165,10 +167,10 @@ DATA_LIST=(
     "RecDep_day_C11.dat"
     "RecDep_day_C12.dat"
     "RecDep_day_D1.dat"
-    "RecDep_day_D2.dat"'''
+    "RecDep_day_D2.dat"
     #=================================#
     #=====Request 50 초과 100 이하=====#
-    '''"RecDep_day_B15.dat"
+    "RecDep_day_B15.dat"
     "RecDep_day_B16.dat"
     "RecDep_day_B17.dat"
     "RecDep_day_B18.dat"
@@ -185,7 +187,7 @@ DATA_LIST=(
     "RecDep_day_D3.dat"
     "RecDep_day_D4.dat"
     "RecDep_day_D5.dat"
-    "RecDep_day_D6.dat"'''
+    "RecDep_day_D6.dat"
     "RecDep_day_D7.dat"
     #=================================#
     #====Request 100 초과 200 이하====#
@@ -210,7 +212,7 @@ DATA_LIST=(
 RUN_TAG_SUFFIX="${RUN_TAG_SUFFIX:-}"
 ENUMERATION_SOS1_TAG=""
 if [[ "$SOLVER_MODE" == "enumeration" ]]; then
-    ENUMERATION_SOS1_TAG="_${ENUMERATION_SOS1_MODE}_${ENUMERATION_OBJECTIVE}"
+    ENUMERATION_SOS1_TAG="_${ENUMERATION_SOS1_MODE}_${ENUMERATION_MODEL_TYPE}_${ENUMERATION_OBJECTIVE}-fk${ADD_FIXED_VEHICLE_NUMBER}"
 fi
 RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}${ENUMERATION_SOS1_TAG}${RUN_TAG_SUFFIX}"
 RUN_TAG+="_dgmp${DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL}-dges${DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS}-igmp${INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL}-rbs${VI_44_DURATION_IP_ROUNDED_BOUND_STOP}"
@@ -283,7 +285,9 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "output-dir: $OUTPUT_DIR"
         echo "solver-mode: $SOLVER_MODE"
         echo "enumeration-sos1-mode: $ENUMERATION_SOS1_MODE"
+        echo "enumeration-model-type: $ENUMERATION_MODEL_TYPE"
         echo "enumeration-objective: $ENUMERATION_OBJECTIVE"
+        echo "add-fixed-vehicle-number: $ADD_FIXED_VEHICLE_NUMBER"
         echo "bnp-tree-mode: $BNP_TREE_MODE"
         echo "node-cg-phase1-mode: $NODE_CG_PHASE1_MODE"
         echo "node-cg-phase2-pricing-mode: $NODE_CG_PHASE2_PRICING_MODE"
@@ -375,7 +379,9 @@ for data_name in "${DATA_LIST[@]}"; do
         --output-dir "$OUTPUT_DIR" \
         --solver-mode "$SOLVER_MODE" \
         --enumeration-sos1-mode "$ENUMERATION_SOS1_MODE" \
+        --enumeration-model-type "$ENUMERATION_MODEL_TYPE" \
         --enumeration-objective "$ENUMERATION_OBJECTIVE" \
+        --add-fixed-vehicle-number "$ADD_FIXED_VEHICLE_NUMBER" \
         --bnp-tree-mode "$BNP_TREE_MODE" \
         --node-cg-phase1-mode "$NODE_CG_PHASE1_MODE" \
         --node-cg-phase2-pricing-mode "$NODE_CG_PHASE2_PRICING_MODE" \

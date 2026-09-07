@@ -16,6 +16,7 @@ namespace spdp {
 enum class PstepValidInequalitySense {
     GreaterEqual,
     LessEqual,
+    Equal,
 };
 
 struct PstepValidInequalityRow {
@@ -33,6 +34,10 @@ struct PstepValidInequalityOptions {
     std::size_t vi_request_block_sec_max_size = 0;
     bool add_vi_44 = false;
     VI44KMinOptions vi_44_k_min_options;
+    // This is a conditional model restriction, not a globally valid inequality.
+    // It lives here to reuse the sparse departure-edge row representation.
+    bool add_fixed_vehicle_number = false;
+    int fixed_vehicle_number = 0;
     std::ostream* log_stream = nullptr;
 };
 

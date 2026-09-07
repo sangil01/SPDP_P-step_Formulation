@@ -484,13 +484,16 @@ const char* vi44_subproblem_type_name(VI44SubproblemType type) {
     throw std::runtime_error("Unknown VI-44 subproblem type.");
 }
 
-PstepValidInequalityRow build_vi44_row(
+PstepValidInequalityRow build_departure_flow_row(
     const MultiDiGraph& graph,
-    int k_min
+    std::string name,
+    PstepValidInequalitySense sense,
+    int rhs
 ) {
     PstepValidInequalityRow row;
-    row.name = "vi44_route_lower_bound";
-    row.rhs = static_cast<double>(k_min);
+    row.name = std::move(name);
+    row.sense = sense;
+    row.rhs = static_cast<double>(rhs);
     for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
         const EdgeRecord& edge = graph.edges()[edge_id];
         if (edge.u == 0 && graph.node(edge.v).kind == NodeSpec::Kind::Pickup) {
@@ -498,6 +501,35 @@ PstepValidInequalityRow build_vi44_row(
         }
     }
     return row;
+}
+
+PstepValidInequalityRow build_vi44_row(
+    const MultiDiGraph& graph,
+    int k_min
+) {
+    return build_departure_flow_row(
+        graph,
+        "vi44_route_lower_bound",
+        PstepValidInequalitySense::GreaterEqual,
+        k_min
+    );
+}
+
+PstepValidInequalityRow build_fixed_vehicle_number_row(
+    const MultiDiGraph& graph,
+    int vehicle_number
+) {
+    if (vehicle_number <= 0) {
+        throw std::runtime_error(
+            "The fixed vehicle number must be a positive integer."
+        );
+    }
+    return build_departure_flow_row(
+        graph,
+        "fixed_vehicle_number",
+        PstepValidInequalitySense::Equal,
+        vehicle_number
+    );
 }
 
 }  // namespace
@@ -671,6 +703,17 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
                     << " active_duration_lb=" << vehicle.active_duration_lb
                     << '\n';
             }
+        }
+    }
+    if (options.add_fixed_vehicle_number) {
+        rows.push_back(build_fixed_vehicle_number_row(
+            graph,
+            options.fixed_vehicle_number
+        ));
+        if (options.log_stream != nullptr) {
+            *options.log_stream
+                << "[pstep-constraint] fixed_vehicle_number="
+                << options.fixed_vehicle_number << '\n';
         }
     }
     return rows;

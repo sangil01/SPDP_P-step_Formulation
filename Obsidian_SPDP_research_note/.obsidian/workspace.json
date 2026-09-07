@@ -6,34 +6,34 @@
       {
         "id": "242db59fe749fd4f",
         "type": "tabs",
-        "dimension": 64.82381530984203,
+        "dimension": 73.24373854612095,
         "children": [
           {
-            "id": "a730609999747ef0",
+            "id": "aa1419e3dffd033a",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "meeting/260903_meeting.md",
+                "file": "13. Cut for separate fractional solution with both min K and travel cost.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "260903_meeting"
+              "title": "13. Cut for separate fractional solution with both min K and travel cost"
             }
           },
           {
-            "id": "54aa3c0c1c605cce",
+            "id": "ecd9b4934bf81cdd",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "9_6. Acceleration method duration IP and incumbent solution.md",
+                "file": "11. Revise treatment location state transition.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "9_6. Acceleration method duration IP and incumbent solution"
+              "title": "11. Revise treatment location state transition"
             }
           }
         ]
@@ -41,7 +41,7 @@
       {
         "id": "5b4569e2f57c5e3d",
         "type": "tabs",
-        "dimension": 35.17618469015796,
+        "dimension": 26.75626145387905,
         "children": [
           {
             "id": "731ec9fecafc0bba",
@@ -159,7 +159,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 497.5
+    "width": 238.5
   },
   "right": {
     "id": "b90d585d0fa44aa9",
@@ -264,46 +264,45 @@
       "bases:Create new base": false
     }
   },
-  "active": "a730609999747ef0",
+  "active": "aa1419e3dffd033a",
   "lastOpenFiles": [
-    "2. Skip Pick-up and Delivery Problem (SPDP).md",
+    "9_4. Initial-incumbent warm start.md",
+    "13. Cut for separate fractional solution with both min K and travel cost.md",
     "11. Revise treatment location state transition.md",
     "meeting/260903_meeting.md",
+    "4_2. For efficient pricing.md",
+    "10. Comparative analysis with Forbes et al..md",
+    "EJOR (2026) Fragment-based solution of two skip pickup and delivery problems.pdf",
+    "13. Cut for separate fractional solution with both min K and travel cost",
     "12. Extended SPDP.md",
+    "13. Cut for separate fractional solution with both min K and travel cost",
+    "14. Arc elimination at Multi Graph.md",
+    "15. Route enumeration using LP bound.md",
+    "109. SPDP difficulty analysis.md",
+    "9_1. Valid inequalities for tightening LP bound.md",
+    "9_2. 2-index formulation on multigraph.md",
     "9_6. Acceleration method duration IP and incumbent solution.md",
+    "9_5. CP for exact K_min.md",
+    "2. Skip Pick-up and Delivery Problem (SPDP).md",
     "9_7. Dual-feasible functions for strengthening the route lower bound.md",
     "meeting/260427_forward dominance issue & problem complexity analysis per setting.md",
-    "10. Comparative analysis with Forbes et al..md",
-    "9_5. CP for exact K_min.md",
-    "9_2. 2-index formulation on multigraph.md",
-    "9_4. Initial-incumbent warm start.md",
     "9_3. Exact minimum number of vehicles.md",
     "meeting/260825_meeting.md",
     "0. TO DO.md",
     "1. P-step Formulation For CVRP.md",
-    "13. Arc elimination at Multi Graph.md",
-    "14. Route enumeration using LP bound.md",
     "13. Route enumeration using LP bound.md",
     "11. Extended SPDP.md",
     "11. Extended SPDP",
     "12. Route enumeration using LP bound.md",
     "11. Comparative analysis with Forbes et al..md",
-    "11. Route enumeration using LP bound.md",
     "9_5. Initial-incumbent warm start.md~",
-    "104. Forward dominance rule exactness proof.md",
-    "109. SPDP difficulty analysis.md",
-    "3. P-step Formulation for SPDP-flexible.md",
-    "9_1. Valid inequalities for tightening LP bound.md",
-    "EJOR (2026) Fragment-based solution of two skip pickup and delivery problems.pdf",
     "Untitled 1",
-    "Untitled",
     "kmin_structural_analysis.pdf",
     "TS (2025) A p-step Formulation for the Capacitated Vehicle Routing Problem_초안.pdf",
     "images/Pasted image 20260702154259.png",
     "COR (2022) Transport of skips between recycling centers and treatment facilities.pdf",
     "images/proposition1_for_compact_P-step_formulation.png",
     "Pasted image 20260512160705.png",
-    "home/sangil/Documents/Kaist_PhD (1-1)/Partial Set Partitioning/SPDP_project/Obsidian_SPDP_research_note",
-    "home/sangil/Documents/Kaist_PhD (1-1)/Partial Set Partitioning/SPDP_project"
+    "home/sangil/Documents/Kaist_PhD (1-1)/Partial Set Partitioning/SPDP_project/Obsidian_SPDP_research_note"
   ]
 }

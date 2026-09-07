@@ -1792,10 +1792,16 @@ CompactMasterProblem build_compact_master_problem(
         for (const auto& term : row.edge_terms) {
             add_vi_edge_term(expr, term.first, term.second);
         }
-        if (row.sense == PstepValidInequalitySense::GreaterEqual) {
-            problem.model->addConstr(expr >= row.rhs, row.name);
-        } else {
-            problem.model->addConstr(expr <= row.rhs, row.name);
+        switch (row.sense) {
+            case PstepValidInequalitySense::GreaterEqual:
+                problem.model->addConstr(expr >= row.rhs, row.name);
+                break;
+            case PstepValidInequalitySense::LessEqual:
+                problem.model->addConstr(expr <= row.rhs, row.name);
+                break;
+            case PstepValidInequalitySense::Equal:
+                problem.model->addConstr(expr == row.rhs, row.name);
+                break;
         }
     }
 

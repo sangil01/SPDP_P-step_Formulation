@@ -10,6 +10,11 @@
 
 namespace spdp {
 
+enum class DirectTwoIndexModelType {
+    IP,
+    LP,
+};
+
 enum class DirectTwoIndexObjective {
     OriginalCost,       // variable travel cost + fixed vehicle cost
     TravelCost,         // variable travel cost only
@@ -18,6 +23,7 @@ enum class DirectTwoIndexObjective {
 };
 
 struct DirectTwoIndexOptions {
+    DirectTwoIndexModelType model_type = DirectTwoIndexModelType::IP;
     DirectTwoIndexObjective objective = DirectTwoIndexObjective::OriginalCost;
     bool add_time_constraints = false;
     double solver_time_limit = 0.0;  // 0 means no time limit.
@@ -28,6 +34,7 @@ struct DirectTwoIndexOptions {
 };
 
 struct DirectTwoIndexResult {
+    DirectTwoIndexModelType model_type = DirectTwoIndexModelType::IP;
     int status = 0;
     bool hit_time_limit = false;
     bool solved_to_optimality = false;
@@ -41,14 +48,16 @@ struct DirectTwoIndexResult {
     double total_duration_plus_fixed = -1.0;
     double total_travel_cost = -1.0;
     double total_original_cost = -1.0;
+    double departure_flow = -1.0;
     int vehicle_count = 0;
     int variable_count = 0;
     int constraint_count = 0;
     int valid_inequality_count = 0;
+    int fixed_vehicle_constraint_count = 0;
     std::vector<double> edge_values;
 };
 
-DirectTwoIndexResult solve_direct_two_index_ip(
+DirectTwoIndexResult solve_direct_two_index_model(
     const SPDPData& data,
     const MultiDiGraph& graph,
     const DirectTwoIndexOptions& options

@@ -18,7 +18,7 @@ using detail::build_two_index_model_core;
 
 }  // namespace
 
-DirectTwoIndexResult solve_direct_two_index_ip(
+DirectTwoIndexResult solve_direct_two_index_model(
     const SPDPData& data,
     const MultiDiGraph& graph,
     const DirectTwoIndexOptions& options
@@ -38,7 +38,7 @@ DirectTwoIndexResult solve_direct_two_index_ip(
             core_options.objective = TwoIndexCoreObjective::DurationPlusFixed;
             break;
     }
-    core_options.binary_y = true;
+    core_options.binary_y = options.model_type == DirectTwoIndexModelType::IP;
     core_options.add_time_constraints = options.add_time_constraints;
     core_options.solver_time_limit = options.solver_time_limit;
     core_options.gurobi_threads = options.gurobi_threads;
@@ -48,6 +48,11 @@ DirectTwoIndexResult solve_direct_two_index_ip(
     TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
 
     if (!options.initial_edge_start.empty()) {
+        if (options.model_type != DirectTwoIndexModelType::IP) {
+            throw std::runtime_error(
+                "A direct two-index MIP start cannot be applied to an LP model."
+            );
+        }
         if (options.initial_edge_start.size() != core.y_vars.size()) {
             throw std::runtime_error(
                 "The direct two-index MIP start size does not match the edge count."
@@ -77,18 +82,28 @@ DirectTwoIndexResult solve_direct_two_index_ip(
             }
             expression += term.second * core.y_vars[term.first];
         }
-        if (row.sense == PstepValidInequalitySense::GreaterEqual) {
-            core.model->addConstr(expression >= row.rhs, row.name);
-        } else {
-            core.model->addConstr(expression <= row.rhs, row.name);
+        switch (row.sense) {
+            case PstepValidInequalitySense::GreaterEqual:
+                core.model->addConstr(expression >= row.rhs, row.name);
+                break;
+            case PstepValidInequalitySense::LessEqual:
+                core.model->addConstr(expression <= row.rhs, row.name);
+                break;
+            case PstepValidInequalitySense::Equal:
+                core.model->addConstr(expression == row.rhs, row.name);
+                break;
         }
     }
     core.model->update();
 
     DirectTwoIndexResult result;
+    result.model_type = options.model_type;
     result.variable_count = core.model->get(GRB_IntAttr_NumVars);
     result.constraint_count = core.model->get(GRB_IntAttr_NumConstrs);
-    result.valid_inequality_count = static_cast<int>(vi_rows.size());
+    result.fixed_vehicle_constraint_count =
+        options.valid_inequalities.add_fixed_vehicle_number ? 1 : 0;
+    result.valid_inequality_count =
+        static_cast<int>(vi_rows.size()) - result.fixed_vehicle_constraint_count;
 
     core.model->optimize();
     result.status = core.model->get(GRB_IntAttr_Status);
@@ -126,6 +141,7 @@ DirectTwoIndexResult solve_direct_two_index_ip(
 
     result.total_duration = 0.0;
     result.total_original_cost = 0.0;
+    result.departure_flow = 0.0;
     result.edge_values.resize(graph.number_of_edges(), 0.0);
     for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
         const double value = core.y_vars[edge_id].get(GRB_DoubleAttr_X);
@@ -133,17 +149,20 @@ DirectTwoIndexResult solve_direct_two_index_ip(
         result.total_duration += graph.edges()[edge_id].data.time * value;
         result.total_original_cost += graph.edges()[edge_id].data.cost * value;
         const EdgeRecord& edge = graph.edges()[edge_id];
-        if (value > 0.5 && edge.u == 0 &&
+        if (edge.u == 0 &&
             graph.node(edge.v).kind == NodeSpec::Kind::Pickup) {
-            ++result.vehicle_count;
+            result.departure_flow += value;
+            if (options.model_type == DirectTwoIndexModelType::IP && value > 0.5) {
+                ++result.vehicle_count;
+            }
         }
     }
     result.total_duration_plus_fixed =
         result.total_duration +
-        data.fixed_vehicle_cost * static_cast<double>(result.vehicle_count);
+        data.fixed_vehicle_cost * result.departure_flow;
     result.total_travel_cost =
         result.total_original_cost -
-        data.fixed_vehicle_cost * static_cast<double>(result.vehicle_count);
+        data.fixed_vehicle_cost * result.departure_flow;
 
     double recomputed_objective = 0.0;
     switch (options.objective) {

@@ -107,6 +107,33 @@ void add_phase_one_vi_upper_row(
     problem.model->addConstr(expr <= rhs, name);
 }
 
+void add_phase_one_equality_row(
+    CGMasterProblem& problem,
+    GRBLinExpr expr,
+    double rhs,
+    const std::string& name
+) {
+    GRBVar positive_artificial = problem.model->addVar(
+        0.0,
+        GRB_INFINITY,
+        1.0,
+        GRB_CONTINUOUS,
+        "z_plus_" + name
+    );
+    GRBVar negative_artificial = problem.model->addVar(
+        0.0,
+        GRB_INFINITY,
+        1.0,
+        GRB_CONTINUOUS,
+        "z_minus_" + name
+    );
+    problem.artificial_vi_vars.push_back(positive_artificial);
+    problem.artificial_vi_vars.push_back(negative_artificial);
+    expr += positive_artificial;
+    expr -= negative_artificial;
+    problem.model->addConstr(expr == rhs, name);
+}
+
 void add_root_theta_valid_inequalities(
     const SPDPData& data,
     const MultiDiGraph& graph,
@@ -129,10 +156,16 @@ void add_root_theta_valid_inequalities(
         for (const auto& term : row.edge_terms) {
             expr += term.second * problem.theta_vars[term.first];
         }
-        if (row.sense == PstepValidInequalitySense::GreaterEqual) {
-            add_phase_one_vi_row(problem, expr, row.rhs, row.name);
-        } else {
-            add_phase_one_vi_upper_row(problem, expr, row.rhs, row.name);
+        switch (row.sense) {
+            case PstepValidInequalitySense::GreaterEqual:
+                add_phase_one_vi_row(problem, expr, row.rhs, row.name);
+                break;
+            case PstepValidInequalitySense::LessEqual:
+                add_phase_one_vi_upper_row(problem, expr, row.rhs, row.name);
+                break;
+            case PstepValidInequalitySense::Equal:
+                add_phase_one_equality_row(problem, expr, row.rhs, row.name);
+                break;
         }
     }
 }
