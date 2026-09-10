@@ -75,6 +75,11 @@ VI_36_SUBSET_MAX_SIZE=0 # 0이면 비활성화, 1이면 기존 singleton Eq.(36)
 ADD_VI_Request_BLOCK_SEC=0
 VI_Request_BLOCK_SEC_MAX_SIZE=0 # 0이면 비활성화, 활성화할 때는 2 이상
 ADD_VI_44=1
+ADD_TIME_FLOW_FORMULATION=0 # 0: off, 1: node conservation, 2: node-state conservation (big-M free duration model for P=0 direct two-index)
+ADD_CONNECTIVITY_CUTS=0 # 1 separates connectivity cuts (max-flow) as Gurobi user cuts for P=0 direct two-index IP
+CONNECTIVITY_CUT_SCOPE=full-tree # Options: root-only, full-tree
+CONNECTIVITY_CUT_RHS=duration # Options: one, duration
+CONNECTIVITY_CUT_MAX_PER_ROUND=8
 VI_44_K_MIN_USE_COR=1
 VI_44_K_MIN_USE_SUBPROBLEM=1
 VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT=0
@@ -217,6 +222,7 @@ fi
 RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}${ENUMERATION_SOS1_TAG}${RUN_TAG_SUFFIX}"
 RUN_TAG+="_dgmp${DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL}-dges${DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS}-igmp${INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL}-rbs${VI_44_DURATION_IP_ROUNDED_BOUND_STOP}"
 RUN_TAG+="-vifs${VI_44_SUBPROBLEM_DFF_FS_ENABLE}"
+RUN_TAG+="-tf${ADD_TIME_FLOW_FORMULATION}-cc${ADD_CONNECTIVITY_CUTS}"
 if [[ "$INITIAL_INCUMBENT_ENABLE" == "1" ]]; then
     RUN_TAG+="_initial-incumbent-${INITIAL_INCUMBENT_BACKEND}-${INITIAL_INCUMBENT_TIME_LIMIT}s-kinc${INITIAL_INCUMBENT_MAX_K_INCREMENTS}-timeout-${INITIAL_INCUMBENT_TIMEOUT_ACTION}"
     if [[ "$INITIAL_INCUMBENT_BACKEND" == "two-index-milp" ]]; then
@@ -360,6 +366,11 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "add-vi-request-block-sec: $ADD_VI_Request_BLOCK_SEC"
         echo "vi-request-block-sec-max-size: $VI_Request_BLOCK_SEC_MAX_SIZE"
         echo "add-vi-44: $ADD_VI_44"
+        echo "add-time-flow-formulation: $ADD_TIME_FLOW_FORMULATION"
+        echo "add-connectivity-cuts: $ADD_CONNECTIVITY_CUTS"
+        echo "connectivity-cut-scope: $CONNECTIVITY_CUT_SCOPE"
+        echo "connectivity-cut-rhs: $CONNECTIVITY_CUT_RHS"
+        echo "connectivity-cut-max-per-round: $CONNECTIVITY_CUT_MAX_PER_ROUND"
         echo "vi-44-k-min-use-cor: $VI_44_K_MIN_USE_COR"
         echo "vi-44-k-min-use-subproblem: $VI_44_K_MIN_USE_SUBPROBLEM"
         echo "vi-44-k-min-use-vehicle-assignment: $VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT"
@@ -433,6 +444,11 @@ for data_name in "${DATA_LIST[@]}"; do
         --add-vi-request-block-sec "$ADD_VI_Request_BLOCK_SEC" \
         --vi-request-block-sec-max-size "$VI_Request_BLOCK_SEC_MAX_SIZE" \
         --add-vi-44 "$ADD_VI_44" \
+        --add-time-flow-formulation "$ADD_TIME_FLOW_FORMULATION" \
+        --add-connectivity-cuts "$ADD_CONNECTIVITY_CUTS" \
+        --connectivity-cut-scope "$CONNECTIVITY_CUT_SCOPE" \
+        --connectivity-cut-rhs "$CONNECTIVITY_CUT_RHS" \
+        --connectivity-cut-max-per-round "$CONNECTIVITY_CUT_MAX_PER_ROUND" \
         --vi-44-k-min-use-cor "$VI_44_K_MIN_USE_COR" \
         --vi-44-k-min-use-subproblem "$VI_44_K_MIN_USE_SUBPROBLEM" \
         --vi-44-k-min-use-vehicle-assignment "$VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT" \
