@@ -86,6 +86,11 @@ struct CliOptions {
     int add_vi_request_block_sec = 0;
     int vi_request_block_sec_max_size = 2;
     int add_vi_44 = 0;
+    int add_connectivity_cuts = 0;
+    int add_time_flow_formulation = 0;
+    std::string connectivity_cut_scope = "full-tree";  // root-only, full-tree
+    std::string connectivity_cut_rhs = "duration";     // one, duration
+    int connectivity_cut_max_per_round = 32;
     int vi_44_k_min_use_cor = 1;
     int vi_44_k_min_use_subproblem = 0;
     int vi_44_k_min_use_vehicle_assignment = 0;
@@ -1599,6 +1604,63 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--add-time-flow-formulation") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.add_time_flow_formulation = parse_int(argv[++idx], arg);
+            if (options.add_time_flow_formulation < 0 || options.add_time_flow_formulation > 2) {
+                throw std::runtime_error(arg + " must be 0 (off), 1 (node conservation), or 2 (node-state conservation).");
+            }
+            continue;
+        }
+
+        if (arg == "--add-connectivity-cuts") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.add_connectivity_cuts = parse_int(argv[++idx], arg);
+            if (options.add_connectivity_cuts != 0 && options.add_connectivity_cuts != 1) {
+                throw std::runtime_error(arg + " must be 0 or 1.");
+            }
+            continue;
+        }
+
+        if (arg == "--connectivity-cut-scope") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.connectivity_cut_scope = argv[++idx];
+            if (options.connectivity_cut_scope != "root-only" &&
+                options.connectivity_cut_scope != "full-tree") {
+                throw std::runtime_error(arg + " must be root-only or full-tree.");
+            }
+            continue;
+        }
+
+        if (arg == "--connectivity-cut-rhs") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.connectivity_cut_rhs = argv[++idx];
+            if (options.connectivity_cut_rhs != "one" &&
+                options.connectivity_cut_rhs != "duration") {
+                throw std::runtime_error(arg + " must be one or duration.");
+            }
+            continue;
+        }
+
+        if (arg == "--connectivity-cut-max-per-round") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.connectivity_cut_max_per_round = parse_int(argv[++idx], arg);
+            if (options.connectivity_cut_max_per_round <= 0) {
+                throw std::runtime_error(arg + " must be positive.");
+            }
+            continue;
+        }
+
         if (arg == "--add-vi-44") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error("--add-vi-44 requires a value.");
@@ -1927,6 +1989,17 @@ std::filesystem::path build_gurobi_log_path(
     return output_directory_path(output_dir) / output_name;
 }
 
+std::filesystem::path build_edge_dump_output_path(
+    const std::string& instance,
+    int p,
+    const std::string& output_dir
+) {
+    const std::filesystem::path instance_path(instance);
+    const std::string output_name =
+        instance_path.stem().string() + "_p" + std::to_string(p) + "_edges.tsv";
+    return output_directory_path(output_dir) / output_name;
+}
+
 std::filesystem::path build_initial_incumbent_gurobi_log_path(
     const std::string& instance,
     const std::string& output_dir
@@ -2028,6 +2101,12 @@ void print_instance_summary(
     out << "[main] vi_request_block_sec_max_size: "
         << args.vi_request_block_sec_max_size << '\n';
     out << "[main] add_vi_44: " << args.add_vi_44 << '\n';
+    out << "[main] add_connectivity_cuts: " << args.add_connectivity_cuts << '\n';
+    out << "[main] add_time_flow_formulation: " << args.add_time_flow_formulation << '\n';
+    out << "[main] connectivity_cut_scope: " << args.connectivity_cut_scope << '\n';
+    out << "[main] connectivity_cut_rhs: " << args.connectivity_cut_rhs << '\n';
+    out << "[main] connectivity_cut_max_per_round: "
+        << args.connectivity_cut_max_per_round << '\n';
     out << "[main] vi_44_k_min_use_cor: " << args.vi_44_k_min_use_cor << '\n';
     out << "[main] vi_44_k_min_use_subproblem: "
         << args.vi_44_k_min_use_subproblem << '\n';
@@ -2253,6 +2332,18 @@ void print_direct_two_index_summary(
         << result.valid_inequality_count << '\n';
     out << "[main] Direct two-index fixed vehicle constraint count: "
         << result.fixed_vehicle_constraint_count << '\n';
+    out << "[main] Time-flow infeasible edges fixed to zero: "
+        << result.time_flow_infeasible_edge_count << '\n';
+    out << "[main] Connectivity cuts rounds: "
+        << result.connectivity_cut_stats.rounds << '\n';
+    out << "[main] Connectivity cuts added: "
+        << result.connectivity_cut_stats.cuts_added << '\n';
+    out << "[main] Connectivity cuts added at root: "
+        << result.connectivity_cut_stats.root_cuts_added << '\n';
+    out << "[main] Connectivity cuts with rhs>=2: "
+        << result.connectivity_cut_stats.rhs_two_or_more_cuts << '\n';
+    out << "[main] Connectivity cuts separation seconds: "
+        << format_double(result.connectivity_cut_stats.separation_seconds) << '\n';
     out << "[main] Direct two-index solver runtime (sec): "
         << format_double(result.runtime_seconds) << '\n';
     if (!result.has_feasible_solution) {
@@ -2286,6 +2377,50 @@ void print_direct_two_index_summary(
     if (result.model_type == spdp::DirectTwoIndexModelType::IP) {
         out << "[main] Direct two-index vehicle count: "
             << result.vehicle_count << '\n';
+    }
+}
+
+// Writes every multigraph edge with its attributes and the solver value y_e.
+// Used for offline analysis of fractional LP solutions.
+void write_direct_two_index_edge_dump(
+    std::ostream& out,
+    const spdp::DirectTwoIndexResult& result,
+    const spdp::MultiDiGraph& graph
+) {
+    const auto kind_char = [](spdp::NodeSpec::Kind kind) {
+        switch (kind) {
+            case spdp::NodeSpec::Kind::Start: return 'S';
+            case spdp::NodeSpec::Kind::End: return 'T';
+            case spdp::NodeSpec::Kind::Pickup: return 'P';
+            case spdp::NodeSpec::Kind::Delivery: return 'D';
+        }
+        return '?';
+    };
+    out << std::setprecision(12);
+    out << "edge_id\tu\tv\tkey\tu_kind\tv_kind\tu_loc\tv_loc\tu_req\tv_req"
+        << "\tv_type\ttime\tcost\tstart_state\tend_state\tpi\ty\n";
+    const bool has_values = result.has_feasible_solution &&
+        result.edge_values.size() == graph.number_of_edges();
+    for (std::size_t edge_id = 0; edge_id < graph.number_of_edges(); ++edge_id) {
+        const spdp::EdgeRecord& edge = graph.edges()[edge_id];
+        const spdp::NodeSpec& u = graph.node(edge.u);
+        const spdp::NodeSpec& v = graph.node(edge.v);
+        out << edge_id << '\t' << edge.u << '\t' << edge.v << '\t' << edge.key
+            << '\t' << kind_char(u.kind) << '\t' << kind_char(v.kind)
+            << '\t' << u.location << '\t' << v.location
+            << '\t' << (u.request_idx ? *u.request_idx : -1)
+            << '\t' << (v.request_idx ? *v.request_idx : -1)
+            << '\t' << (v.container_type ? *v.container_type : -1)
+            << '\t' << edge.data.time << '\t' << edge.data.cost
+            << '\t' << spdp::state_to_str(edge.data.start_state)
+            << '\t' << spdp::state_to_str(edge.data.end_state)
+            << '\t';
+        for (std::size_t i = 0; i < edge.data.sequence_pi.size(); ++i) {
+            if (i > 0) out << ',';
+            out << edge.data.sequence_pi[i];
+        }
+        if (edge.data.sequence_pi.empty()) out << '-';
+        out << '\t' << (has_values ? result.edge_values[edge_id] : 0.0) << '\n';
     }
 }
 
@@ -3171,6 +3306,20 @@ int main(int argc, char** argv) {
                     direct_options.initial_edge_start = initial_edge_start;
                 }
                 direct_options.valid_inequalities = std::move(vi_options);
+                direct_options.add_time_flow_formulation =
+                    args.add_time_flow_formulation >= 1;
+                direct_options.time_flow_state_disaggregated =
+                    args.add_time_flow_formulation == 2;
+                direct_options.connectivity_cuts.enabled =
+                    args.add_connectivity_cuts == 1;
+                direct_options.connectivity_cuts.root_only =
+                    args.connectivity_cut_scope == "root-only";
+                direct_options.connectivity_cuts.rhs_mode =
+                    args.connectivity_cut_rhs == "one"
+                        ? spdp::ConnectivityCutRhsMode::One
+                        : spdp::ConnectivityCutRhsMode::Duration;
+                direct_options.connectivity_cuts.max_cuts_per_round =
+                    static_cast<std::size_t>(args.connectivity_cut_max_per_round);
                 output_file << "[initial-incumbent] direct_y_mip_start_applied="
                     << (!direct_options.initial_edge_start.empty() ? 1 : 0) << '\n';
 
@@ -3181,6 +3330,12 @@ int main(int argc, char** argv) {
                         direct_options
                     );
                 print_direct_two_index_summary(output_file, direct_result);
+                {
+                    std::ofstream edge_dump_file(
+                        build_edge_dump_output_path(args.instance, args.p, args.output_dir)
+                    );
+                    write_direct_two_index_edge_dump(edge_dump_file, direct_result, graph);
+                }
                 write_direct_two_index_solution(
                     solution_file,
                     data,

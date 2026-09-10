@@ -1,6 +1,7 @@
 #include "TwoIndexSolver.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 #include <vector>
@@ -15,6 +16,68 @@ using detail::TwoIndexCoreModel;
 using detail::TwoIndexCoreObjective;
 using detail::TwoIndexCoreOptions;
 using detail::build_two_index_model_core;
+
+// User-cut callback: separates connectivity cuts on node LP relaxations.
+class ConnectivityCutCallback : public GRBCallback {
+public:
+    ConnectivityCutCallback(
+        const ConnectivitySeparator& separator,
+        const ConnectivityCutOptions& options,
+        std::vector<GRBVar>& y_vars,
+        ConnectivityCutStats& stats
+    )
+        : separator_(separator),
+          options_(options),
+          y_vars_(y_vars),
+          stats_(stats) {}
+
+protected:
+    void callback() override {
+        if (where != GRB_CB_MIPNODE) {
+            return;
+        }
+        if (getIntInfo(GRB_CB_MIPNODE_STATUS) != GRB_OPTIMAL) {
+            return;
+        }
+        const double node_count = getDoubleInfo(GRB_CB_MIPNODE_NODCNT);
+        const bool is_root = node_count < 0.5;
+        if (options_.root_only && !is_root) {
+            return;
+        }
+        const auto start = std::chrono::steady_clock::now();
+        std::vector<double> values(y_vars_.size(), 0.0);
+        double* raw = getNodeRel(y_vars_.data(), static_cast<int>(y_vars_.size()));
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            values[i] = raw[i];
+        }
+        delete[] raw;
+        const std::vector<PstepValidInequalityRow> cuts =
+            separate_connectivity_cuts(separator_, values, options_);
+        for (const PstepValidInequalityRow& row : cuts) {
+            GRBLinExpr expression = 0.0;
+            for (const auto& term : row.edge_terms) {
+                expression += term.second * y_vars_[term.first];
+            }
+            addCut(expression >= row.rhs);
+            ++stats_.cuts_added;
+            if (is_root) {
+                ++stats_.root_cuts_added;
+            }
+            if (row.rhs >= 2.0 - 1e-9) {
+                ++stats_.rhs_two_or_more_cuts;
+            }
+        }
+        ++stats_.rounds;
+        stats_.separation_seconds +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    }
+
+private:
+    const ConnectivitySeparator& separator_;
+    const ConnectivityCutOptions& options_;
+    std::vector<GRBVar>& y_vars_;
+    ConnectivityCutStats& stats_;
+};
 
 }  // namespace
 
@@ -40,6 +103,8 @@ DirectTwoIndexResult solve_direct_two_index_model(
     }
     core_options.binary_y = options.model_type == DirectTwoIndexModelType::IP;
     core_options.add_time_constraints = options.add_time_constraints;
+    core_options.add_time_flow_formulation = options.add_time_flow_formulation;
+    core_options.time_flow_state_disaggregated = options.time_flow_state_disaggregated;
     core_options.solver_time_limit = options.solver_time_limit;
     core_options.gurobi_threads = options.gurobi_threads;
     core_options.output_enabled = true;
@@ -99,13 +164,71 @@ DirectTwoIndexResult solve_direct_two_index_model(
     DirectTwoIndexResult result;
     result.model_type = options.model_type;
     result.variable_count = core.model->get(GRB_IntAttr_NumVars);
+    result.time_flow_infeasible_edge_count = core.time_flow_infeasible_edge_count;
     result.constraint_count = core.model->get(GRB_IntAttr_NumConstrs);
     result.fixed_vehicle_constraint_count =
         options.valid_inequalities.add_fixed_vehicle_number ? 1 : 0;
     result.valid_inequality_count =
         static_cast<int>(vi_rows.size()) - result.fixed_vehicle_constraint_count;
 
+    ConnectivitySeparator connectivity_separator;
+    std::unique_ptr<ConnectivityCutCallback> connectivity_callback;
+    if (options.connectivity_cuts.enabled &&
+        options.model_type == DirectTwoIndexModelType::IP) {
+        connectivity_separator = build_connectivity_separator(data, graph);
+        connectivity_callback = std::make_unique<ConnectivityCutCallback>(
+            connectivity_separator,
+            options.connectivity_cuts,
+            core.y_vars,
+            result.connectivity_cut_stats
+        );
+        core.model->set(GRB_IntParam_PreCrush, 1);
+        core.model->setCallback(connectivity_callback.get());
+    }
+
     core.model->optimize();
+    if (options.connectivity_cuts.enabled &&
+        options.model_type == DirectTwoIndexModelType::LP) {
+        // LP cutting-plane loop: separate connectivity cuts until none is violated.
+        connectivity_separator = build_connectivity_separator(data, graph);
+        std::vector<double> values(core.y_vars.size(), 0.0);
+        for (std::size_t round = 0; round < 500; ++round) {
+            if (core.model->get(GRB_IntAttr_Status) != GRB_OPTIMAL) {
+                break;
+            }
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                values[i] = core.y_vars[i].get(GRB_DoubleAttr_X);
+            }
+            const auto start = std::chrono::steady_clock::now();
+            const std::vector<PstepValidInequalityRow> cuts =
+                separate_connectivity_cuts(
+                    connectivity_separator,
+                    values,
+                    options.connectivity_cuts
+                );
+            result.connectivity_cut_stats.separation_seconds +=
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - start
+                ).count();
+            ++result.connectivity_cut_stats.rounds;
+            if (cuts.empty()) {
+                break;
+            }
+            for (const PstepValidInequalityRow& row : cuts) {
+                GRBLinExpr expression = 0.0;
+                for (const auto& term : row.edge_terms) {
+                    expression += term.second * core.y_vars[term.first];
+                }
+                core.model->addConstr(expression >= row.rhs, row.name);
+                ++result.connectivity_cut_stats.cuts_added;
+                ++result.connectivity_cut_stats.root_cuts_added;
+                if (row.rhs >= 2.0 - 1e-9) {
+                    ++result.connectivity_cut_stats.rhs_two_or_more_cuts;
+                }
+            }
+            core.model->optimize();
+        }
+    }
     result.status = core.model->get(GRB_IntAttr_Status);
     result.hit_time_limit = result.status == GRB_TIME_LIMIT;
     result.solved_to_optimality = result.status == GRB_OPTIMAL;

@@ -30,6 +30,11 @@ struct TwoIndexCoreOptions {
     TwoIndexCoreObjective objective = TwoIndexCoreObjective::Duration;
     bool binary_y = false;
     bool add_time_constraints = false;
+    // Adds the single-commodity time-flow variables g_e = y_e * (arrival time at
+    // head(e)) with node conservation and Dijkstra-tightened bounds. Big-M free.
+    bool add_time_flow_formulation = false;
+    // Conservation per (node, state) instead of per node. Stronger, more rows.
+    bool time_flow_state_disaggregated = false;
     double time_horizon = 0.0;  // 0 uses data.time_limit.
     bool enforce_route_duration_limit = true;
     double solver_time_limit = 0.0;
@@ -44,6 +49,8 @@ struct TwoIndexCoreModel {
     std::unique_ptr<GRBModel> model;
     std::vector<GRBVar> y_vars;
     std::vector<std::map<State, GRBVar>> time_vars_by_node;
+    std::vector<GRBVar> time_flow_vars;  // g_e per edge when enabled (dummy edges excluded via ub 0)
+    int time_flow_infeasible_edge_count = 0;
 };
 
 TwoIndexCoreModel build_two_index_model_core(

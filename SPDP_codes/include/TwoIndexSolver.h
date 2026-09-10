@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "ConnectivityCuts.h"
 #include "GenMultiGraph.h"
 #include "PstepValidInequality.h"
 #include "ReadData.h"
@@ -26,11 +27,14 @@ struct DirectTwoIndexOptions {
     DirectTwoIndexModelType model_type = DirectTwoIndexModelType::IP;
     DirectTwoIndexObjective objective = DirectTwoIndexObjective::OriginalCost;
     bool add_time_constraints = false;
+    bool add_time_flow_formulation = false;
+    bool time_flow_state_disaggregated = false;
     double solver_time_limit = 0.0;  // 0 means no time limit.
     int gurobi_threads = -1;         // Negative means the Gurobi default.
     std::string gurobi_log_path;
     std::vector<double> initial_edge_start;
     PstepValidInequalityOptions valid_inequalities;
+    ConnectivityCutOptions connectivity_cuts;
 };
 
 struct DirectTwoIndexResult {
@@ -54,6 +58,8 @@ struct DirectTwoIndexResult {
     int constraint_count = 0;
     int valid_inequality_count = 0;
     int fixed_vehicle_constraint_count = 0;
+    int time_flow_infeasible_edge_count = 0;
+    ConnectivityCutStats connectivity_cut_stats;
     std::vector<double> edge_values;
 };
 

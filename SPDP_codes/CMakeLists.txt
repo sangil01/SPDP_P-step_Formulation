@@ -56,6 +56,7 @@ add_library(spdp_core STATIC
     src/TwoIndexModelCore.cpp
     src/KMinComputation.cpp
     src/PstepValidInequality.cpp
+    src/ConnectivityCuts.cpp
     src/TwoIndexSolver.cpp
     src/InitialIncumbent.cpp
     src/PstepFormulation.cpp
