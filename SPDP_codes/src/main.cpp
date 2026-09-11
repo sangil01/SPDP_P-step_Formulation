@@ -114,6 +114,9 @@ struct CliOptions {
     int type_travel_time_cover_threads = 1;
     std::string type_travel_time_cover_cache_dir;
     int vi_44_subproblem_add_time_flow = 0;  // 0 off, 1 node, 2 node-state (k_min duration IP)
+    int initial_incumbent_time_flow = 0;      // 0 off, 1 node, 2 node-state (fixed-K incumbent MILP)
+    std::string initial_incumbent_cache_dir;  // reuse a recovered incumbent across configuration runs
+    int initial_incumbent_big_m_time_constraints = 1;
     int vi_44_k_min_use_cor = 1;
     int vi_44_k_min_use_subproblem = 0;
     int vi_44_k_min_use_vehicle_assignment = 0;
@@ -227,6 +230,9 @@ void print_usage(const char* executable) {
               << " [--type-travel-time-cover-threads N]"
               << " [--type-travel-time-cover-cache-dir PATH]"
               << " [--vi-44-subproblem-add-time-flow 0|1|2]"
+              << " [--initial-incumbent-time-flow 0|1|2]"
+              << " [--initial-incumbent-cache-dir PATH]"
+              << " [--initial-incumbent-big-m-time-constraints 0|1]"
               << " [--vi-44-k-min-use-cor 0|1]"
               << " [--vi-44-k-min-use-subproblem 0|1]"
               << " [--vi-44-k-min-use-vehicle-assignment 0|1]"
@@ -1836,6 +1842,35 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--initial-incumbent-time-flow") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.initial_incumbent_time_flow = parse_int(argv[++idx], arg);
+            if (options.initial_incumbent_time_flow < 0 ||
+                options.initial_incumbent_time_flow > 2) {
+                throw std::runtime_error(arg + " must be 0, 1, or 2.");
+            }
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-cache-dir") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.initial_incumbent_cache_dir = argv[++idx];
+            continue;
+        }
+
+        if (arg == "--initial-incumbent-big-m-time-constraints") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.initial_incumbent_big_m_time_constraints =
+                parse_binary_flag(argv[++idx], arg);
+            continue;
+        }
+
         if (arg == "--vi-44-subproblem-add-time-flow") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
@@ -2317,6 +2352,10 @@ void print_instance_summary(
     out << "[main] type_travel_time_cover_threads: " << args.type_travel_time_cover_threads << '\n';
     out << "[main] type_travel_time_cover_cache_dir: " << args.type_travel_time_cover_cache_dir << '\n';
     out << "[main] vi_44_subproblem_add_time_flow: " << args.vi_44_subproblem_add_time_flow << '\n';
+    out << "[main] initial_incumbent_time_flow: " << args.initial_incumbent_time_flow << '\n';
+    out << "[main] initial_incumbent_cache_dir: " << args.initial_incumbent_cache_dir << '\n';
+    out << "[main] initial_incumbent_big_m_time_constraints: "
+        << args.initial_incumbent_big_m_time_constraints << '\n';
     out << "[main] vi_44_k_min_use_cor: " << args.vi_44_k_min_use_cor << '\n';
     out << "[main] vi_44_k_min_use_subproblem: "
         << args.vi_44_k_min_use_subproblem << '\n';
@@ -2909,6 +2948,8 @@ int main(int argc, char** argv) {
             }
         }
 
+        std::filesystem::path incumbent_cache_path;
+        bool incumbent_cache_loaded = false;
         if (args.solve_model == 1 && args.initial_incumbent_enable == 1) {
             if (!precomputed_k_min_result.has_value()) {
                 throw std::runtime_error(
@@ -2930,6 +2971,70 @@ int main(int argc, char** argv) {
                 << args.initial_incumbent_timeout_action << '\n';
             output_file << "[initial-incumbent] backend="
                 << args.initial_incumbent_backend << '\n';
+
+            // Incumbent cache: the recovered incumbent depends only on the
+            // instance, the main graph, and k, so configuration comparisons
+            // can reuse it instead of repeating the fixed-K MILP search.
+            const std::uint64_t main_graph_fingerprint = spdp::multigraph_fingerprint(graph);
+            if (!args.initial_incumbent_cache_dir.empty()) {
+                incumbent_cache_path = std::filesystem::path(args.initial_incumbent_cache_dir) /
+                    (std::filesystem::path(args.instance).stem().string() + ".incumbent.txt");
+                std::ifstream cache_in(incumbent_cache_path);
+                if (cache_in) {
+                    std::string key;
+                    std::uint64_t cached_fingerprint = 0;
+                    int cached_k = 0;
+                    std::vector<int> cached_edges;
+                    while (cache_in >> key) {
+                        if (key == "fingerprint") {
+                            cache_in >> cached_fingerprint;
+                        } else if (key == "k") {
+                            cache_in >> cached_k;
+                        } else if (key == "edges") {
+                            int edge_id = 0;
+                            while (cache_in >> edge_id) {
+                                cached_edges.push_back(edge_id);
+                            }
+                        }
+                    }
+                    if (cached_fingerprint == main_graph_fingerprint &&
+                        cached_k == initial_k && !cached_edges.empty()) {
+                        spdp::RecoveredSolution recovered =
+                            spdp::recover_selected_edge_solution(
+                                data, graph, cached_edges, 0.0, 0.0);
+                        if (recovered.routes.size() == static_cast<std::size_t>(cached_k)) {
+                            initial_incumbent_duration = 0.0;
+                            initial_incumbent_original_cost = 0.0;
+                            for (const spdp::RecoveredRouteSolution& route : recovered.routes) {
+                                initial_incumbent_duration += route.total_time;
+                                initial_incumbent_original_cost += route.total_cost;
+                            }
+                            recovered.objective_value = initial_incumbent_original_cost;
+                            initial_edge_start.assign(graph.number_of_edges(), 0.0);
+                            for (int edge_id : recovered.active_edge_ids) {
+                                initial_edge_start[static_cast<std::size_t>(edge_id)] = 1.0;
+                            }
+                            initial_incumbent_solution = std::move(recovered);
+                            incumbent_cache_loaded = true;
+                            output_file << "[initial-incumbent] cache_hit=1 path="
+                                << incumbent_cache_path.string() << '\n';
+                            output_file << "[initial-incumbent] k_min=" << initial_k
+                                << " incumbent_k=" << cached_k << " (cached)\n";
+                            output_file << "[initial-incumbent] route_count="
+                                << initial_incumbent_solution->routes.size() << '\n';
+                            output_file << "[initial-incumbent] total_duration="
+                                << format_double(initial_incumbent_duration) << '\n';
+                            output_file << "[initial-incumbent] original_cost="
+                                << format_double(initial_incumbent_original_cost) << '\n';
+                        }
+                    }
+                }
+                if (!incumbent_cache_loaded) {
+                    output_file << "[initial-incumbent] cache_hit=0 path="
+                        << incumbent_cache_path.string() << '\n';
+                }
+            }
+            if (!incumbent_cache_loaded) {
             output_file << "[initial-incumbent] milp_mode="
                 << args.initial_incumbent_milp_mode << '\n';
             output_file << "[initial-incumbent] milp_makespan_horizon_factor="
@@ -2979,6 +3084,9 @@ int main(int argc, char** argv) {
             search_options.per_attempt_time_limit =
                 args.initial_incumbent_time_limit;
             search_options.gurobi_threads = args.gurobi_threads;
+            search_options.time_flow_formulation = args.initial_incumbent_time_flow;
+            search_options.keep_big_m_time_constraints =
+                args.initial_incumbent_big_m_time_constraints == 1;
             search_options.gurobi_log_base_path =
                 build_initial_incumbent_gurobi_log_path(args.instance, args.output_dir).string();
             search_options.cp_sat_log_base_path =
@@ -3252,6 +3360,21 @@ int main(int argc, char** argv) {
                 for (int edge_id : recovered.active_edge_ids) {
                     initial_edge_start[static_cast<std::size_t>(edge_id)] = 1.0;
                 }
+                if (!incumbent_cache_path.empty()) {
+                    std::filesystem::create_directories(incumbent_cache_path.parent_path());
+                    std::ofstream cache_out(incumbent_cache_path, std::ios::trunc);
+                    if (cache_out) {
+                        cache_out << "fingerprint " << main_graph_fingerprint << '\n';
+                        cache_out << "k " << recovered.routes.size() << '\n';
+                        cache_out << "edges";
+                        for (int edge_id : recovered.active_edge_ids) {
+                            cache_out << ' ' << edge_id;
+                        }
+                        cache_out << '\n';
+                        output_file << "[initial-incumbent] cache_written=1 path="
+                            << incumbent_cache_path.string() << '\n';
+                    }
+                }
                 initial_incumbent_solution = std::move(recovered);
 
                 output_file << "[initial-incumbent] route_validation=passed\n";
@@ -3267,6 +3390,7 @@ int main(int argc, char** argv) {
             } else {
                 output_file << "[initial-incumbent] status=no-solution-continue\n";
             }
+            }  // incumbent search (skipped on cache hit)
         } else {
             output_file << "[initial-incumbent] attempted=0\n";
         }
@@ -3638,6 +3762,28 @@ int main(int argc, char** argv) {
                         direct_options
                     );
                 print_direct_two_index_summary(output_file, direct_result);
+                if (!incumbent_cache_path.empty() && !incumbent_cache_loaded &&
+                    !std::filesystem::exists(incumbent_cache_path) &&
+                    direct_result.has_feasible_solution && cached_k_min != nullptr &&
+                    direct_result.vehicle_count == cached_k_min->selected_k_min) {
+                    // No incumbent was cached (the fixed-K MILP timed out): keep
+                    // the best main-solve solution so later runs start from it.
+                    std::filesystem::create_directories(incumbent_cache_path.parent_path());
+                    std::ofstream cache_out(incumbent_cache_path, std::ios::trunc);
+                    if (cache_out) {
+                        cache_out << "fingerprint " << spdp::multigraph_fingerprint(graph) << '\n';
+                        cache_out << "k " << direct_result.vehicle_count << '\n';
+                        cache_out << "edges";
+                        for (std::size_t edge_id = 0; edge_id < direct_result.edge_values.size(); ++edge_id) {
+                            if (direct_result.edge_values[edge_id] > 0.5) {
+                                cache_out << ' ' << edge_id;
+                            }
+                        }
+                        cache_out << '\n';
+                        output_file << "[initial-incumbent] cache_written_from_main_solution=1 path="
+                            << incumbent_cache_path.string() << '\n';
+                    }
+                }
                 {
                     std::ofstream edge_dump_file(
                         build_edge_dump_output_path(args.instance, args.p, args.output_dir)

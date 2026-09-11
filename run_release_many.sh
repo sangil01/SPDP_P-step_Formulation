@@ -21,9 +21,9 @@ fi
 P=0 # 0 uses the direct two-index model when SOLVER_MODE=enumeration
 SOLVER_MODE=enumeration # Options: enumeration, branch-and-price
 ENUMERATION_SOS1_MODE=default # Options: default, sos1-auto, sos1-native (used only with SOLVER_MODE=enumeration)
-ENUMERATION_MODEL_TYPE=lp # Options: ip, lp (lp is supported for P=0 direct two-index enumeration)
-ENUMERATION_OBJECTIVE=travel-cost-only  # Options: original-cost, travel-cost-only, duration, duration-plus-fixed (used only with SOLVER_MODE=enumeration)
-ADD_FIXED_VEHICLE_NUMBER=1 # Uses the selected k_min; supported for P=0 direct two-index enumeration
+ENUMERATION_MODEL_TYPE=ip # Options: ip, lp (lp is supported for P=0 direct two-index enumeration)
+ENUMERATION_OBJECTIVE=original-cost  # Options: original-cost, travel-cost-only, duration, duration-plus-fixed (used only with SOLVER_MODE=enumeration)
+ADD_FIXED_VEHICLE_NUMBER=0 # Uses the selected k_min; supported for P=0 direct two-index enumeration
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
@@ -80,6 +80,29 @@ ADD_CONNECTIVITY_CUTS=0 # 1 separates connectivity cuts (max-flow) as Gurobi use
 CONNECTIVITY_CUT_SCOPE=full-tree # Options: root-only, full-tree
 CONNECTIVITY_CUT_RHS=duration # Options: one, duration
 CONNECTIVITY_CUT_MAX_PER_ROUND=8
+VI_36_TREATMENT_BOUNDARY=1 # 1: legacy COR projection (treatment between two pickups counts as re-entry); 0: real graph boundary (stronger on the multigraph)
+ADD_CAPACITY_BLOSSOM_CUTS=0 # 1 separates odd-set capacity cuts for pickup/delivery sets (exact Padberg-Rao) as user cuts
+CAPACITY_BLOSSOM_SCOPE=adaptive-tree # Options: root-only, adaptive-tree, full-tree
+CAPACITY_BLOSSOM_ROW_FORM=internal # Options: internal, inbound
+CAPACITY_BLOSSOM_ROOT_MAX_ROUNDS=20
+CAPACITY_BLOSSOM_ROOT_MAX_CUTS=256
+CAPACITY_BLOSSOM_ROOT_MAX_PER_ROUND=32
+CAPACITY_BLOSSOM_TREE_MAX_PER_ROUND=8
+CAPACITY_BLOSSOM_TREE_DENSE_NODE_LIMIT=50
+CAPACITY_BLOSSOM_TREE_FREQUENCY=100
+CAPACITY_BLOSSOM_MAX_TOTAL=2000
+ADD_TYPE_TRAVEL_TIME_COVER_CUTS=0 # 1 adds sum_{delta^-(S_H)} y >= rho(H) for type-closed sets S_H (certified duration IPs on metric-closed restricted instances)
+TYPE_TRAVEL_TIME_COVER_MODE=screened # Options: static, screened
+TYPE_TRAVEL_TIME_COVER_MAX_TYPE_SET_SIZE=0 # 0: every union of types
+TYPE_TRAVEL_TIME_COVER_SUBPROBLEM_TIME_LIMIT=20
+TYPE_TRAVEL_TIME_COVER_TOTAL_TIME_LIMIT=120
+TYPE_TRAVEL_TIME_COVER_MAX_PER_ROUND=8
+TYPE_TRAVEL_TIME_COVER_THREADS=1
+TYPE_TRAVEL_TIME_COVER_CACHE_DIR= # empty disables the certificate cache
+VI_44_SUBPROBLEM_ADD_TIME_FLOW=0 # 0/1/2 time-flow rows in the k_min duration IP (same meaning as ADD_TIME_FLOW_FORMULATION)
+INITIAL_INCUMBENT_TIME_FLOW=0 # 0/1/2 time-flow rows in the fixed-K incumbent MILP
+INITIAL_INCUMBENT_BIG_M_TIME_CONSTRAINTS=1 # 0 drops the big-M rows when INITIAL_INCUMBENT_TIME_FLOW > 0
+INITIAL_INCUMBENT_CACHE_DIR= # empty disables the incumbent cache
 VI_44_K_MIN_USE_COR=1
 VI_44_K_MIN_USE_SUBPROBLEM=1
 VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT=0
@@ -222,7 +245,7 @@ fi
 RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}${ENUMERATION_SOS1_TAG}${RUN_TAG_SUFFIX}"
 RUN_TAG+="_dgmp${DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL}-dges${DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS}-igmp${INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL}-rbs${VI_44_DURATION_IP_ROUNDED_BOUND_STOP}"
 RUN_TAG+="-vifs${VI_44_SUBPROBLEM_DFF_FS_ENABLE}"
-RUN_TAG+="-tf${ADD_TIME_FLOW_FORMULATION}-cc${ADD_CONNECTIVITY_CUTS}"
+RUN_TAG+="-tf${ADD_TIME_FLOW_FORMULATION}-cc${ADD_CONNECTIVITY_CUTS}-cb${ADD_CAPACITY_BLOSSOM_CUTS}-ttc${ADD_TYPE_TRAVEL_TIME_COVER_CUTS}-tb${VI_36_TREATMENT_BOUNDARY}"
 if [[ "$INITIAL_INCUMBENT_ENABLE" == "1" ]]; then
     RUN_TAG+="_initial-incumbent-${INITIAL_INCUMBENT_BACKEND}-${INITIAL_INCUMBENT_TIME_LIMIT}s-kinc${INITIAL_INCUMBENT_MAX_K_INCREMENTS}-timeout-${INITIAL_INCUMBENT_TIMEOUT_ACTION}"
     if [[ "$INITIAL_INCUMBENT_BACKEND" == "two-index-milp" ]]; then
@@ -371,6 +394,11 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "connectivity-cut-scope: $CONNECTIVITY_CUT_SCOPE"
         echo "connectivity-cut-rhs: $CONNECTIVITY_CUT_RHS"
         echo "connectivity-cut-max-per-round: $CONNECTIVITY_CUT_MAX_PER_ROUND"
+        echo "vi-36-treatment-boundary: $VI_36_TREATMENT_BOUNDARY"
+        echo "add-capacity-blossom-cuts: $ADD_CAPACITY_BLOSSOM_CUTS ($CAPACITY_BLOSSOM_SCOPE, $CAPACITY_BLOSSOM_ROW_FORM)"
+        echo "add-type-travel-time-cover-cuts: $ADD_TYPE_TRAVEL_TIME_COVER_CUTS ($TYPE_TRAVEL_TIME_COVER_MODE, max set size $TYPE_TRAVEL_TIME_COVER_MAX_TYPE_SET_SIZE)"
+        echo "vi-44-subproblem-add-time-flow: $VI_44_SUBPROBLEM_ADD_TIME_FLOW"
+        echo "initial-incumbent-time-flow: $INITIAL_INCUMBENT_TIME_FLOW (big-M $INITIAL_INCUMBENT_BIG_M_TIME_CONSTRAINTS)"
         echo "vi-44-k-min-use-cor: $VI_44_K_MIN_USE_COR"
         echo "vi-44-k-min-use-subproblem: $VI_44_K_MIN_USE_SUBPROBLEM"
         echo "vi-44-k-min-use-vehicle-assignment: $VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT"
@@ -449,6 +477,29 @@ for data_name in "${DATA_LIST[@]}"; do
         --connectivity-cut-scope "$CONNECTIVITY_CUT_SCOPE" \
         --connectivity-cut-rhs "$CONNECTIVITY_CUT_RHS" \
         --connectivity-cut-max-per-round "$CONNECTIVITY_CUT_MAX_PER_ROUND" \
+        --vi-36-treatment-boundary "$VI_36_TREATMENT_BOUNDARY" \
+        --add-capacity-blossom-cuts "$ADD_CAPACITY_BLOSSOM_CUTS" \
+        --capacity-blossom-scope "$CAPACITY_BLOSSOM_SCOPE" \
+        --capacity-blossom-row-form "$CAPACITY_BLOSSOM_ROW_FORM" \
+        --capacity-blossom-root-max-rounds "$CAPACITY_BLOSSOM_ROOT_MAX_ROUNDS" \
+        --capacity-blossom-root-max-cuts "$CAPACITY_BLOSSOM_ROOT_MAX_CUTS" \
+        --capacity-blossom-root-max-per-round "$CAPACITY_BLOSSOM_ROOT_MAX_PER_ROUND" \
+        --capacity-blossom-tree-max-per-round "$CAPACITY_BLOSSOM_TREE_MAX_PER_ROUND" \
+        --capacity-blossom-tree-dense-node-limit "$CAPACITY_BLOSSOM_TREE_DENSE_NODE_LIMIT" \
+        --capacity-blossom-tree-frequency "$CAPACITY_BLOSSOM_TREE_FREQUENCY" \
+        --capacity-blossom-max-total "$CAPACITY_BLOSSOM_MAX_TOTAL" \
+        --add-type-travel-time-cover-cuts "$ADD_TYPE_TRAVEL_TIME_COVER_CUTS" \
+        --type-travel-time-cover-mode "$TYPE_TRAVEL_TIME_COVER_MODE" \
+        --type-travel-time-cover-max-type-set-size "$TYPE_TRAVEL_TIME_COVER_MAX_TYPE_SET_SIZE" \
+        --type-travel-time-cover-subproblem-time-limit "$TYPE_TRAVEL_TIME_COVER_SUBPROBLEM_TIME_LIMIT" \
+        --type-travel-time-cover-total-time-limit "$TYPE_TRAVEL_TIME_COVER_TOTAL_TIME_LIMIT" \
+        --type-travel-time-cover-max-per-round "$TYPE_TRAVEL_TIME_COVER_MAX_PER_ROUND" \
+        --type-travel-time-cover-threads "$TYPE_TRAVEL_TIME_COVER_THREADS" \
+        ${TYPE_TRAVEL_TIME_COVER_CACHE_DIR:+--type-travel-time-cover-cache-dir "$TYPE_TRAVEL_TIME_COVER_CACHE_DIR"} \
+        --vi-44-subproblem-add-time-flow "$VI_44_SUBPROBLEM_ADD_TIME_FLOW" \
+        --initial-incumbent-time-flow "$INITIAL_INCUMBENT_TIME_FLOW" \
+        --initial-incumbent-big-m-time-constraints "$INITIAL_INCUMBENT_BIG_M_TIME_CONSTRAINTS" \
+        ${INITIAL_INCUMBENT_CACHE_DIR:+--initial-incumbent-cache-dir "$INITIAL_INCUMBENT_CACHE_DIR"} \
         --vi-44-k-min-use-cor "$VI_44_K_MIN_USE_COR" \
         --vi-44-k-min-use-subproblem "$VI_44_K_MIN_USE_SUBPROBLEM" \
         --vi-44-k-min-use-vehicle-assignment "$VI_44_K_MIN_USE_VEHICLE_ASSIGNMENT" \
