@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -17,19 +18,238 @@ using detail::TwoIndexCoreObjective;
 using detail::TwoIndexCoreOptions;
 using detail::build_two_index_model_core;
 
-// User-cut callback: separates connectivity cuts on node LP relaxations.
-class ConnectivityCutCallback : public GRBCallback {
+// Shared state of the three cut families for one direct two-index solve.
+struct CutContext {
+    // Type-closed travel-time cover rows (screened mode only).
+    const std::vector<TypeTravelTimeCoverRow>* cover_rows = nullptr;
+    std::vector<bool> cover_added;
+    const TypeTravelTimeCoverOptions* cover_options = nullptr;
+    TypeTravelTimeCoverStats* cover_stats = nullptr;
+    // Capacity blossom cuts.
+    const CapacityBlossomSeparator* blossom_separator = nullptr;
+    const CapacityBlossomOptions* blossom_options = nullptr;
+    CapacityBlossomPool blossom_pool;
+    CapacityBlossomStats* blossom_stats = nullptr;
+    std::size_t blossom_root_rounds = 0;
+    std::size_t blossom_root_empty_rounds = 0;
+    std::size_t blossom_root_weak_rounds = 0;
+    bool blossom_root_closed = false;
+    bool blossom_tree_closed = false;
+    // Connectivity cuts.
+    const ConnectivitySeparator* connectivity_separator = nullptr;
+    const ConnectivityCutOptions* connectivity_options = nullptr;
+    ConnectivityCutStats* connectivity_stats = nullptr;
+};
+
+bool cover_enabled(const CutContext& context) {
+    return context.cover_rows != nullptr && context.cover_options != nullptr &&
+        context.cover_options->enabled &&
+        context.cover_options->mode == TypeTravelTimeCoverMode::Screened &&
+        !context.cover_rows->empty();
+}
+
+bool blossom_enabled(const CutContext& context) {
+    return context.blossom_separator != nullptr && context.blossom_options != nullptr &&
+        context.blossom_options->enabled;
+}
+
+bool connectivity_enabled(const CutContext& context) {
+    return context.connectivity_separator != nullptr &&
+        context.connectivity_options != nullptr && context.connectivity_options->enabled;
+}
+
+// Decides whether the capacity blossom separator runs at this node and how many
+// cuts it may return; zero means skip.
+std::size_t blossom_budget_at_node(
+    CutContext& context,
+    bool is_root,
+    double node_count,
+    double runtime_seconds
+) {
+    const CapacityBlossomOptions& options = *context.blossom_options;
+    CapacityBlossomStats& stats = *context.blossom_stats;
+    if (stats.cuts_added >= options.max_total_cuts) {
+        stats.stopped_by_total_cap = true;
+        return 0;
+    }
+    if (is_root) {
+        if (context.blossom_root_closed) {
+            return 0;
+        }
+        if (context.blossom_root_rounds >= options.root_max_rounds ||
+            stats.root_cuts_added >= options.root_max_cuts) {
+            context.blossom_root_closed = true;
+            return 0;
+        }
+        return std::min(
+            options.root_max_per_round,
+            options.root_max_cuts - stats.root_cuts_added
+        );
+    }
+    if (options.scope == CapacityBlossomScope::RootOnly || context.blossom_tree_closed) {
+        return 0;
+    }
+    if (options.max_separation_time_fraction > 0.0 && runtime_seconds > 5.0 &&
+        stats.separation_seconds > options.max_separation_time_fraction * runtime_seconds) {
+        stats.stopped_by_time_fraction = true;
+        context.blossom_tree_closed = true;
+        return 0;
+    }
+    if (options.scope == CapacityBlossomScope::AdaptiveTree) {
+        const auto node = static_cast<unsigned long long>(node_count + 0.5);
+        const bool dense_phase = node < options.tree_dense_node_limit;
+        const bool periodic = options.tree_node_frequency > 0U &&
+            node % options.tree_node_frequency == 0ULL;
+        if (!dense_phase && !periodic) {
+            return 0;
+        }
+    }
+    return options.tree_max_per_round;
+}
+
+// Applies one round of every enabled family to the fractional point y and
+// returns the rows to add. Also updates statistics and pools.
+struct RoundOutput {
+    std::vector<PstepValidInequalityRow> rows;
+    std::size_t cover_count = 0;
+    std::size_t blossom_count = 0;
+    std::size_t connectivity_count = 0;
+    double blossom_best_violation = 0.0;
+};
+
+RoundOutput separate_round(
+    CutContext& context,
+    const std::vector<double>& y_values,
+    bool is_root,
+    double node_count,
+    double runtime_seconds,
+    bool lp_mode
+) {
+    RoundOutput output;
+
+    if (cover_enabled(context)) {
+        const auto start = std::chrono::steady_clock::now();
+        const std::vector<std::size_t> indices = screen_type_travel_time_cover_rows(
+            *context.cover_rows,
+            y_values,
+            context.cover_added,
+            context.cover_options->violation_tolerance,
+            context.cover_options->max_per_round
+        );
+        for (std::size_t index : indices) {
+            context.cover_added[index] = true;
+            output.rows.push_back((*context.cover_rows)[index].row);
+            ++output.cover_count;
+            ++context.cover_stats->rows_added;
+            if (is_root) {
+                ++context.cover_stats->root_rows_added;
+            }
+        }
+        ++context.cover_stats->screening_rounds;
+        context.cover_stats->screening_seconds +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    }
+
+    if (blossom_enabled(context)) {
+        std::size_t budget = 0;
+        if (lp_mode) {
+            budget = context.blossom_options->root_max_per_round;
+        } else {
+            budget = blossom_budget_at_node(context, is_root, node_count, runtime_seconds);
+        }
+        if (budget > 0U) {
+            const std::vector<CapacityBlossomCut> cuts = separate_capacity_blossom_cuts(
+                *context.blossom_separator,
+                y_values,
+                *context.blossom_options,
+                budget,
+                context.blossom_pool,
+                *context.blossom_stats
+            );
+            for (const CapacityBlossomCut& cut : cuts) {
+                output.rows.push_back(cut.row);
+                output.blossom_best_violation =
+                    std::max(output.blossom_best_violation, cut.violation);
+            }
+            output.blossom_count = cuts.size();
+            ++context.blossom_stats->rounds;
+            context.blossom_stats->cuts_added += cuts.size();
+            if (is_root) {
+                ++context.blossom_stats->root_rounds;
+                context.blossom_stats->root_cuts_added += cuts.size();
+                if (!lp_mode) {
+                    ++context.blossom_root_rounds;
+                    if (cuts.empty()) {
+                        ++context.blossom_root_empty_rounds;
+                    } else {
+                        context.blossom_root_empty_rounds = 0;
+                    }
+                    if (output.blossom_best_violation <
+                        context.blossom_options->root_tailing_off_violation) {
+                        ++context.blossom_root_weak_rounds;
+                    } else {
+                        context.blossom_root_weak_rounds = 0;
+                    }
+                    if (context.blossom_root_empty_rounds >= 2U ||
+                        context.blossom_root_weak_rounds >= 2U) {
+                        context.blossom_root_closed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (connectivity_enabled(context) &&
+        (is_root || !context.connectivity_options->root_only)) {
+        const auto start = std::chrono::steady_clock::now();
+        const std::vector<PstepValidInequalityRow> cuts = separate_connectivity_cuts(
+            *context.connectivity_separator,
+            y_values,
+            *context.connectivity_options
+        );
+        for (const PstepValidInequalityRow& row : cuts) {
+            output.rows.push_back(row);
+            ++context.connectivity_stats->cuts_added;
+            if (is_root) {
+                ++context.connectivity_stats->root_cuts_added;
+            }
+            if (row.rhs >= 2.0 - 1e-9) {
+                ++context.connectivity_stats->rhs_two_or_more_cuts;
+            }
+        }
+        output.connectivity_count = cuts.size();
+        ++context.connectivity_stats->rounds;
+        context.connectivity_stats->separation_seconds +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    }
+    return output;
+}
+
+GRBTempConstr row_to_temp_constr(
+    const PstepValidInequalityRow& row,
+    const std::vector<GRBVar>& y_vars
+) {
+    GRBLinExpr expression = 0.0;
+    for (const auto& term : row.edge_terms) {
+        expression += term.second * y_vars[term.first];
+    }
+    switch (row.sense) {
+        case PstepValidInequalitySense::GreaterEqual:
+            return expression >= row.rhs;
+        case PstepValidInequalitySense::LessEqual:
+            return expression <= row.rhs;
+        case PstepValidInequalitySense::Equal:
+            return expression == row.rhs;
+    }
+    throw std::runtime_error("Unknown valid inequality sense.");
+}
+
+// User-cut callback shared by every cut family. One node relaxation is read per
+// invocation and handed to all separators.
+class DirectTwoIndexCutCallback : public GRBCallback {
 public:
-    ConnectivityCutCallback(
-        const ConnectivitySeparator& separator,
-        const ConnectivityCutOptions& options,
-        std::vector<GRBVar>& y_vars,
-        ConnectivityCutStats& stats
-    )
-        : separator_(separator),
-          options_(options),
-          y_vars_(y_vars),
-          stats_(stats) {}
+    DirectTwoIndexCutCallback(CutContext& context, std::vector<GRBVar>& y_vars)
+        : context_(context), y_vars_(y_vars) {}
 
 protected:
     void callback() override {
@@ -41,42 +261,38 @@ protected:
         }
         const double node_count = getDoubleInfo(GRB_CB_MIPNODE_NODCNT);
         const bool is_root = node_count < 0.5;
-        if (options_.root_only && !is_root) {
+        const double runtime_seconds = getDoubleInfo(GRB_CB_RUNTIME);
+
+        const bool want_cover = cover_enabled(context_) &&
+            std::find(context_.cover_added.begin(), context_.cover_added.end(), false) !=
+                context_.cover_added.end();
+        const bool want_blossom = blossom_enabled(context_) &&
+            (is_root ? !context_.blossom_root_closed
+                     : (context_.blossom_options->scope != CapacityBlossomScope::RootOnly &&
+                        !context_.blossom_tree_closed));
+        const bool want_connectivity = connectivity_enabled(context_) &&
+            (is_root || !context_.connectivity_options->root_only);
+        if (!want_cover && !want_blossom && !want_connectivity) {
             return;
         }
-        const auto start = std::chrono::steady_clock::now();
+
         std::vector<double> values(y_vars_.size(), 0.0);
         double* raw = getNodeRel(y_vars_.data(), static_cast<int>(y_vars_.size()));
         for (std::size_t i = 0; i < values.size(); ++i) {
             values[i] = raw[i];
         }
         delete[] raw;
-        const std::vector<PstepValidInequalityRow> cuts =
-            separate_connectivity_cuts(separator_, values, options_);
-        for (const PstepValidInequalityRow& row : cuts) {
-            GRBLinExpr expression = 0.0;
-            for (const auto& term : row.edge_terms) {
-                expression += term.second * y_vars_[term.first];
-            }
-            addCut(expression >= row.rhs);
-            ++stats_.cuts_added;
-            if (is_root) {
-                ++stats_.root_cuts_added;
-            }
-            if (row.rhs >= 2.0 - 1e-9) {
-                ++stats_.rhs_two_or_more_cuts;
-            }
+
+        const RoundOutput output =
+            separate_round(context_, values, is_root, node_count, runtime_seconds, false);
+        for (const PstepValidInequalityRow& row : output.rows) {
+            addCut(row_to_temp_constr(row, y_vars_));
         }
-        ++stats_.rounds;
-        stats_.separation_seconds +=
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     }
 
 private:
-    const ConnectivitySeparator& separator_;
-    const ConnectivityCutOptions& options_;
+    CutContext& context_;
     std::vector<GRBVar>& y_vars_;
-    ConnectivityCutStats& stats_;
 };
 
 }  // namespace
@@ -138,30 +354,28 @@ DirectTwoIndexResult solve_direct_two_index_model(
             options.valid_inequalities
         );
     for (const PstepValidInequalityRow& row : vi_rows) {
-        GRBLinExpr expression = 0.0;
         for (const auto& term : row.edge_terms) {
             if (term.first >= core.y_vars.size()) {
                 throw std::runtime_error(
                     "A direct two-index valid inequality references an invalid edge."
                 );
             }
-            expression += term.second * core.y_vars[term.first];
         }
-        switch (row.sense) {
-            case PstepValidInequalitySense::GreaterEqual:
-                core.model->addConstr(expression >= row.rhs, row.name);
-                break;
-            case PstepValidInequalitySense::LessEqual:
-                core.model->addConstr(expression <= row.rhs, row.name);
-                break;
-            case PstepValidInequalitySense::Equal:
-                core.model->addConstr(expression == row.rhs, row.name);
-                break;
+        core.model->addConstr(row_to_temp_constr(row, core.y_vars), row.name);
+    }
+
+    DirectTwoIndexResult result;
+    result.type_cover_stats.rows_available = options.type_cover_rows.size();
+    if (options.type_cover.enabled &&
+        options.type_cover.mode == TypeTravelTimeCoverMode::Static) {
+        for (const TypeTravelTimeCoverRow& row : options.type_cover_rows) {
+            core.model->addConstr(row_to_temp_constr(row.row, core.y_vars), row.row.name);
+            ++result.type_cover_stats.rows_added;
+            ++result.type_cover_stats.root_rows_added;
         }
     }
     core.model->update();
 
-    DirectTwoIndexResult result;
     result.model_type = options.model_type;
     result.variable_count = core.model->get(GRB_IntAttr_NumVars);
     result.time_flow_infeasible_edge_count = core.time_flow_infeasible_edge_count;
@@ -171,26 +385,42 @@ DirectTwoIndexResult solve_direct_two_index_model(
     result.valid_inequality_count =
         static_cast<int>(vi_rows.size()) - result.fixed_vehicle_constraint_count;
 
+    CutContext context;
     ConnectivitySeparator connectivity_separator;
-    std::unique_ptr<ConnectivityCutCallback> connectivity_callback;
-    if (options.connectivity_cuts.enabled &&
-        options.model_type == DirectTwoIndexModelType::IP) {
+    CapacityBlossomSeparator blossom_separator;
+    if (options.type_cover.enabled &&
+        options.type_cover.mode == TypeTravelTimeCoverMode::Screened) {
+        context.cover_rows = &options.type_cover_rows;
+        context.cover_added.assign(options.type_cover_rows.size(), false);
+        context.cover_options = &options.type_cover;
+        context.cover_stats = &result.type_cover_stats;
+    }
+    if (options.capacity_blossom.enabled) {
+        blossom_separator = build_capacity_blossom_separator(graph);
+        context.blossom_separator = &blossom_separator;
+        context.blossom_options = &options.capacity_blossom;
+        context.blossom_stats = &result.capacity_blossom_stats;
+    }
+    if (options.connectivity_cuts.enabled) {
         connectivity_separator = build_connectivity_separator(data, graph);
-        connectivity_callback = std::make_unique<ConnectivityCutCallback>(
-            connectivity_separator,
-            options.connectivity_cuts,
-            core.y_vars,
-            result.connectivity_cut_stats
-        );
+        context.connectivity_separator = &connectivity_separator;
+        context.connectivity_options = &options.connectivity_cuts;
+        context.connectivity_stats = &result.connectivity_cut_stats;
+    }
+    const bool any_dynamic_family =
+        cover_enabled(context) || blossom_enabled(context) || connectivity_enabled(context);
+
+    std::unique_ptr<DirectTwoIndexCutCallback> cut_callback;
+    if (any_dynamic_family && options.model_type == DirectTwoIndexModelType::IP) {
+        cut_callback = std::make_unique<DirectTwoIndexCutCallback>(context, core.y_vars);
         core.model->set(GRB_IntParam_PreCrush, 1);
-        core.model->setCallback(connectivity_callback.get());
+        core.model->setCallback(cut_callback.get());
     }
 
     core.model->optimize();
-    if (options.connectivity_cuts.enabled &&
-        options.model_type == DirectTwoIndexModelType::LP) {
-        // LP cutting-plane loop: separate connectivity cuts until none is violated.
-        connectivity_separator = build_connectivity_separator(data, graph);
+    if (any_dynamic_family && options.model_type == DirectTwoIndexModelType::LP) {
+        // LP cutting-plane loop: every family is separated until no family
+        // returns a violated row (or the round limit is reached).
         std::vector<double> values(core.y_vars.size(), 0.0);
         for (std::size_t round = 0; round < 500; ++round) {
             if (core.model->get(GRB_IntAttr_Status) != GRB_OPTIMAL) {
@@ -199,36 +429,18 @@ DirectTwoIndexResult solve_direct_two_index_model(
             for (std::size_t i = 0; i < values.size(); ++i) {
                 values[i] = core.y_vars[i].get(GRB_DoubleAttr_X);
             }
-            const auto start = std::chrono::steady_clock::now();
-            const std::vector<PstepValidInequalityRow> cuts =
-                separate_connectivity_cuts(
-                    connectivity_separator,
-                    values,
-                    options.connectivity_cuts
-                );
-            result.connectivity_cut_stats.separation_seconds +=
-                std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - start
-                ).count();
-            ++result.connectivity_cut_stats.rounds;
-            if (cuts.empty()) {
+            const RoundOutput output = separate_round(context, values, true, 0.0, 0.0, true);
+            if (output.rows.empty()) {
                 break;
             }
-            for (const PstepValidInequalityRow& row : cuts) {
-                GRBLinExpr expression = 0.0;
-                for (const auto& term : row.edge_terms) {
-                    expression += term.second * core.y_vars[term.first];
-                }
-                core.model->addConstr(expression >= row.rhs, row.name);
-                ++result.connectivity_cut_stats.cuts_added;
-                ++result.connectivity_cut_stats.root_cuts_added;
-                if (row.rhs >= 2.0 - 1e-9) {
-                    ++result.connectivity_cut_stats.rhs_two_or_more_cuts;
-                }
+            for (const PstepValidInequalityRow& row : output.rows) {
+                core.model->addConstr(row_to_temp_constr(row, core.y_vars), row.name);
             }
+            ++result.lp_cut_rounds;
             core.model->optimize();
         }
     }
+
     result.status = core.model->get(GRB_IntAttr_Status);
     result.hit_time_limit = result.status == GRB_TIME_LIMIT;
     result.solved_to_optimality = result.status == GRB_OPTIMAL;

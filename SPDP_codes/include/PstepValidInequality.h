@@ -30,6 +30,13 @@ struct PstepValidInequalityOptions {
     bool add_vi_35 = false;
     bool add_vi_36_combined = false;
     std::size_t vi_36_subset_max_size = 0;
+    // Legacy COR projection: an edge whose embedded treatment lies between two
+    // pickups (or two deliveries) of the subset is counted as leaving and
+    // re-entering the subset. On the action-based multigraph emptying keeps the
+    // slot occupied, so pickups/deliveries joined through a treatment still form
+    // one capacity block; false counts only the real graph boundary, which
+    // strengthens the pickup/delivery rows. Treatment-location rows are unaffected.
+    bool vi_36_treatment_boundary = true;
     bool add_vi_request_block_sec = false;
     std::size_t vi_request_block_sec_max_size = 0;
     bool add_vi_44 = false;

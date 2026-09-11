@@ -109,6 +109,9 @@ struct AuxiliaryDurationSubproblemResult {
     bool hit_time_limit = false;
     bool has_certified_bound = false;
     double objective_value = -1.0;
+    // Sum of edge durations over the selected edges of the best incumbent
+    // (-1 when no incumbent); exact, unlike the solver objective value.
+    double exact_incumbent_duration = -1.0;
     double objective_bound = -1.0;
     double runtime_seconds = 0.0;
     bool stopped_by_rounded_bound = false;
@@ -191,16 +194,22 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
     double solver_time_limit,
     bool binary_y,
     bool add_time_constraints,
-    bool rounded_bound_stop
+    bool rounded_bound_stop,
+    bool add_time_flow_formulation = false,
+    bool time_flow_state_disaggregated = false,
+    int gurobi_threads = 1,
+    const std::string& name_prefix = "vi44_aux"
 ) {
     TwoIndexCoreOptions core_options;
     core_options.objective = TwoIndexCoreObjective::Duration;
     core_options.binary_y = binary_y;
     core_options.add_time_constraints = add_time_constraints;
+    core_options.add_time_flow_formulation = add_time_flow_formulation;
+    core_options.time_flow_state_disaggregated = time_flow_state_disaggregated;
     core_options.solver_time_limit = solver_time_limit;
-    core_options.gurobi_threads = 1;
+    core_options.gurobi_threads = gurobi_threads;
     core_options.output_enabled = false;
-    core_options.name_prefix = "vi44_aux";
+    core_options.name_prefix = name_prefix;
     TwoIndexCoreModel core = build_two_index_model_core(data, graph, core_options);
 
     std::unique_ptr<RoundedObjectiveBoundCallback> callback;
@@ -232,6 +241,15 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
                 std::abs(objective_value) < 0.5 * GRB_INFINITY) {
                 result.objective_value = objective_value;
             }
+            if (binary_y) {
+                double exact_duration = 0.0;
+                for (std::size_t edge_id = 0; edge_id < core.y_vars.size(); ++edge_id) {
+                    if (core.y_vars[edge_id].get(GRB_DoubleAttr_X) > 0.5) {
+                        exact_duration += graph.edges()[edge_id].data.time;
+                    }
+                }
+                result.exact_incumbent_duration = exact_duration;
+            }
         } catch (const GRBException& error) {
             if (error.getErrorCode() != GRB_ERROR_DATA_NOT_AVAILABLE) {
                 throw;
@@ -257,6 +275,9 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
         result.certified_rounded_k = callback->certified_k();
         result.callback_objective_ub = callback->exact_upper_bound();
         result.callback_safe_objective_lb = callback->safe_lower_bound();
+        if (result.exact_incumbent_duration < 0.0 && result.callback_objective_ub >= 0.0) {
+            result.exact_incumbent_duration = result.callback_objective_ub;
+        }
         const std::optional<int> postsolve_certificate =
             result.has_certified_bound
                 ? certified_rounded_objective_bound(
@@ -1145,7 +1166,10 @@ VI44KMinResult compute_vi44_k_min(
                 options.subproblem.time_limit,
                 options.subproblem.type == VI44SubproblemType::IP,
                 options.subproblem.add_time_constraints,
-                options.subproblem.rounded_bound_stop
+                options.subproblem.rounded_bound_stop,
+                options.subproblem.add_time_flow_formulation,
+                options.subproblem.time_flow_state_disaggregated,
+                options.subproblem.gurobi_threads
             );
         result.subproblem_status = auxiliary.status;
         result.subproblem_hit_time_limit = auxiliary.hit_time_limit;
@@ -1334,6 +1358,57 @@ VI44KMinResult compute_vi44_k_min(
         }
     }
 
+    return result;
+}
+
+DurationRoundedBoundResult solve_duration_rounded_bound(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const DurationRoundedBoundOptions& options
+) {
+    if (!std::isfinite(options.solver_time_limit) || options.solver_time_limit < 0.0) {
+        throw std::runtime_error(
+            "The duration rounded-bound time limit must be finite and nonnegative."
+        );
+    }
+    const AuxiliaryDurationSubproblemResult auxiliary =
+        solve_auxiliary_duration_subproblem(
+            data,
+            graph,
+            options.solver_time_limit,
+            true,
+            options.add_time_constraints,
+            options.rounded_bound_stop,
+            options.add_time_flow_formulation,
+            options.time_flow_state_disaggregated,
+            options.gurobi_threads,
+            options.name_prefix
+        );
+    DurationRoundedBoundResult result;
+    result.status = auxiliary.status;
+    result.hit_time_limit = auxiliary.hit_time_limit;
+    result.stopped_by_rounded_bound = auxiliary.stopped_by_rounded_bound;
+    result.runtime_seconds = auxiliary.runtime_seconds;
+    result.exact_upper_bound = auxiliary.exact_incumbent_duration;
+    if (auxiliary.has_certified_bound) {
+        result.has_lower_bound = true;
+        result.objective_bound = auxiliary.objective_bound;
+        result.safe_lower_bound = safe_objective_lower_bound(
+            auxiliary.objective_bound, data.time_limit);
+        result.rounded_lower_bound = std::max(
+            0,
+            static_cast<int>(std::ceil(result.safe_lower_bound / data.time_limit))
+        );
+        if (result.exact_upper_bound >= 0.0) {
+            const std::optional<int> certificate = certified_rounded_objective_bound(
+                result.exact_upper_bound,
+                auxiliary.objective_bound,
+                data.time_limit
+            );
+            result.certified = certificate.has_value() &&
+                certificate.value() == result.rounded_lower_bound;
+        }
+    }
     return result;
 }
 

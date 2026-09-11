@@ -91,6 +91,29 @@ struct CliOptions {
     std::string connectivity_cut_scope = "full-tree";  // root-only, full-tree
     std::string connectivity_cut_rhs = "duration";     // one, duration
     int connectivity_cut_max_per_round = 32;
+    int vi_36_treatment_boundary = 1;
+    int add_capacity_blossom_cuts = 0;
+    std::string capacity_blossom_scope = "adaptive-tree";  // root-only, adaptive-tree, full-tree
+    std::string capacity_blossom_row_form = "internal";    // internal, inbound
+    int capacity_blossom_root_max_rounds = 20;
+    int capacity_blossom_root_max_cuts = 256;
+    int capacity_blossom_root_max_per_round = 32;
+    int capacity_blossom_tree_max_per_round = 8;
+    int capacity_blossom_tree_dense_node_limit = 50;
+    int capacity_blossom_tree_frequency = 100;
+    int capacity_blossom_max_total = 2000;
+    double capacity_blossom_min_violation = 1e-4;
+    double capacity_blossom_time_fraction = 0.15;
+    int add_type_travel_time_cover_cuts = 0;
+    std::string type_travel_time_cover_mode = "screened";  // static, screened
+    int type_travel_time_cover_max_type_set_size = 0;
+    double type_travel_time_cover_subproblem_time_limit = 20.0;
+    double type_travel_time_cover_total_time_limit = 120.0;
+    int type_travel_time_cover_max_per_round = 8;
+    int type_travel_time_cover_min_rho = 1;
+    int type_travel_time_cover_threads = 1;
+    std::string type_travel_time_cover_cache_dir;
+    int vi_44_subproblem_add_time_flow = 0;  // 0 off, 1 node, 2 node-state (k_min duration IP)
     int vi_44_k_min_use_cor = 1;
     int vi_44_k_min_use_subproblem = 0;
     int vi_44_k_min_use_vehicle_assignment = 0;
@@ -185,6 +208,25 @@ void print_usage(const char* executable) {
               << " [--add-vi-request-block-sec 0|1]"
               << " [--vi-request-block-sec-max-size N]"
               << " [--add-vi-44 0|1]"
+              << " [--vi-36-treatment-boundary 0|1]"
+              << " [--add-capacity-blossom-cuts 0|1]"
+              << " [--capacity-blossom-scope root-only|adaptive-tree|full-tree]"
+              << " [--capacity-blossom-row-form internal|inbound]"
+              << " [--capacity-blossom-root-max-rounds N] [--capacity-blossom-root-max-cuts N]"
+              << " [--capacity-blossom-root-max-per-round N] [--capacity-blossom-tree-max-per-round N]"
+              << " [--capacity-blossom-tree-dense-node-limit N] [--capacity-blossom-tree-frequency N]"
+              << " [--capacity-blossom-max-total N] [--capacity-blossom-min-violation X]"
+              << " [--capacity-blossom-time-fraction X]"
+              << " [--add-type-travel-time-cover-cuts 0|1]"
+              << " [--type-travel-time-cover-mode static|screened]"
+              << " [--type-travel-time-cover-max-type-set-size N]"
+              << " [--type-travel-time-cover-subproblem-time-limit T]"
+              << " [--type-travel-time-cover-total-time-limit T]"
+              << " [--type-travel-time-cover-max-per-round N]"
+              << " [--type-travel-time-cover-min-rho N]"
+              << " [--type-travel-time-cover-threads N]"
+              << " [--type-travel-time-cover-cache-dir PATH]"
+              << " [--vi-44-subproblem-add-time-flow 0|1|2]"
               << " [--vi-44-k-min-use-cor 0|1]"
               << " [--vi-44-k-min-use-subproblem 0|1]"
               << " [--vi-44-k-min-use-vehicle-assignment 0|1]"
@@ -623,6 +665,10 @@ spdp::VI44KMinOptions make_vi_44_k_min_options(
         to_vi_44_subproblem_type(args.vi_44_subproblem_type);
     options.subproblem.add_time_constraints =
         args.vi_44_subproblem_add_time_constraints == 1;
+    options.subproblem.add_time_flow_formulation =
+        args.vi_44_subproblem_add_time_flow >= 1;
+    options.subproblem.time_flow_state_disaggregated =
+        args.vi_44_subproblem_add_time_flow == 2;
     options.subproblem.time_limit = args.vi_44_subproblem_time_limit;
     options.subproblem.rounded_bound_stop =
         args.vi_44_duration_ip_rounded_bound_stop == 1;
@@ -1661,6 +1707,147 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--vi-36-treatment-boundary" ||
+            arg == "--add-capacity-blossom-cuts" ||
+            arg == "--add-type-travel-time-cover-cuts") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const int value = parse_binary_flag(argv[++idx], arg);
+            if (arg == "--vi-36-treatment-boundary") {
+                options.vi_36_treatment_boundary = value;
+            } else if (arg == "--add-capacity-blossom-cuts") {
+                options.add_capacity_blossom_cuts = value;
+            } else {
+                options.add_type_travel_time_cover_cuts = value;
+            }
+            continue;
+        }
+
+        if (arg == "--capacity-blossom-scope") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.capacity_blossom_scope = argv[++idx];
+            if (options.capacity_blossom_scope != "root-only" &&
+                options.capacity_blossom_scope != "adaptive-tree" &&
+                options.capacity_blossom_scope != "full-tree") {
+                throw std::runtime_error(arg + " must be root-only, adaptive-tree, or full-tree.");
+            }
+            continue;
+        }
+
+        if (arg == "--capacity-blossom-row-form") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.capacity_blossom_row_form = argv[++idx];
+            if (options.capacity_blossom_row_form != "internal" &&
+                options.capacity_blossom_row_form != "inbound") {
+                throw std::runtime_error(arg + " must be internal or inbound.");
+            }
+            continue;
+        }
+
+        if (arg == "--capacity-blossom-root-max-rounds" ||
+            arg == "--capacity-blossom-root-max-cuts" ||
+            arg == "--capacity-blossom-root-max-per-round" ||
+            arg == "--capacity-blossom-tree-max-per-round" ||
+            arg == "--capacity-blossom-tree-dense-node-limit" ||
+            arg == "--capacity-blossom-tree-frequency" ||
+            arg == "--capacity-blossom-max-total" ||
+            arg == "--type-travel-time-cover-max-type-set-size" ||
+            arg == "--type-travel-time-cover-max-per-round" ||
+            arg == "--type-travel-time-cover-min-rho" ||
+            arg == "--type-travel-time-cover-threads") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const int value = parse_int(argv[++idx], arg);
+            if (value < 0) {
+                throw std::runtime_error(arg + " must be nonnegative.");
+            }
+            if (arg == "--capacity-blossom-root-max-rounds") {
+                options.capacity_blossom_root_max_rounds = value;
+            } else if (arg == "--capacity-blossom-root-max-cuts") {
+                options.capacity_blossom_root_max_cuts = value;
+            } else if (arg == "--capacity-blossom-root-max-per-round") {
+                options.capacity_blossom_root_max_per_round = value;
+            } else if (arg == "--capacity-blossom-tree-max-per-round") {
+                options.capacity_blossom_tree_max_per_round = value;
+            } else if (arg == "--capacity-blossom-tree-dense-node-limit") {
+                options.capacity_blossom_tree_dense_node_limit = value;
+            } else if (arg == "--capacity-blossom-tree-frequency") {
+                options.capacity_blossom_tree_frequency = value;
+            } else if (arg == "--capacity-blossom-max-total") {
+                options.capacity_blossom_max_total = value;
+            } else if (arg == "--type-travel-time-cover-max-type-set-size") {
+                options.type_travel_time_cover_max_type_set_size = value;
+            } else if (arg == "--type-travel-time-cover-max-per-round") {
+                options.type_travel_time_cover_max_per_round = value;
+            } else if (arg == "--type-travel-time-cover-min-rho") {
+                options.type_travel_time_cover_min_rho = value;
+            } else {
+                options.type_travel_time_cover_threads = value;
+            }
+            continue;
+        }
+
+        if (arg == "--capacity-blossom-min-violation" ||
+            arg == "--capacity-blossom-time-fraction" ||
+            arg == "--type-travel-time-cover-subproblem-time-limit" ||
+            arg == "--type-travel-time-cover-total-time-limit") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const double value = parse_double(argv[++idx], arg);
+            if (value < 0.0) {
+                throw std::runtime_error(arg + " must be nonnegative.");
+            }
+            if (arg == "--capacity-blossom-min-violation") {
+                options.capacity_blossom_min_violation = value;
+            } else if (arg == "--capacity-blossom-time-fraction") {
+                options.capacity_blossom_time_fraction = value;
+            } else if (arg == "--type-travel-time-cover-subproblem-time-limit") {
+                options.type_travel_time_cover_subproblem_time_limit = value;
+            } else {
+                options.type_travel_time_cover_total_time_limit = value;
+            }
+            continue;
+        }
+
+        if (arg == "--type-travel-time-cover-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.type_travel_time_cover_mode = argv[++idx];
+            if (options.type_travel_time_cover_mode != "static" &&
+                options.type_travel_time_cover_mode != "screened") {
+                throw std::runtime_error(arg + " must be static or screened.");
+            }
+            continue;
+        }
+
+        if (arg == "--type-travel-time-cover-cache-dir") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.type_travel_time_cover_cache_dir = argv[++idx];
+            continue;
+        }
+
+        if (arg == "--vi-44-subproblem-add-time-flow") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.vi_44_subproblem_add_time_flow = parse_int(argv[++idx], arg);
+            if (options.vi_44_subproblem_add_time_flow < 0 ||
+                options.vi_44_subproblem_add_time_flow > 2) {
+                throw std::runtime_error(arg + " must be 0, 1, or 2.");
+            }
+            continue;
+        }
+
         if (arg == "--add-vi-44") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error("--add-vi-44 requires a value.");
@@ -2107,6 +2294,29 @@ void print_instance_summary(
     out << "[main] connectivity_cut_rhs: " << args.connectivity_cut_rhs << '\n';
     out << "[main] connectivity_cut_max_per_round: "
         << args.connectivity_cut_max_per_round << '\n';
+    out << "[main] vi_36_treatment_boundary: " << args.vi_36_treatment_boundary << '\n';
+    out << "[main] add_capacity_blossom_cuts: " << args.add_capacity_blossom_cuts << '\n';
+    out << "[main] capacity_blossom_scope: " << args.capacity_blossom_scope << '\n';
+    out << "[main] capacity_blossom_row_form: " << args.capacity_blossom_row_form << '\n';
+    out << "[main] capacity_blossom_root_max_rounds: " << args.capacity_blossom_root_max_rounds << '\n';
+    out << "[main] capacity_blossom_root_max_cuts: " << args.capacity_blossom_root_max_cuts << '\n';
+    out << "[main] capacity_blossom_root_max_per_round: " << args.capacity_blossom_root_max_per_round << '\n';
+    out << "[main] capacity_blossom_tree_max_per_round: " << args.capacity_blossom_tree_max_per_round << '\n';
+    out << "[main] capacity_blossom_tree_dense_node_limit: " << args.capacity_blossom_tree_dense_node_limit << '\n';
+    out << "[main] capacity_blossom_tree_frequency: " << args.capacity_blossom_tree_frequency << '\n';
+    out << "[main] capacity_blossom_max_total: " << args.capacity_blossom_max_total << '\n';
+    out << "[main] capacity_blossom_min_violation: " << args.capacity_blossom_min_violation << '\n';
+    out << "[main] capacity_blossom_time_fraction: " << args.capacity_blossom_time_fraction << '\n';
+    out << "[main] add_type_travel_time_cover_cuts: " << args.add_type_travel_time_cover_cuts << '\n';
+    out << "[main] type_travel_time_cover_mode: " << args.type_travel_time_cover_mode << '\n';
+    out << "[main] type_travel_time_cover_max_type_set_size: " << args.type_travel_time_cover_max_type_set_size << '\n';
+    out << "[main] type_travel_time_cover_subproblem_time_limit: " << args.type_travel_time_cover_subproblem_time_limit << '\n';
+    out << "[main] type_travel_time_cover_total_time_limit: " << args.type_travel_time_cover_total_time_limit << '\n';
+    out << "[main] type_travel_time_cover_max_per_round: " << args.type_travel_time_cover_max_per_round << '\n';
+    out << "[main] type_travel_time_cover_min_rho: " << args.type_travel_time_cover_min_rho << '\n';
+    out << "[main] type_travel_time_cover_threads: " << args.type_travel_time_cover_threads << '\n';
+    out << "[main] type_travel_time_cover_cache_dir: " << args.type_travel_time_cover_cache_dir << '\n';
+    out << "[main] vi_44_subproblem_add_time_flow: " << args.vi_44_subproblem_add_time_flow << '\n';
     out << "[main] vi_44_k_min_use_cor: " << args.vi_44_k_min_use_cor << '\n';
     out << "[main] vi_44_k_min_use_subproblem: "
         << args.vi_44_k_min_use_subproblem << '\n';
@@ -2344,6 +2554,31 @@ void print_direct_two_index_summary(
         << result.connectivity_cut_stats.rhs_two_or_more_cuts << '\n';
     out << "[main] Connectivity cuts separation seconds: "
         << format_double(result.connectivity_cut_stats.separation_seconds) << '\n';
+    out << "[main] Capacity blossom rounds: " << result.capacity_blossom_stats.rounds
+        << " (root " << result.capacity_blossom_stats.root_rounds << ")\n";
+    out << "[main] Capacity blossom candidates: " << result.capacity_blossom_stats.candidates << '\n';
+    out << "[main] Capacity blossom cuts added: " << result.capacity_blossom_stats.cuts_added
+        << " (root " << result.capacity_blossom_stats.root_cuts_added
+        << ", pickup " << result.capacity_blossom_stats.pickup_cuts
+        << ", delivery " << result.capacity_blossom_stats.delivery_cuts << ")\n";
+    out << "[main] Capacity blossom rejections: duplicate "
+        << result.capacity_blossom_stats.duplicate_rejections << ", overlap "
+        << result.capacity_blossom_stats.overlap_rejections << '\n';
+    out << "[main] Capacity blossom largest set: " << result.capacity_blossom_stats.largest_set_size << '\n';
+    out << "[main] Capacity blossom max-flow calls: " << result.capacity_blossom_stats.max_flow_calls << '\n';
+    out << "[main] Capacity blossom stopped by cap/time: "
+        << (result.capacity_blossom_stats.stopped_by_total_cap ? 1 : 0) << '/'
+        << (result.capacity_blossom_stats.stopped_by_time_fraction ? 1 : 0) << '\n';
+    out << "[main] Capacity blossom separation seconds: "
+        << format_double(result.capacity_blossom_stats.separation_seconds) << '\n';
+    out << "[main] Type travel-time cover rows available/added/root: "
+        << result.type_cover_stats.rows_available << '/'
+        << result.type_cover_stats.rows_added << '/'
+        << result.type_cover_stats.root_rows_added << '\n';
+    out << "[main] Type travel-time cover screening rounds/seconds: "
+        << result.type_cover_stats.screening_rounds << '/'
+        << format_double(result.type_cover_stats.screening_seconds) << '\n';
+    out << "[main] Direct two-index LP cut rounds: " << result.lp_cut_rounds << '\n';
     out << "[main] Direct two-index solver runtime (sec): "
         << format_double(result.runtime_seconds) << '\n';
     if (!result.has_feasible_solution) {
@@ -3269,6 +3504,8 @@ int main(int argc, char** argv) {
                 vi_options.add_vi_36_combined = args.add_vi_36_combined == 1;
                 vi_options.vi_36_subset_max_size =
                     static_cast<std::size_t>(args.vi_36_subset_max_size);
+                vi_options.vi_36_treatment_boundary =
+                    args.vi_36_treatment_boundary == 1;
                 vi_options.add_vi_request_block_sec =
                     args.add_vi_request_block_sec == 1;
                 vi_options.vi_request_block_sec_max_size =
@@ -3320,6 +3557,77 @@ int main(int argc, char** argv) {
                         : spdp::ConnectivityCutRhsMode::Duration;
                 direct_options.connectivity_cuts.max_cuts_per_round =
                     static_cast<std::size_t>(args.connectivity_cut_max_per_round);
+
+                spdp::CapacityBlossomOptions& blossom = direct_options.capacity_blossom;
+                blossom.enabled = args.add_capacity_blossom_cuts == 1;
+                blossom.scope = args.capacity_blossom_scope == "root-only"
+                    ? spdp::CapacityBlossomScope::RootOnly
+                    : (args.capacity_blossom_scope == "full-tree"
+                           ? spdp::CapacityBlossomScope::FullTree
+                           : spdp::CapacityBlossomScope::AdaptiveTree);
+                blossom.row_form = args.capacity_blossom_row_form == "inbound"
+                    ? spdp::CapacityBlossomRowForm::Inbound
+                    : spdp::CapacityBlossomRowForm::Internal;
+                blossom.root_max_rounds =
+                    static_cast<std::size_t>(args.capacity_blossom_root_max_rounds);
+                blossom.root_max_cuts =
+                    static_cast<std::size_t>(args.capacity_blossom_root_max_cuts);
+                blossom.root_max_per_round =
+                    static_cast<std::size_t>(args.capacity_blossom_root_max_per_round);
+                blossom.tree_max_per_round =
+                    static_cast<std::size_t>(args.capacity_blossom_tree_max_per_round);
+                blossom.tree_dense_node_limit =
+                    static_cast<std::size_t>(args.capacity_blossom_tree_dense_node_limit);
+                blossom.tree_node_frequency =
+                    static_cast<std::size_t>(args.capacity_blossom_tree_frequency);
+                blossom.max_total_cuts =
+                    static_cast<std::size_t>(args.capacity_blossom_max_total);
+                blossom.min_violation = args.capacity_blossom_min_violation;
+                blossom.max_separation_time_fraction = args.capacity_blossom_time_fraction;
+
+                spdp::TypeTravelTimeCoverOptions& cover = direct_options.type_cover;
+                cover.enabled = args.add_type_travel_time_cover_cuts == 1;
+                cover.mode = args.type_travel_time_cover_mode == "static"
+                    ? spdp::TypeTravelTimeCoverMode::Static
+                    : spdp::TypeTravelTimeCoverMode::Screened;
+                cover.max_type_set_size =
+                    static_cast<std::size_t>(args.type_travel_time_cover_max_type_set_size);
+                cover.subproblem_time_limit = args.type_travel_time_cover_subproblem_time_limit;
+                cover.total_time_limit = args.type_travel_time_cover_total_time_limit;
+                cover.max_per_round =
+                    static_cast<std::size_t>(args.type_travel_time_cover_max_per_round);
+                cover.add_time_flow_formulation = args.add_time_flow_formulation >= 1;
+                cover.time_flow_state_disaggregated = args.add_time_flow_formulation == 2;
+                cover.add_time_constraints = args.vi_44_subproblem_add_time_constraints == 1;
+                cover.gurobi_threads = args.type_travel_time_cover_threads;
+                cover.min_rho = args.type_travel_time_cover_min_rho;
+                cover.cache_dir = args.type_travel_time_cover_cache_dir;
+                cover.log_stream = &output_file;
+                if (cover.enabled) {
+                    const auto cover_start = std::chrono::steady_clock::now();
+                    const spdp::TypeTravelTimeCoverResult cover_result =
+                        spdp::compute_type_travel_time_cover_bounds(data, cover);
+                    direct_options.type_cover_rows =
+                        spdp::build_type_travel_time_cover_rows(
+                            data, graph, cover_result, cover.min_rho);
+                    std::size_t certified = 0;
+                    for (const spdp::TypeTravelTimeCoverEntry& entry : cover_result.entries) {
+                        if (entry.certified) {
+                            ++certified;
+                        }
+                    }
+                    output_file << "[ttcover] preprocessing_seconds="
+                        << format_double(std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - cover_start).count())
+                        << " certified_masks=" << certified
+                        << " rows=" << direct_options.type_cover_rows.size()
+                        << " mode=" << spdp::type_travel_time_cover_mode_name(cover.mode) << '\n';
+                    for (const spdp::TypeTravelTimeCoverRow& row : direct_options.type_cover_rows) {
+                        output_file << "[ttcover] row mask=" << row.type_mask
+                            << " rho=" << row.rho << " nodes=" << row.nodes.size()
+                            << " terms=" << row.row.edge_terms.size() << '\n';
+                    }
+                }
                 output_file << "[initial-incumbent] direct_y_mip_start_applied="
                     << (!direct_options.initial_edge_start.empty() ? 1 : 0) << '\n';
 

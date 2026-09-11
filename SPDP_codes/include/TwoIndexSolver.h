@@ -4,10 +4,12 @@
 #include <string>
 #include <vector>
 
+#include "CapacityBlossomCuts.h"
 #include "ConnectivityCuts.h"
 #include "GenMultiGraph.h"
 #include "PstepValidInequality.h"
 #include "ReadData.h"
+#include "TypeTravelTimeCoverCuts.h"
 
 namespace spdp {
 
@@ -35,6 +37,11 @@ struct DirectTwoIndexOptions {
     std::vector<double> initial_edge_start;
     PstepValidInequalityOptions valid_inequalities;
     ConnectivityCutOptions connectivity_cuts;
+    CapacityBlossomOptions capacity_blossom;
+    // Rows are precomputed by the caller (they need the restricted duration
+    // IPs); the solver adds them statically or screens them as user cuts.
+    TypeTravelTimeCoverOptions type_cover;
+    std::vector<TypeTravelTimeCoverRow> type_cover_rows;
 };
 
 struct DirectTwoIndexResult {
@@ -60,6 +67,9 @@ struct DirectTwoIndexResult {
     int fixed_vehicle_constraint_count = 0;
     int time_flow_infeasible_edge_count = 0;
     ConnectivityCutStats connectivity_cut_stats;
+    CapacityBlossomStats capacity_blossom_stats;
+    TypeTravelTimeCoverStats type_cover_stats;
+    int lp_cut_rounds = 0;
     std::vector<double> edge_values;
 };
 
