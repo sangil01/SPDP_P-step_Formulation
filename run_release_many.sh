@@ -21,14 +21,14 @@ fi
 P=0 # 0 uses the direct two-index model when SOLVER_MODE=enumeration
 SOLVER_MODE=enumeration # Options: enumeration, branch-and-price
 ENUMERATION_SOS1_MODE=default # Options: default, sos1-auto, sos1-native (used only with SOLVER_MODE=enumeration)
-ENUMERATION_MODEL_TYPE=lp # Options: ip, lp (lp is supported for P=0 direct two-index enumeration)
-ENUMERATION_OBJECTIVE=travel-cost-only  # Options: original-cost, travel-cost-only, duration, duration-plus-fixed (used only with SOLVER_MODE=enumeration)
+ENUMERATION_MODEL_TYPE=ip # Options: ip, lp (lp is supported for P=0 direct two-index enumeration)
+ENUMERATION_OBJECTIVE=original-cost  # Options: original-cost, travel-cost-only, duration, duration-plus-fixed (used only with SOLVER_MODE=enumeration)
 ADD_FIXED_VEHICLE_NUMBER=1 # Uses the selected k_min; supported for P=0 direct two-index enumeration
 BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
-SOLVER_TIME_LIMIT=3600 # seconds
-INITIAL_INCUMBENT_ENABLE=0
+SOLVER_TIME_LIMIT=600 # seconds
+INITIAL_INCUMBENT_ENABLE=1
 INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
@@ -117,8 +117,14 @@ FULL_ENUMERATION_PARALLEL_STAGE2_BACKEND=custom # Options: custom, onemkl
 FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
 FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
+    "RecDep_day_A8.dat"
+    "RecDep_day_A9.dat"
+    "RecDep_day_A13.dat"
+    "RecDep_day_B1.dat"
+    "RecDep_day_B5.dat"
+    "RecDep_day_C4.dat"
     #=========Request 20 이하=========#
-    "RecDep_day_A1.dat"
+    '''"RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
     "RecDep_day_A4.dat"
@@ -188,7 +194,7 @@ DATA_LIST=(
     "RecDep_day_D4.dat"
     "RecDep_day_D5.dat"
     "RecDep_day_D6.dat"
-    "RecDep_day_D7.dat"
+    "RecDep_day_D7.dat"'''
     #=================================#
     #====Request 100 초과 200 이하====#
     '''"RecDep_day_D8.dat"
