@@ -42,6 +42,15 @@ struct DirectTwoIndexOptions {
     // IPs); the solver adds them statically or screens them as user cuts.
     TypeTravelTimeCoverOptions type_cover;
     std::vector<TypeTravelTimeCoverRow> type_cover_rows;
+    // Root LP cutting-plane phase: before the MIP starts, separate every enabled
+    // family to closure on the LP relaxation and add the resulting rows to the
+    // MIP as constraints. On large instances Gurobi's own root processing
+    // leaves almost no MIPNODE callbacks inside the time limit, so this is
+    // where the families act.
+    bool root_lp_cut_phase = false;
+    int root_lp_cut_phase_max_rounds = 50;
+    double root_lp_cut_phase_time_limit = 30.0;  // seconds, 0 = no limit
+    bool root_lp_cut_phase_deduct_time = true;    // subtract the phase time from the MIP limit
 };
 
 struct DirectTwoIndexResult {
@@ -70,6 +79,12 @@ struct DirectTwoIndexResult {
     CapacityBlossomStats capacity_blossom_stats;
     TypeTravelTimeCoverStats type_cover_stats;
     int lp_cut_rounds = 0;
+    int root_lp_cut_phase_rounds = 0;
+    int root_lp_cut_phase_rows = 0;
+    double root_lp_cut_phase_seconds = 0.0;
+    double root_lp_value_before = -1.0;
+    double root_lp_value_after = -1.0;
+    double mip_time_limit_used = 0.0;
     std::vector<double> edge_values;
 };
 

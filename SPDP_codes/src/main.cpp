@@ -115,6 +115,10 @@ struct CliOptions {
     std::string type_travel_time_cover_cache_dir;
     int vi_44_subproblem_add_time_flow = 0;  // 0 off, 1 node, 2 node-state (k_min duration IP)
     int initial_incumbent_time_flow = 0;      // 0 off, 1 node, 2 node-state (fixed-K incumbent MILP)
+    int root_lp_cut_phase = 0;
+    int root_lp_cut_phase_max_rounds = 50;
+    double root_lp_cut_phase_time_limit = 30.0;
+    int root_lp_cut_phase_deduct_time = 1;
     std::string initial_incumbent_cache_dir;  // reuse a recovered incumbent across configuration runs
     int initial_incumbent_big_m_time_constraints = 1;
     int vi_44_k_min_use_cor = 1;
@@ -231,6 +235,8 @@ void print_usage(const char* executable) {
               << " [--type-travel-time-cover-cache-dir PATH]"
               << " [--vi-44-subproblem-add-time-flow 0|1|2]"
               << " [--initial-incumbent-time-flow 0|1|2]"
+              << " [--root-lp-cut-phase 0|1] [--root-lp-cut-phase-max-rounds N]"
+              << " [--root-lp-cut-phase-time-limit T] [--root-lp-cut-phase-deduct-time 0|1]"
               << " [--initial-incumbent-cache-dir PATH]"
               << " [--initial-incumbent-big-m-time-constraints 0|1]"
               << " [--vi-44-k-min-use-cor 0|1]"
@@ -1854,6 +1860,41 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--root-lp-cut-phase" || arg == "--root-lp-cut-phase-deduct-time") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const int value = parse_binary_flag(argv[++idx], arg);
+            if (arg == "--root-lp-cut-phase") {
+                options.root_lp_cut_phase = value;
+            } else {
+                options.root_lp_cut_phase_deduct_time = value;
+            }
+            continue;
+        }
+
+        if (arg == "--root-lp-cut-phase-max-rounds") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.root_lp_cut_phase_max_rounds = parse_int(argv[++idx], arg);
+            if (options.root_lp_cut_phase_max_rounds < 0) {
+                throw std::runtime_error(arg + " must be nonnegative.");
+            }
+            continue;
+        }
+
+        if (arg == "--root-lp-cut-phase-time-limit") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.root_lp_cut_phase_time_limit = parse_double(argv[++idx], arg);
+            if (options.root_lp_cut_phase_time_limit < 0.0) {
+                throw std::runtime_error(arg + " must be nonnegative.");
+            }
+            continue;
+        }
+
         if (arg == "--initial-incumbent-cache-dir") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
@@ -2353,6 +2394,10 @@ void print_instance_summary(
     out << "[main] type_travel_time_cover_cache_dir: " << args.type_travel_time_cover_cache_dir << '\n';
     out << "[main] vi_44_subproblem_add_time_flow: " << args.vi_44_subproblem_add_time_flow << '\n';
     out << "[main] initial_incumbent_time_flow: " << args.initial_incumbent_time_flow << '\n';
+    out << "[main] root_lp_cut_phase: " << args.root_lp_cut_phase
+        << " (max rounds " << args.root_lp_cut_phase_max_rounds
+        << ", time limit " << args.root_lp_cut_phase_time_limit
+        << ", deduct " << args.root_lp_cut_phase_deduct_time << ")\n";
     out << "[main] initial_incumbent_cache_dir: " << args.initial_incumbent_cache_dir << '\n';
     out << "[main] initial_incumbent_big_m_time_constraints: "
         << args.initial_incumbent_big_m_time_constraints << '\n';
@@ -2618,6 +2663,13 @@ void print_direct_two_index_summary(
         << result.type_cover_stats.screening_rounds << '/'
         << format_double(result.type_cover_stats.screening_seconds) << '\n';
     out << "[main] Direct two-index LP cut rounds: " << result.lp_cut_rounds << '\n';
+    out << "[main] Root LP cut phase rounds/rows/seconds: "
+        << result.root_lp_cut_phase_rounds << '/' << result.root_lp_cut_phase_rows << '/'
+        << format_double(result.root_lp_cut_phase_seconds) << '\n';
+    out << "[main] Root LP value before/after cut phase: "
+        << format_double(result.root_lp_value_before) << '/'
+        << format_double(result.root_lp_value_after) << '\n';
+    out << "[main] MIP time limit used (sec): " << format_double(result.mip_time_limit_used) << '\n';
     out << "[main] Direct two-index solver runtime (sec): "
         << format_double(result.runtime_seconds) << '\n';
     if (!result.has_feasible_solution) {
@@ -3681,6 +3733,11 @@ int main(int argc, char** argv) {
                         : spdp::ConnectivityCutRhsMode::Duration;
                 direct_options.connectivity_cuts.max_cuts_per_round =
                     static_cast<std::size_t>(args.connectivity_cut_max_per_round);
+                direct_options.root_lp_cut_phase = args.root_lp_cut_phase == 1;
+                direct_options.root_lp_cut_phase_max_rounds = args.root_lp_cut_phase_max_rounds;
+                direct_options.root_lp_cut_phase_time_limit = args.root_lp_cut_phase_time_limit;
+                direct_options.root_lp_cut_phase_deduct_time =
+                    args.root_lp_cut_phase_deduct_time == 1;
 
                 spdp::CapacityBlossomOptions& blossom = direct_options.capacity_blossom;
                 blossom.enabled = args.add_capacity_blossom_cuts == 1;

@@ -410,6 +410,79 @@ DirectTwoIndexResult solve_direct_two_index_model(
     const bool any_dynamic_family =
         cover_enabled(context) || blossom_enabled(context) || connectivity_enabled(context);
 
+    result.mip_time_limit_used = options.solver_time_limit;
+    if (options.root_lp_cut_phase && any_dynamic_family &&
+        options.model_type == DirectTwoIndexModelType::IP) {
+        const auto phase_start = std::chrono::steady_clock::now();
+        TwoIndexCoreOptions lp_options = core_options;
+        lp_options.binary_y = false;
+        lp_options.output_enabled = false;
+        lp_options.gurobi_log_path.clear();
+        lp_options.solver_time_limit = options.root_lp_cut_phase_time_limit;
+        lp_options.name_prefix = "root_lp_phase";
+        TwoIndexCoreModel lp = build_two_index_model_core(data, graph, lp_options);
+        for (const PstepValidInequalityRow& row : vi_rows) {
+            lp.model->addConstr(row_to_temp_constr(row, lp.y_vars), row.name);
+        }
+        if (options.type_cover.enabled &&
+            options.type_cover.mode == TypeTravelTimeCoverMode::Static) {
+            for (const TypeTravelTimeCoverRow& row : options.type_cover_rows) {
+                lp.model->addConstr(row_to_temp_constr(row.row, lp.y_vars), row.row.name);
+            }
+        }
+        lp.model->optimize();
+        std::vector<PstepValidInequalityRow> phase_rows;
+        std::vector<double> values(lp.y_vars.size(), 0.0);
+        const auto elapsed = [&]() {
+            return std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - phase_start).count();
+        };
+        if (lp.model->get(GRB_IntAttr_Status) == GRB_OPTIMAL) {
+            result.root_lp_value_before = lp.model->get(GRB_DoubleAttr_ObjVal);
+        }
+        for (int round = 0; round < options.root_lp_cut_phase_max_rounds; ++round) {
+            if (lp.model->get(GRB_IntAttr_Status) != GRB_OPTIMAL) {
+                break;
+            }
+            if (options.root_lp_cut_phase_time_limit > 0.0 &&
+                elapsed() >= options.root_lp_cut_phase_time_limit) {
+                break;
+            }
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                values[i] = lp.y_vars[i].get(GRB_DoubleAttr_X);
+            }
+            const RoundOutput output = separate_round(context, values, true, 0.0, 0.0, true);
+            if (output.rows.empty()) {
+                break;
+            }
+            for (const PstepValidInequalityRow& row : output.rows) {
+                lp.model->addConstr(row_to_temp_constr(row, lp.y_vars), row.name);
+                phase_rows.push_back(row);
+            }
+            ++result.root_lp_cut_phase_rounds;
+            if (options.root_lp_cut_phase_time_limit > 0.0) {
+                lp.model->set(GRB_DoubleParam_TimeLimit,
+                    std::max(1.0, options.root_lp_cut_phase_time_limit - elapsed()));
+            }
+            lp.model->optimize();
+        }
+        if (lp.model->get(GRB_IntAttr_Status) == GRB_OPTIMAL) {
+            result.root_lp_value_after = lp.model->get(GRB_DoubleAttr_ObjVal);
+        }
+        for (const PstepValidInequalityRow& row : phase_rows) {
+            core.model->addConstr(row_to_temp_constr(row, core.y_vars), row.name);
+        }
+        result.root_lp_cut_phase_rows = static_cast<int>(phase_rows.size());
+        result.root_lp_cut_phase_seconds = elapsed();
+        if (options.root_lp_cut_phase_deduct_time && options.solver_time_limit > 0.0) {
+            result.mip_time_limit_used = std::max(
+                1.0, options.solver_time_limit - result.root_lp_cut_phase_seconds);
+            core.model->set(GRB_DoubleParam_TimeLimit, result.mip_time_limit_used);
+        }
+        core.model->update();
+        result.constraint_count = core.model->get(GRB_IntAttr_NumConstrs);
+    }
+
     std::unique_ptr<DirectTwoIndexCutCallback> cut_callback;
     if (any_dynamic_family && options.model_type == DirectTwoIndexModelType::IP) {
         cut_callback = std::make_unique<DirectTwoIndexCutCallback>(context, core.y_vars);
