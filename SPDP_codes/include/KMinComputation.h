@@ -17,11 +17,6 @@ enum class VI44SubproblemType {
 
 struct VI44SubproblemOptions {
     VI44SubproblemType type = VI44SubproblemType::LP;
-    bool add_time_constraints = false;
-    // Big-M free duration modelling (see TwoIndexCoreOptions). When enabled the
-    // auxiliary duration IP uses the same time-flow rows as the main model.
-    bool add_time_flow_formulation = false;
-    bool time_flow_state_disaggregated = false;
     int gurobi_threads = 1;
     double time_limit = 0.0;  // 0 means no time limit.
     bool rounded_bound_stop = true;
@@ -124,9 +119,6 @@ VI44KMinResult compute_vi44_k_min(
 // route-count bound ceil(eta / T) is then certified without an optimal eta.
 struct DurationRoundedBoundOptions {
     double solver_time_limit = 0.0;  // 0 means no time limit.
-    bool add_time_constraints = false;
-    bool add_time_flow_formulation = false;
-    bool time_flow_state_disaggregated = false;
     bool rounded_bound_stop = true;
     int gurobi_threads = 1;
     std::string name_prefix = "duration_bound";

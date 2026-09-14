@@ -4,8 +4,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <map>
 #include <ostream>
@@ -38,8 +36,7 @@ std::uint64_t double_bits(double value) {
 
 std::uint64_t instance_fingerprint(
     const SPDPData& data,
-    const ShortestTravelTimes& shortest,
-    const TypeTravelTimeCoverOptions& options
+    const ShortestTravelTimes& shortest
 ) {
     std::uint64_t hash = 1469598103934665603ULL;
     fnv_mix(hash, 0x54544331ULL);  // "TTC1": certificate format version
@@ -55,11 +52,6 @@ std::uint64_t instance_fingerprint(
     fnv_mix(hash, double_bits(data.time_delivery));
     fnv_mix(hash, static_cast<std::uint64_t>(data.locations));
     fnv_mix(hash, shortest.fingerprint());
-    // The formulation used to certify the bound is part of the key so that a
-    // certificate produced by one duration model is never reused by another.
-    fnv_mix(hash, options.add_time_flow_formulation ? 1ULL : 0ULL);
-    fnv_mix(hash, options.time_flow_state_disaggregated ? 1ULL : 0ULL);
-    fnv_mix(hash, options.add_time_constraints ? 1ULL : 0ULL);
     return hash;
 }
 
@@ -77,67 +69,6 @@ std::vector<int> mask_types(const std::vector<int>& types, std::uint64_t mask) {
         }
     }
     return result;
-}
-
-struct CachedCertificate {
-    int rho = 0;
-    double lower_bound = 0.0;
-    double upper_bound = 0.0;
-};
-
-std::filesystem::path cache_path(const std::string& cache_dir, std::uint64_t fingerprint) {
-    return std::filesystem::path(cache_dir) / ("ttcover_" + hex(fingerprint) + ".txt");
-}
-
-std::map<std::uint64_t, CachedCertificate> load_cache(
-    const std::string& cache_dir,
-    std::uint64_t fingerprint
-) {
-    std::map<std::uint64_t, CachedCertificate> cache;
-    if (cache_dir.empty()) {
-        return cache;
-    }
-    std::ifstream in(cache_path(cache_dir, fingerprint));
-    if (!in) {
-        return cache;
-    }
-    std::string line;
-    while (std::getline(in, line)) {
-        if (line.empty() || line[0] == '#') {
-            continue;
-        }
-        std::istringstream fields(line);
-        std::uint64_t mask = 0;
-        CachedCertificate certificate;
-        if (fields >> mask >> certificate.rho >> certificate.lower_bound >> certificate.upper_bound) {
-            cache[mask] = certificate;
-        }
-    }
-    return cache;
-}
-
-void append_cache(
-    const std::string& cache_dir,
-    std::uint64_t fingerprint,
-    const TypeTravelTimeCoverEntry& entry
-) {
-    if (cache_dir.empty() || !entry.certified) {
-        return;
-    }
-    std::filesystem::create_directories(cache_dir);
-    const std::filesystem::path path = cache_path(cache_dir, fingerprint);
-    const bool fresh = !std::filesystem::exists(path);
-    std::ofstream out(path, std::ios::app);
-    if (!out) {
-        return;
-    }
-    if (fresh) {
-        out << "# type travel-time cover certificates; fingerprint " << hex(fingerprint) << '\n';
-        out << "# mask rho duration_lb duration_ub\n";
-    }
-    out << entry.type_mask << ' ' << entry.rho << ' '
-        << std::setprecision(17) << entry.duration_lower_bound << ' '
-        << entry.duration_upper_bound << '\n';
 }
 
 }  // namespace
@@ -197,10 +128,7 @@ TypeTravelTimeCoverResult compute_type_travel_time_cover_bounds(
     result.shortest_time_fingerprint = shortest.fingerprint();
     result.non_metric_pair_count = shortest.non_metric_pair_count;
     result.max_travel_time_reduction = shortest.max_reduction;
-    result.instance_fingerprint = instance_fingerprint(data, shortest, options);
-
-    const std::map<std::uint64_t, CachedCertificate> cache =
-        load_cache(options.cache_dir, result.instance_fingerprint);
+    result.instance_fingerprint = instance_fingerprint(data, shortest);
 
     const std::size_t type_count = result.types.size();
     const std::uint64_t full_mask = (std::uint64_t{1} << type_count) - 1ULL;
@@ -242,19 +170,6 @@ TypeTravelTimeCoverResult compute_type_travel_time_cover_bounds(
             continue;
         }
 
-        const auto cached = cache.find(mask);
-        if (cached != cache.end()) {
-            entry.rho = cached->second.rho;
-            entry.duration_lower_bound = cached->second.lower_bound;
-            entry.duration_upper_bound = cached->second.upper_bound;
-            entry.has_lower_bound = true;
-            entry.certified = true;
-            entry.from_cache = true;
-            ++result.cache_hits;
-            result.entries.push_back(std::move(entry));
-            continue;
-        }
-
         const double elapsed = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - overall_start).count();
         double remaining = options.subproblem_time_limit;
@@ -283,9 +198,6 @@ TypeTravelTimeCoverResult compute_type_travel_time_cover_bounds(
 
         DurationRoundedBoundOptions bound_options;
         bound_options.solver_time_limit = remaining;
-        bound_options.add_time_constraints = options.add_time_constraints;
-        bound_options.add_time_flow_formulation = options.add_time_flow_formulation;
-        bound_options.time_flow_state_disaggregated = options.time_flow_state_disaggregated;
         bound_options.rounded_bound_stop = true;
         bound_options.gurobi_threads = options.gurobi_threads;
         bound_options.name_prefix = "ttcover_" + std::to_string(mask);
@@ -303,7 +215,6 @@ TypeTravelTimeCoverResult compute_type_travel_time_cover_bounds(
             entry.rho = bound.rounded_lower_bound;
             entry.certified = bound.certified;
         }
-        append_cache(options.cache_dir, result.instance_fingerprint, entry);
         result.entries.push_back(std::move(entry));
     }
 
@@ -363,9 +274,13 @@ std::vector<std::size_t> screen_type_travel_time_cover_rows(
     const std::vector<TypeTravelTimeCoverRow>& rows,
     const std::vector<double>& y_values,
     const std::vector<bool>& already_added,
-    double violation_tolerance,
-    std::size_t max_rows
+    double min_violation,
+    double max_overlap_jaccard,
+    std::size_t max_rows,
+    double& best_violation,
+    std::size_t& overlap_rejections
 ) {
+    best_violation = 0.0;
     std::vector<std::pair<double, std::size_t>> violated;
     for (std::size_t index = 0; index < rows.size(); ++index) {
         if (index < already_added.size() && already_added[index]) {
@@ -376,7 +291,7 @@ std::vector<std::size_t> screen_type_travel_time_cover_rows(
             lhs += term.second * y_values[term.first];
         }
         const double violation = rows[index].row.rhs - lhs;
-        if (violation > violation_tolerance) {
+        if (violation > min_violation) {
             violated.emplace_back(violation, index);
         }
     }
@@ -384,10 +299,30 @@ std::vector<std::size_t> screen_type_travel_time_cover_rows(
         return lhs.first > rhs.first;
     });
     std::vector<std::size_t> indices;
+    std::vector<std::vector<int>> accepted_sets;
     for (const auto& [violation, index] : violated) {
         if (indices.size() >= max_rows) {
             break;
         }
+        std::vector<int> node_set;
+        node_set.reserve(rows[index].nodes.size());
+        for (NodeId node : rows[index].nodes) {
+            node_set.push_back(static_cast<int>(node));
+        }
+        std::sort(node_set.begin(), node_set.end());
+        bool overlapping = false;
+        for (const std::vector<int>& accepted : accepted_sets) {
+            if (cut_set_overlap_jaccard(node_set, accepted) > max_overlap_jaccard) {
+                overlapping = true;
+                break;
+            }
+        }
+        if (overlapping) {
+            ++overlap_rejections;
+            continue;
+        }
+        best_violation = std::max(best_violation, violation);
+        accepted_sets.push_back(std::move(node_set));
         indices.push_back(index);
     }
     return indices;
@@ -399,7 +334,6 @@ void write_type_travel_time_cover_log(
 ) {
     out << "[ttcover] types=" << result.types.size()
         << " entries=" << result.entries.size()
-        << " cache_hits=" << result.cache_hits
         << " non_metric_pairs=" << result.non_metric_pair_count
         << " max_travel_time_reduction=" << result.max_travel_time_reduction
         << " shortest_time_fingerprint=" << hex(result.shortest_time_fingerprint)
@@ -423,11 +357,9 @@ void write_type_travel_time_cover_log(
             << " certified=" << (entry.certified ? 1 : 0)
             << " rounded_stop=" << (entry.stopped_by_rounded_bound ? 1 : 0)
             << " time_limit=" << (entry.hit_time_limit ? 1 : 0)
-            << " cache=" << (entry.from_cache ? 1 : 0)
             << " status=" << entry.status
             << " seconds=" << entry.runtime_seconds << '\n';
     }
 }
 
 }  // namespace spdp
-

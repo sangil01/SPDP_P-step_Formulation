@@ -157,6 +157,15 @@ TwoIndexCoreModel build_two_index_model_core(
     }
     core.model->set(GRB_DoubleParam_FeasibilityTol, kGurobiSolverTolerance);
     core.model->set(GRB_DoubleParam_OptimalityTol, kGurobiSolverTolerance);
+    if (options.lp_method >= -1) {
+        core.model->set(GRB_IntParam_Method, options.lp_method);
+    }
+    if (options.node_method >= -1) {
+        core.model->set(GRB_IntParam_NodeMethod, options.node_method);
+    }
+    if (options.crossover >= 0) {
+        core.model->set(GRB_IntParam_Crossover, options.crossover);
+    }
     if (options.solver_time_limit > 0.0) {
         core.model->set(GRB_DoubleParam_TimeLimit, options.solver_time_limit);
     }

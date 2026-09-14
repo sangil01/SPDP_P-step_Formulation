@@ -193,19 +193,17 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_duration_subproblem(
     const MultiDiGraph& graph,
     double solver_time_limit,
     bool binary_y,
-    bool add_time_constraints,
     bool rounded_bound_stop,
-    bool add_time_flow_formulation = false,
-    bool time_flow_state_disaggregated = false,
     int gurobi_threads = 1,
     const std::string& name_prefix = "vi44_aux"
 ) {
     TwoIndexCoreOptions core_options;
     core_options.objective = TwoIndexCoreObjective::Duration;
     core_options.binary_y = binary_y;
-    core_options.add_time_constraints = add_time_constraints;
-    core_options.add_time_flow_formulation = add_time_flow_formulation;
-    core_options.time_flow_state_disaggregated = time_flow_state_disaggregated;
+    // Auxiliary duration models always use the compact big-M formulation: it is
+    // the smaller model and solves faster on every instance tested, and keeping
+    // it fixed makes the certified bound independent of the main model choice.
+    core_options.add_time_constraints = true;
     core_options.solver_time_limit = solver_time_limit;
     core_options.gurobi_threads = gurobi_threads;
     core_options.output_enabled = false;
@@ -315,7 +313,6 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_dff_subproblem(
     const std::vector<double>& coefficients,
     double solver_time_limit,
     bool binary_y,
-    bool add_time_constraints,
     bool rounded_bound_stop,
     const std::string& name_prefix
 ) {
@@ -328,7 +325,7 @@ AuxiliaryDurationSubproblemResult solve_auxiliary_dff_subproblem(
     TwoIndexCoreOptions core_options;
     core_options.objective = TwoIndexCoreObjective::None;
     core_options.binary_y = binary_y;
-    core_options.add_time_constraints = add_time_constraints;
+    core_options.add_time_constraints = true;
     core_options.solver_time_limit = solver_time_limit;
     core_options.gurobi_threads = 1;
     core_options.output_enabled = false;
@@ -1165,10 +1162,7 @@ VI44KMinResult compute_vi44_k_min(
                 graph,
                 options.subproblem.time_limit,
                 options.subproblem.type == VI44SubproblemType::IP,
-                options.subproblem.add_time_constraints,
                 options.subproblem.rounded_bound_stop,
-                options.subproblem.add_time_flow_formulation,
-                options.subproblem.time_flow_state_disaggregated,
                 options.subproblem.gurobi_threads
             );
         result.subproblem_status = auxiliary.status;
@@ -1270,7 +1264,6 @@ VI44KMinResult compute_vi44_k_min(
                         coefficients,
                         options.subproblem.time_limit,
                         options.subproblem.type == VI44SubproblemType::IP,
-                        options.subproblem.add_time_constraints,
                         options.subproblem.rounded_bound_stop,
                         "vi44_fs_" + std::to_string(
                             unique_coefficients.size())
@@ -1377,10 +1370,7 @@ DurationRoundedBoundResult solve_duration_rounded_bound(
             graph,
             options.solver_time_limit,
             true,
-            options.add_time_constraints,
             options.rounded_bound_stop,
-            options.add_time_flow_formulation,
-            options.time_flow_state_disaggregated,
             options.gurobi_threads,
             options.name_prefix
         );

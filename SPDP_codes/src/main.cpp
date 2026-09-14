@@ -86,15 +86,39 @@ struct CliOptions {
     int add_vi_request_block_sec = 0;
     int vi_request_block_sec_max_size = 2;
     int add_vi_44 = 0;
-    int add_connectivity_cuts = 0;
-    int add_time_flow_formulation = 0;
-    std::string connectivity_cut_scope = "full-tree";  // root-only, full-tree
-    std::string connectivity_cut_rhs = "duration";     // one, duration
-    int connectivity_cut_max_per_round = 32;
-    int vi_36_treatment_boundary = 1;
+
+    // ==================================================================
+    // Options introduced on top of main by the cut study. Everything the
+    // two dynamic cut families and the root cut processing need lives in
+    // this block, in the same order as the runner and the summary output.
+    // ==================================================================
+
+    // --- overall budget ---
+    // Wall-clock budget of one instance, shared by preprocessing, the VI44
+    // duration IP, the travel-time cover duration IPs, the incumbent MILP,
+    // the pre-MIP root LP and the main MIP. 0 disables the global budget.
+    double instance_time_limit = 0.0;
+
+    // --- main MILP duration modelling ---
+    // Time-flow rows and big-M rows are independent; at least one must be on.
+    int add_time_flow_formulation = 0;   // 0 off, 1 node, 2 node-state
+    int add_big_m_time_constraints = 1;  // 0 off, 1 on
+
+    // --- root cut processing ---
+    std::string root_cut_mode = "callback";  // pre-mip, callback
+    double pre_mip_root_lp_time_limit = 30.0;
+    int pre_mip_method = -1;     // -1 auto, 0 primal, 1 dual, 2 barrier, 4 concurrent
+    int pre_mip_crossover = -1;  // -1 default, 0 off (barrier only)
+    int mip_method = -1;         // -1 auto, 0 primal, 1 dual, 2 barrier, 4 concurrent
+    int mip_node_method = -1;    // -1 auto, 0 primal, 1 dual, 2 barrier
+    int mip_crossover = -1;      // -1 default, 0 off (barrier only)
+
+    // --- capacity blossom cuts: candidate generation ---
     int add_capacity_blossom_cuts = 0;
+    std::string capacity_blossom_row_form = "internal";  // internal, inbound
+    double capacity_blossom_support_tolerance = 1e-6;
+    // --- capacity blossom cuts: cut management ---
     std::string capacity_blossom_scope = "adaptive-tree";  // root-only, adaptive-tree, full-tree
-    std::string capacity_blossom_row_form = "internal";    // internal, inbound
     int capacity_blossom_root_max_rounds = 20;
     int capacity_blossom_root_max_cuts = 256;
     int capacity_blossom_root_max_per_round = 32;
@@ -104,29 +128,42 @@ struct CliOptions {
     int capacity_blossom_max_total = 2000;
     double capacity_blossom_min_violation = 1e-4;
     double capacity_blossom_time_fraction = 0.15;
+    double capacity_blossom_max_overlap_jaccard = 0.9;
+    int capacity_blossom_root_no_cut_round_limit = 2;
+    double capacity_blossom_root_low_violation = 0.02;
+    int capacity_blossom_root_low_violation_round_limit = 2;
+
+    // --- type travel-time cover cuts: candidate generation ---
     int add_type_travel_time_cover_cuts = 0;
     std::string type_travel_time_cover_mode = "screened";  // static, screened
     int type_travel_time_cover_max_type_set_size = 0;
     double type_travel_time_cover_subproblem_time_limit = 20.0;
     double type_travel_time_cover_total_time_limit = 120.0;
-    int type_travel_time_cover_max_per_round = 8;
     int type_travel_time_cover_min_rho = 1;
     int type_travel_time_cover_threads = 1;
-    std::string type_travel_time_cover_cache_dir;
-    int vi_44_subproblem_add_time_flow = 0;  // 0 off, 1 node, 2 node-state (k_min duration IP)
-    int initial_incumbent_time_flow = 0;      // 0 off, 1 node, 2 node-state (fixed-K incumbent MILP)
-    int root_lp_cut_phase = 0;
-    int root_lp_cut_phase_max_rounds = 50;
-    double root_lp_cut_phase_time_limit = 30.0;
-    int root_lp_cut_phase_deduct_time = 1;
-    std::string initial_incumbent_cache_dir;  // reuse a recovered incumbent across configuration runs
-    int initial_incumbent_big_m_time_constraints = 1;
+    // --- type travel-time cover cuts: cut management (screened mode) ---
+    std::string type_travel_time_cover_scope = "root-only";
+    int type_travel_time_cover_root_max_rounds = 20;
+    int type_travel_time_cover_root_max_cuts = 256;
+    int type_travel_time_cover_root_max_per_round = 8;
+    int type_travel_time_cover_tree_max_per_round = 4;
+    int type_travel_time_cover_tree_dense_node_limit = 50;
+    int type_travel_time_cover_tree_frequency = 100;
+    int type_travel_time_cover_max_total = 2000;
+    double type_travel_time_cover_min_violation = 1e-4;
+    double type_travel_time_cover_time_fraction = 0.15;
+    double type_travel_time_cover_max_overlap_jaccard = 0.9;
+    int type_travel_time_cover_root_no_cut_round_limit = 2;
+    double type_travel_time_cover_root_low_violation = 0.02;
+    int type_travel_time_cover_root_low_violation_round_limit = 2;
+
+    // ================ end of cut-study options ========================
+
     int vi_44_k_min_use_cor = 1;
     int vi_44_k_min_use_subproblem = 0;
     int vi_44_k_min_use_vehicle_assignment = 0;
     std::string vi_44_subproblem_type = "lp";
     double vi_44_subproblem_time_limit = 0.0;
-    int vi_44_subproblem_add_time_constraints = 0;
     int vi_44_duration_ip_rounded_bound_stop = 1;
     int vi_44_subproblem_dff_fs_enable = 0;
     int vi_44_vehicle_assignment_add_tsp_bound = 0;
@@ -215,36 +252,55 @@ void print_usage(const char* executable) {
               << " [--add-vi-request-block-sec 0|1]"
               << " [--vi-request-block-sec-max-size N]"
               << " [--add-vi-44 0|1]"
-              << " [--vi-36-treatment-boundary 0|1]"
+              // ---- cut-study options ----
+              << " [--instance-time-limit T]"
+              << " [--add-time-flow-formulation 0|1|2]"
+              << " [--add-big-m-time-constraints 0|1]"
+              << " [--root-cut-mode pre-mip|callback]"
+              << " [--pre-mip-root-lp-time-limit T]"
+              << " [--pre-mip-method -1|0|1|2|4] [--pre-mip-crossover -1|0]"
+              << " [--mip-method -1|0|1|2|4] [--mip-node-method -1|0|1|2]"
+              << " [--mip-crossover -1|0]"
               << " [--add-capacity-blossom-cuts 0|1]"
-              << " [--capacity-blossom-scope root-only|adaptive-tree|full-tree]"
               << " [--capacity-blossom-row-form internal|inbound]"
+              << " [--capacity-blossom-support-tolerance X]"
+              << " [--capacity-blossom-scope root-only|adaptive-tree|full-tree]"
               << " [--capacity-blossom-root-max-rounds N] [--capacity-blossom-root-max-cuts N]"
               << " [--capacity-blossom-root-max-per-round N] [--capacity-blossom-tree-max-per-round N]"
               << " [--capacity-blossom-tree-dense-node-limit N] [--capacity-blossom-tree-frequency N]"
               << " [--capacity-blossom-max-total N] [--capacity-blossom-min-violation X]"
               << " [--capacity-blossom-time-fraction X]"
+              << " [--capacity-blossom-max-overlap-jaccard X]"
+              << " [--capacity-blossom-root-no-cut-round-limit N]"
+              << " [--capacity-blossom-root-low-violation X]"
+              << " [--capacity-blossom-root-low-violation-round-limit N]"
               << " [--add-type-travel-time-cover-cuts 0|1]"
               << " [--type-travel-time-cover-mode static|screened]"
               << " [--type-travel-time-cover-max-type-set-size N]"
               << " [--type-travel-time-cover-subproblem-time-limit T]"
               << " [--type-travel-time-cover-total-time-limit T]"
-              << " [--type-travel-time-cover-max-per-round N]"
               << " [--type-travel-time-cover-min-rho N]"
               << " [--type-travel-time-cover-threads N]"
-              << " [--type-travel-time-cover-cache-dir PATH]"
-              << " [--vi-44-subproblem-add-time-flow 0|1|2]"
-              << " [--initial-incumbent-time-flow 0|1|2]"
-              << " [--root-lp-cut-phase 0|1] [--root-lp-cut-phase-max-rounds N]"
-              << " [--root-lp-cut-phase-time-limit T] [--root-lp-cut-phase-deduct-time 0|1]"
-              << " [--initial-incumbent-cache-dir PATH]"
-              << " [--initial-incumbent-big-m-time-constraints 0|1]"
+              << " [--type-travel-time-cover-scope root-only|adaptive-tree|full-tree]"
+              << " [--type-travel-time-cover-root-max-rounds N]"
+              << " [--type-travel-time-cover-root-max-cuts N]"
+              << " [--type-travel-time-cover-root-max-per-round N]"
+              << " [--type-travel-time-cover-tree-max-per-round N]"
+              << " [--type-travel-time-cover-tree-dense-node-limit N]"
+              << " [--type-travel-time-cover-tree-frequency N]"
+              << " [--type-travel-time-cover-max-total N]"
+              << " [--type-travel-time-cover-min-violation X]"
+              << " [--type-travel-time-cover-time-fraction X]"
+              << " [--type-travel-time-cover-max-overlap-jaccard X]"
+              << " [--type-travel-time-cover-root-no-cut-round-limit N]"
+              << " [--type-travel-time-cover-root-low-violation X]"
+              << " [--type-travel-time-cover-root-low-violation-round-limit N]"
+              // ---- end of cut-study options ----
               << " [--vi-44-k-min-use-cor 0|1]"
               << " [--vi-44-k-min-use-subproblem 0|1]"
               << " [--vi-44-k-min-use-vehicle-assignment 0|1]"
               << " [--vi-44-subproblem-type lp|ip]"
               << " [--vi-44-subproblem-time-limit T]"
-              << " [--vi-44-subproblem-add-time-constraints 0|1]"
               << " [--vi-44-duration-ip-rounded-bound-stop 0|1]"
               << " [--vi-44-subproblem-dff-fs-enable 0|1]"
               << " [--vi-44-vehicle-assignment-add-tsp-bound 0|1]"
@@ -664,6 +720,35 @@ spdp::CpSolveMode to_cp_solve_mode(const std::string& value) {
     throw std::runtime_error("Unsupported CP-SAT solve mode: " + value);
 }
 
+// Wall-clock budget shared by every phase of one instance. main() handles a
+// single instance per process, so one steady-clock origin is enough.
+std::chrono::steady_clock::time_point g_instance_start;
+double g_instance_time_limit = 0.0;
+
+// Remaining instance budget, or -1 when no global budget is configured.
+double remaining_instance_budget() {
+    if (g_instance_time_limit <= 0.0) {
+        return -1.0;
+    }
+    const double elapsed = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - g_instance_start).count();
+    return std::max(0.0, g_instance_time_limit - elapsed);
+}
+
+// Effective solver limit of one phase: the smaller of its own configured limit
+// and the remaining instance budget. A configured limit of 0 means "no own
+// limit". The result is kept strictly positive so that an exhausted budget
+// stops the phase immediately instead of being read as "no limit".
+double phase_time_limit(double configured) {
+    const double remaining = remaining_instance_budget();
+    if (remaining < 0.0) {
+        return configured;
+    }
+    const double effective =
+        configured <= 0.0 ? remaining : std::min(configured, remaining);
+    return std::max(effective, 1e-3);
+}
+
 spdp::VI44KMinOptions make_vi_44_k_min_options(
     const CliOptions& args,
     const spdp::VI44KMinResult* precomputed_result = nullptr
@@ -675,13 +760,7 @@ spdp::VI44KMinOptions make_vi_44_k_min_options(
         args.vi_44_k_min_use_vehicle_assignment == 1;
     options.subproblem.type =
         to_vi_44_subproblem_type(args.vi_44_subproblem_type);
-    options.subproblem.add_time_constraints =
-        args.vi_44_subproblem_add_time_constraints == 1;
-    options.subproblem.add_time_flow_formulation =
-        args.vi_44_subproblem_add_time_flow >= 1;
-    options.subproblem.time_flow_state_disaggregated =
-        args.vi_44_subproblem_add_time_flow == 2;
-    options.subproblem.time_limit = args.vi_44_subproblem_time_limit;
+    options.subproblem.time_limit = phase_time_limit(args.vi_44_subproblem_time_limit);
     options.subproblem.rounded_bound_stop =
         args.vi_44_duration_ip_rounded_bound_stop == 1;
     options.subproblem.dff_fs_enabled =
@@ -692,7 +771,7 @@ spdp::VI44KMinOptions make_vi_44_k_min_options(
     options.vehicle_assignment.add_container_bound =
         args.vi_44_vehicle_assignment_add_container_bound == 1;
     options.vehicle_assignment.time_limit =
-        args.vi_44_vehicle_assignment_time_limit;
+        phase_time_limit(args.vi_44_vehicle_assignment_time_limit);
     options.precomputed_result = precomputed_result;
     return options;
 }
@@ -1662,72 +1741,45 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--instance-time-limit" ||
+            arg == "--pre-mip-root-lp-time-limit") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const double value = parse_double(argv[++idx], arg);
+            if (value < 0.0) {
+                throw std::runtime_error(arg + " must be nonnegative.");
+            }
+            if (arg == "--instance-time-limit") {
+                options.instance_time_limit = value;
+            } else {
+                options.pre_mip_root_lp_time_limit = value;
+            }
+            continue;
+        }
+
         if (arg == "--add-time-flow-formulation") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
             }
             options.add_time_flow_formulation = parse_int(argv[++idx], arg);
             if (options.add_time_flow_formulation < 0 || options.add_time_flow_formulation > 2) {
-                throw std::runtime_error(arg + " must be 0 (off), 1 (node conservation), or 2 (node-state conservation).");
+                throw std::runtime_error(
+                    arg + " must be 0 (off), 1 (node conservation), or 2 (node-state conservation)."
+                );
             }
             continue;
         }
 
-        if (arg == "--add-connectivity-cuts") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.add_connectivity_cuts = parse_int(argv[++idx], arg);
-            if (options.add_connectivity_cuts != 0 && options.add_connectivity_cuts != 1) {
-                throw std::runtime_error(arg + " must be 0 or 1.");
-            }
-            continue;
-        }
-
-        if (arg == "--connectivity-cut-scope") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.connectivity_cut_scope = argv[++idx];
-            if (options.connectivity_cut_scope != "root-only" &&
-                options.connectivity_cut_scope != "full-tree") {
-                throw std::runtime_error(arg + " must be root-only or full-tree.");
-            }
-            continue;
-        }
-
-        if (arg == "--connectivity-cut-rhs") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.connectivity_cut_rhs = argv[++idx];
-            if (options.connectivity_cut_rhs != "one" &&
-                options.connectivity_cut_rhs != "duration") {
-                throw std::runtime_error(arg + " must be one or duration.");
-            }
-            continue;
-        }
-
-        if (arg == "--connectivity-cut-max-per-round") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.connectivity_cut_max_per_round = parse_int(argv[++idx], arg);
-            if (options.connectivity_cut_max_per_round <= 0) {
-                throw std::runtime_error(arg + " must be positive.");
-            }
-            continue;
-        }
-
-        if (arg == "--vi-36-treatment-boundary" ||
+        if (arg == "--add-big-m-time-constraints" ||
             arg == "--add-capacity-blossom-cuts" ||
             arg == "--add-type-travel-time-cover-cuts") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
             }
             const int value = parse_binary_flag(argv[++idx], arg);
-            if (arg == "--vi-36-treatment-boundary") {
-                options.vi_36_treatment_boundary = value;
+            if (arg == "--add-big-m-time-constraints") {
+                options.add_big_m_time_constraints = value;
             } else if (arg == "--add-capacity-blossom-cuts") {
                 options.add_capacity_blossom_cuts = value;
             } else {
@@ -1736,15 +1788,65 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
-        if (arg == "--capacity-blossom-scope") {
+        if (arg == "--root-cut-mode") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
             }
-            options.capacity_blossom_scope = argv[++idx];
-            if (options.capacity_blossom_scope != "root-only" &&
-                options.capacity_blossom_scope != "adaptive-tree" &&
-                options.capacity_blossom_scope != "full-tree") {
-                throw std::runtime_error(arg + " must be root-only, adaptive-tree, or full-tree.");
+            options.root_cut_mode = argv[++idx];
+            if (options.root_cut_mode != "pre-mip" &&
+                options.root_cut_mode != "callback") {
+                throw std::runtime_error(arg + " must be pre-mip or callback.");
+            }
+            continue;
+        }
+
+        if (arg == "--pre-mip-method" || arg == "--mip-method") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const int value = parse_int(argv[++idx], arg);
+            if (value != -1 && value != 0 && value != 1 && value != 2 && value != 4) {
+                throw std::runtime_error(
+                    arg + " must be -1 (automatic), 0 (primal simplex), 1 (dual simplex), "
+                          "2 (barrier), or 4 (deterministic concurrent)."
+                );
+            }
+            if (arg == "--pre-mip-method") {
+                options.pre_mip_method = value;
+            } else {
+                options.mip_method = value;
+            }
+            continue;
+        }
+
+        if (arg == "--mip-node-method") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.mip_node_method = parse_int(argv[++idx], arg);
+            if (options.mip_node_method < -1 || options.mip_node_method > 2) {
+                throw std::runtime_error(
+                    arg + " must be -1 (automatic), 0 (primal simplex), 1 (dual simplex), "
+                          "or 2 (barrier)."
+                );
+            }
+            continue;
+        }
+
+        if (arg == "--pre-mip-crossover" || arg == "--mip-crossover") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const int value = parse_int(argv[++idx], arg);
+            if (value != -1 && value != 0) {
+                throw std::runtime_error(
+                    arg + " must be -1 (Gurobi default) or 0 (no crossover)."
+                );
+            }
+            if (arg == "--pre-mip-crossover") {
+                options.pre_mip_crossover = value;
+            } else {
+                options.mip_crossover = value;
             }
             continue;
         }
@@ -1761,6 +1863,37 @@ CliOptions parse_cli(int argc, char** argv) {
             continue;
         }
 
+        if (arg == "--capacity-blossom-scope" ||
+            arg == "--type-travel-time-cover-scope") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const std::string value = argv[++idx];
+            if (value != "root-only" && value != "adaptive-tree" && value != "full-tree") {
+                throw std::runtime_error(
+                    arg + " must be root-only, adaptive-tree, or full-tree."
+                );
+            }
+            if (arg == "--capacity-blossom-scope") {
+                options.capacity_blossom_scope = value;
+            } else {
+                options.type_travel_time_cover_scope = value;
+            }
+            continue;
+        }
+
+        if (arg == "--type-travel-time-cover-mode") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            options.type_travel_time_cover_mode = argv[++idx];
+            if (options.type_travel_time_cover_mode != "static" &&
+                options.type_travel_time_cover_mode != "screened") {
+                throw std::runtime_error(arg + " must be static or screened.");
+            }
+            continue;
+        }
+
         if (arg == "--capacity-blossom-root-max-rounds" ||
             arg == "--capacity-blossom-root-max-cuts" ||
             arg == "--capacity-blossom-root-max-per-round" ||
@@ -1768,10 +1901,20 @@ CliOptions parse_cli(int argc, char** argv) {
             arg == "--capacity-blossom-tree-dense-node-limit" ||
             arg == "--capacity-blossom-tree-frequency" ||
             arg == "--capacity-blossom-max-total" ||
+            arg == "--capacity-blossom-root-no-cut-round-limit" ||
+            arg == "--capacity-blossom-root-low-violation-round-limit" ||
             arg == "--type-travel-time-cover-max-type-set-size" ||
-            arg == "--type-travel-time-cover-max-per-round" ||
             arg == "--type-travel-time-cover-min-rho" ||
-            arg == "--type-travel-time-cover-threads") {
+            arg == "--type-travel-time-cover-threads" ||
+            arg == "--type-travel-time-cover-root-max-rounds" ||
+            arg == "--type-travel-time-cover-root-max-cuts" ||
+            arg == "--type-travel-time-cover-root-max-per-round" ||
+            arg == "--type-travel-time-cover-tree-max-per-round" ||
+            arg == "--type-travel-time-cover-tree-dense-node-limit" ||
+            arg == "--type-travel-time-cover-tree-frequency" ||
+            arg == "--type-travel-time-cover-max-total" ||
+            arg == "--type-travel-time-cover-root-no-cut-round-limit" ||
+            arg == "--type-travel-time-cover-root-low-violation-round-limit") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
             }
@@ -1793,22 +1936,49 @@ CliOptions parse_cli(int argc, char** argv) {
                 options.capacity_blossom_tree_frequency = value;
             } else if (arg == "--capacity-blossom-max-total") {
                 options.capacity_blossom_max_total = value;
+            } else if (arg == "--capacity-blossom-root-no-cut-round-limit") {
+                options.capacity_blossom_root_no_cut_round_limit = value;
+            } else if (arg == "--capacity-blossom-root-low-violation-round-limit") {
+                options.capacity_blossom_root_low_violation_round_limit = value;
             } else if (arg == "--type-travel-time-cover-max-type-set-size") {
                 options.type_travel_time_cover_max_type_set_size = value;
-            } else if (arg == "--type-travel-time-cover-max-per-round") {
-                options.type_travel_time_cover_max_per_round = value;
             } else if (arg == "--type-travel-time-cover-min-rho") {
                 options.type_travel_time_cover_min_rho = value;
-            } else {
+            } else if (arg == "--type-travel-time-cover-threads") {
                 options.type_travel_time_cover_threads = value;
+            } else if (arg == "--type-travel-time-cover-root-max-rounds") {
+                options.type_travel_time_cover_root_max_rounds = value;
+            } else if (arg == "--type-travel-time-cover-root-max-cuts") {
+                options.type_travel_time_cover_root_max_cuts = value;
+            } else if (arg == "--type-travel-time-cover-root-max-per-round") {
+                options.type_travel_time_cover_root_max_per_round = value;
+            } else if (arg == "--type-travel-time-cover-tree-max-per-round") {
+                options.type_travel_time_cover_tree_max_per_round = value;
+            } else if (arg == "--type-travel-time-cover-tree-dense-node-limit") {
+                options.type_travel_time_cover_tree_dense_node_limit = value;
+            } else if (arg == "--type-travel-time-cover-tree-frequency") {
+                options.type_travel_time_cover_tree_frequency = value;
+            } else if (arg == "--type-travel-time-cover-max-total") {
+                options.type_travel_time_cover_max_total = value;
+            } else if (arg == "--type-travel-time-cover-root-no-cut-round-limit") {
+                options.type_travel_time_cover_root_no_cut_round_limit = value;
+            } else {
+                options.type_travel_time_cover_root_low_violation_round_limit = value;
             }
             continue;
         }
 
         if (arg == "--capacity-blossom-min-violation" ||
             arg == "--capacity-blossom-time-fraction" ||
+            arg == "--capacity-blossom-support-tolerance" ||
+            arg == "--capacity-blossom-max-overlap-jaccard" ||
+            arg == "--capacity-blossom-root-low-violation" ||
             arg == "--type-travel-time-cover-subproblem-time-limit" ||
-            arg == "--type-travel-time-cover-total-time-limit") {
+            arg == "--type-travel-time-cover-total-time-limit" ||
+            arg == "--type-travel-time-cover-min-violation" ||
+            arg == "--type-travel-time-cover-time-fraction" ||
+            arg == "--type-travel-time-cover-max-overlap-jaccard" ||
+            arg == "--type-travel-time-cover-root-low-violation") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
             }
@@ -1820,106 +1990,24 @@ CliOptions parse_cli(int argc, char** argv) {
                 options.capacity_blossom_min_violation = value;
             } else if (arg == "--capacity-blossom-time-fraction") {
                 options.capacity_blossom_time_fraction = value;
+            } else if (arg == "--capacity-blossom-support-tolerance") {
+                options.capacity_blossom_support_tolerance = value;
+            } else if (arg == "--capacity-blossom-max-overlap-jaccard") {
+                options.capacity_blossom_max_overlap_jaccard = value;
+            } else if (arg == "--capacity-blossom-root-low-violation") {
+                options.capacity_blossom_root_low_violation = value;
             } else if (arg == "--type-travel-time-cover-subproblem-time-limit") {
                 options.type_travel_time_cover_subproblem_time_limit = value;
-            } else {
+            } else if (arg == "--type-travel-time-cover-total-time-limit") {
                 options.type_travel_time_cover_total_time_limit = value;
-            }
-            continue;
-        }
-
-        if (arg == "--type-travel-time-cover-mode") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.type_travel_time_cover_mode = argv[++idx];
-            if (options.type_travel_time_cover_mode != "static" &&
-                options.type_travel_time_cover_mode != "screened") {
-                throw std::runtime_error(arg + " must be static or screened.");
-            }
-            continue;
-        }
-
-        if (arg == "--type-travel-time-cover-cache-dir") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.type_travel_time_cover_cache_dir = argv[++idx];
-            continue;
-        }
-
-        if (arg == "--initial-incumbent-time-flow") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.initial_incumbent_time_flow = parse_int(argv[++idx], arg);
-            if (options.initial_incumbent_time_flow < 0 ||
-                options.initial_incumbent_time_flow > 2) {
-                throw std::runtime_error(arg + " must be 0, 1, or 2.");
-            }
-            continue;
-        }
-
-        if (arg == "--root-lp-cut-phase" || arg == "--root-lp-cut-phase-deduct-time") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            const int value = parse_binary_flag(argv[++idx], arg);
-            if (arg == "--root-lp-cut-phase") {
-                options.root_lp_cut_phase = value;
+            } else if (arg == "--type-travel-time-cover-min-violation") {
+                options.type_travel_time_cover_min_violation = value;
+            } else if (arg == "--type-travel-time-cover-time-fraction") {
+                options.type_travel_time_cover_time_fraction = value;
+            } else if (arg == "--type-travel-time-cover-max-overlap-jaccard") {
+                options.type_travel_time_cover_max_overlap_jaccard = value;
             } else {
-                options.root_lp_cut_phase_deduct_time = value;
-            }
-            continue;
-        }
-
-        if (arg == "--root-lp-cut-phase-max-rounds") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.root_lp_cut_phase_max_rounds = parse_int(argv[++idx], arg);
-            if (options.root_lp_cut_phase_max_rounds < 0) {
-                throw std::runtime_error(arg + " must be nonnegative.");
-            }
-            continue;
-        }
-
-        if (arg == "--root-lp-cut-phase-time-limit") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.root_lp_cut_phase_time_limit = parse_double(argv[++idx], arg);
-            if (options.root_lp_cut_phase_time_limit < 0.0) {
-                throw std::runtime_error(arg + " must be nonnegative.");
-            }
-            continue;
-        }
-
-        if (arg == "--initial-incumbent-cache-dir") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.initial_incumbent_cache_dir = argv[++idx];
-            continue;
-        }
-
-        if (arg == "--initial-incumbent-big-m-time-constraints") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.initial_incumbent_big_m_time_constraints =
-                parse_binary_flag(argv[++idx], arg);
-            continue;
-        }
-
-        if (arg == "--vi-44-subproblem-add-time-flow") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(arg + " requires a value.");
-            }
-            options.vi_44_subproblem_add_time_flow = parse_int(argv[++idx], arg);
-            if (options.vi_44_subproblem_add_time_flow < 0 ||
-                options.vi_44_subproblem_add_time_flow > 2) {
-                throw std::runtime_error(arg + " must be 0, 1, or 2.");
+                options.type_travel_time_cover_root_low_violation = value;
             }
             continue;
         }
@@ -1992,20 +2080,6 @@ CliOptions parse_cli(int argc, char** argv) {
                     "(0 means no time limit)."
                 );
             }
-            continue;
-        }
-
-        if (arg == "--vi-44-subproblem-add-time-constraints") {
-            if (idx + 1 >= argc) {
-                throw std::runtime_error(
-                    "--vi-44-subproblem-add-time-constraints requires a value."
-                );
-            }
-            options.vi_44_subproblem_add_time_constraints =
-                parse_binary_flag(
-                    argv[++idx],
-                    "--vi-44-subproblem-add-time-constraints"
-            );
             continue;
         }
 
@@ -2164,6 +2238,37 @@ CliOptions parse_cli(int argc, char** argv) {
     if (options.output_dir.empty()) {
         throw std::runtime_error("--output-dir must not be empty.");
     }
+
+    // ---- cut-study consistency checks ----
+    // Dropping both duration families would leave the route-duration limit
+    // unenforced, so the main model must keep at least one of them.
+    if (options.add_time_flow_formulation == 0 &&
+        options.add_big_m_time_constraints == 0) {
+        throw std::runtime_error(
+            "--add-time-flow-formulation 0 requires --add-big-m-time-constraints 1: "
+            "the main model would otherwise not enforce the route-duration limit."
+        );
+    }
+    // Crossover can only be switched off for a barrier solve.
+    if (options.pre_mip_crossover == 0) {
+        if (options.root_cut_mode != "pre-mip") {
+            throw std::runtime_error(
+                "--pre-mip-crossover 0 requires --root-cut-mode pre-mip."
+            );
+        }
+        if (options.pre_mip_method != 2) {
+            throw std::runtime_error(
+                "--pre-mip-crossover 0 requires --pre-mip-method 2 (barrier)."
+            );
+        }
+    }
+    if (options.mip_crossover == 0 &&
+        (options.mip_method != 2 || options.mip_node_method != 2)) {
+        throw std::runtime_error(
+            "--mip-crossover 0 requires --mip-method 2 and --mip-node-method 2 (barrier)."
+        );
+    }
+
     return options;
 }
 
@@ -2250,6 +2355,60 @@ std::filesystem::path build_gurobi_log_path(
     const std::string output_name =
         instance_path.stem().string() + "_p" + std::to_string(p) + "_gurobi.log";
     return output_directory_path(output_dir) / output_name;
+}
+
+// Separate Gurobi log of the pre-MIP root LP cut phase. The initial LP solve
+// and every reoptimisation after a cut round end up here, so the LP algorithm
+// comparison can be read independently of the main MIP log.
+std::filesystem::path build_pre_mip_lp_gurobi_log_path(
+    const std::string& instance,
+    int p,
+    const std::string& output_dir
+) {
+    const std::filesystem::path instance_path(instance);
+    const std::string output_name =
+        instance_path.stem().string() + "_p" + std::to_string(p) +
+        "_pre_mip_lp_gurobi.log";
+    return output_directory_path(output_dir) / output_name;
+}
+
+// Copies one family's management block. Both dynamic cut families use the same
+// policy fields; only the values and the stop state are independent.
+void apply_cut_management_options(
+    spdp::CutManagementOptions& management,
+    const std::string& scope,
+    int root_max_rounds,
+    int root_max_cuts,
+    int root_max_per_round,
+    int tree_max_per_round,
+    int tree_dense_node_limit,
+    int tree_frequency,
+    int max_total,
+    double min_violation,
+    double time_fraction,
+    double max_overlap_jaccard,
+    int root_no_cut_round_limit,
+    double root_low_violation,
+    int root_low_violation_round_limit
+) {
+    if (!spdp::parse_cut_separation_scope(scope, management.scope)) {
+        throw std::runtime_error("Unknown cut separation scope: " + scope);
+    }
+    management.root_max_rounds = static_cast<std::size_t>(root_max_rounds);
+    management.root_max_cuts = static_cast<std::size_t>(root_max_cuts);
+    management.root_max_per_round = static_cast<std::size_t>(root_max_per_round);
+    management.tree_max_per_round = static_cast<std::size_t>(tree_max_per_round);
+    management.tree_dense_node_limit = static_cast<std::size_t>(tree_dense_node_limit);
+    management.tree_node_frequency = static_cast<std::size_t>(tree_frequency);
+    management.max_total_cuts = static_cast<std::size_t>(max_total);
+    management.min_violation = min_violation;
+    management.max_separation_time_fraction = time_fraction;
+    management.max_overlap_jaccard = max_overlap_jaccard;
+    management.root_no_cut_round_limit =
+        static_cast<std::size_t>(root_no_cut_round_limit);
+    management.root_low_violation = root_low_violation;
+    management.root_low_violation_round_limit =
+        static_cast<std::size_t>(root_low_violation_round_limit);
 }
 
 std::filesystem::path build_edge_dump_output_path(
@@ -2364,16 +2523,22 @@ void print_instance_summary(
     out << "[main] vi_request_block_sec_max_size: "
         << args.vi_request_block_sec_max_size << '\n';
     out << "[main] add_vi_44: " << args.add_vi_44 << '\n';
-    out << "[main] add_connectivity_cuts: " << args.add_connectivity_cuts << '\n';
+
+    // ---- cut-study options (same order as run_release_many.sh) ----
+    out << "[main] instance_time_limit: " << args.instance_time_limit << '\n';
     out << "[main] add_time_flow_formulation: " << args.add_time_flow_formulation << '\n';
-    out << "[main] connectivity_cut_scope: " << args.connectivity_cut_scope << '\n';
-    out << "[main] connectivity_cut_rhs: " << args.connectivity_cut_rhs << '\n';
-    out << "[main] connectivity_cut_max_per_round: "
-        << args.connectivity_cut_max_per_round << '\n';
-    out << "[main] vi_36_treatment_boundary: " << args.vi_36_treatment_boundary << '\n';
+    out << "[main] add_big_m_time_constraints: " << args.add_big_m_time_constraints << '\n';
+    out << "[main] root_cut_mode: " << args.root_cut_mode << '\n';
+    out << "[main] pre_mip_root_lp_time_limit: " << args.pre_mip_root_lp_time_limit << '\n';
+    out << "[main] pre_mip_method: " << args.pre_mip_method << '\n';
+    out << "[main] pre_mip_crossover: " << args.pre_mip_crossover << '\n';
+    out << "[main] mip_method: " << args.mip_method << '\n';
+    out << "[main] mip_node_method: " << args.mip_node_method << '\n';
+    out << "[main] mip_crossover: " << args.mip_crossover << '\n';
     out << "[main] add_capacity_blossom_cuts: " << args.add_capacity_blossom_cuts << '\n';
-    out << "[main] capacity_blossom_scope: " << args.capacity_blossom_scope << '\n';
     out << "[main] capacity_blossom_row_form: " << args.capacity_blossom_row_form << '\n';
+    out << "[main] capacity_blossom_support_tolerance: " << args.capacity_blossom_support_tolerance << '\n';
+    out << "[main] capacity_blossom_scope: " << args.capacity_blossom_scope << '\n';
     out << "[main] capacity_blossom_root_max_rounds: " << args.capacity_blossom_root_max_rounds << '\n';
     out << "[main] capacity_blossom_root_max_cuts: " << args.capacity_blossom_root_max_cuts << '\n';
     out << "[main] capacity_blossom_root_max_per_round: " << args.capacity_blossom_root_max_per_round << '\n';
@@ -2383,24 +2548,33 @@ void print_instance_summary(
     out << "[main] capacity_blossom_max_total: " << args.capacity_blossom_max_total << '\n';
     out << "[main] capacity_blossom_min_violation: " << args.capacity_blossom_min_violation << '\n';
     out << "[main] capacity_blossom_time_fraction: " << args.capacity_blossom_time_fraction << '\n';
+    out << "[main] capacity_blossom_max_overlap_jaccard: " << args.capacity_blossom_max_overlap_jaccard << '\n';
+    out << "[main] capacity_blossom_root_no_cut_round_limit: " << args.capacity_blossom_root_no_cut_round_limit << '\n';
+    out << "[main] capacity_blossom_root_low_violation: " << args.capacity_blossom_root_low_violation << '\n';
+    out << "[main] capacity_blossom_root_low_violation_round_limit: " << args.capacity_blossom_root_low_violation_round_limit << '\n';
     out << "[main] add_type_travel_time_cover_cuts: " << args.add_type_travel_time_cover_cuts << '\n';
     out << "[main] type_travel_time_cover_mode: " << args.type_travel_time_cover_mode << '\n';
     out << "[main] type_travel_time_cover_max_type_set_size: " << args.type_travel_time_cover_max_type_set_size << '\n';
     out << "[main] type_travel_time_cover_subproblem_time_limit: " << args.type_travel_time_cover_subproblem_time_limit << '\n';
     out << "[main] type_travel_time_cover_total_time_limit: " << args.type_travel_time_cover_total_time_limit << '\n';
-    out << "[main] type_travel_time_cover_max_per_round: " << args.type_travel_time_cover_max_per_round << '\n';
     out << "[main] type_travel_time_cover_min_rho: " << args.type_travel_time_cover_min_rho << '\n';
     out << "[main] type_travel_time_cover_threads: " << args.type_travel_time_cover_threads << '\n';
-    out << "[main] type_travel_time_cover_cache_dir: " << args.type_travel_time_cover_cache_dir << '\n';
-    out << "[main] vi_44_subproblem_add_time_flow: " << args.vi_44_subproblem_add_time_flow << '\n';
-    out << "[main] initial_incumbent_time_flow: " << args.initial_incumbent_time_flow << '\n';
-    out << "[main] root_lp_cut_phase: " << args.root_lp_cut_phase
-        << " (max rounds " << args.root_lp_cut_phase_max_rounds
-        << ", time limit " << args.root_lp_cut_phase_time_limit
-        << ", deduct " << args.root_lp_cut_phase_deduct_time << ")\n";
-    out << "[main] initial_incumbent_cache_dir: " << args.initial_incumbent_cache_dir << '\n';
-    out << "[main] initial_incumbent_big_m_time_constraints: "
-        << args.initial_incumbent_big_m_time_constraints << '\n';
+    out << "[main] type_travel_time_cover_scope: " << args.type_travel_time_cover_scope << '\n';
+    out << "[main] type_travel_time_cover_root_max_rounds: " << args.type_travel_time_cover_root_max_rounds << '\n';
+    out << "[main] type_travel_time_cover_root_max_cuts: " << args.type_travel_time_cover_root_max_cuts << '\n';
+    out << "[main] type_travel_time_cover_root_max_per_round: " << args.type_travel_time_cover_root_max_per_round << '\n';
+    out << "[main] type_travel_time_cover_tree_max_per_round: " << args.type_travel_time_cover_tree_max_per_round << '\n';
+    out << "[main] type_travel_time_cover_tree_dense_node_limit: " << args.type_travel_time_cover_tree_dense_node_limit << '\n';
+    out << "[main] type_travel_time_cover_tree_frequency: " << args.type_travel_time_cover_tree_frequency << '\n';
+    out << "[main] type_travel_time_cover_max_total: " << args.type_travel_time_cover_max_total << '\n';
+    out << "[main] type_travel_time_cover_min_violation: " << args.type_travel_time_cover_min_violation << '\n';
+    out << "[main] type_travel_time_cover_time_fraction: " << args.type_travel_time_cover_time_fraction << '\n';
+    out << "[main] type_travel_time_cover_max_overlap_jaccard: " << args.type_travel_time_cover_max_overlap_jaccard << '\n';
+    out << "[main] type_travel_time_cover_root_no_cut_round_limit: " << args.type_travel_time_cover_root_no_cut_round_limit << '\n';
+    out << "[main] type_travel_time_cover_root_low_violation: " << args.type_travel_time_cover_root_low_violation << '\n';
+    out << "[main] type_travel_time_cover_root_low_violation_round_limit: " << args.type_travel_time_cover_root_low_violation_round_limit << '\n';
+    // ---- end of cut-study options ----
+
     out << "[main] vi_44_k_min_use_cor: " << args.vi_44_k_min_use_cor << '\n';
     out << "[main] vi_44_k_min_use_subproblem: "
         << args.vi_44_k_min_use_subproblem << '\n';
@@ -2410,8 +2584,6 @@ void print_instance_summary(
         << args.vi_44_subproblem_type << '\n';
     out << "[main] vi_44_subproblem_time_limit: "
         << args.vi_44_subproblem_time_limit << '\n';
-    out << "[main] vi_44_subproblem_add_time_constraints: "
-        << args.vi_44_subproblem_add_time_constraints << '\n';
     out << "[main] vi_44_duration_ip_rounded_bound_stop: "
         << args.vi_44_duration_ip_rounded_bound_stop << '\n';
     out << "[main] vi_44_subproblem_dff_fs_enable: "
@@ -2628,47 +2800,42 @@ void print_direct_two_index_summary(
         << result.fixed_vehicle_constraint_count << '\n';
     out << "[main] Time-flow infeasible edges fixed to zero: "
         << result.time_flow_infeasible_edge_count << '\n';
-    out << "[main] Connectivity cuts rounds: "
-        << result.connectivity_cut_stats.rounds << '\n';
-    out << "[main] Connectivity cuts added: "
-        << result.connectivity_cut_stats.cuts_added << '\n';
-    out << "[main] Connectivity cuts added at root: "
-        << result.connectivity_cut_stats.root_cuts_added << '\n';
-    out << "[main] Connectivity cuts with rhs>=2: "
-        << result.connectivity_cut_stats.rhs_two_or_more_cuts << '\n';
-    out << "[main] Connectivity cuts separation seconds: "
-        << format_double(result.connectivity_cut_stats.separation_seconds) << '\n';
-    out << "[main] Capacity blossom rounds: " << result.capacity_blossom_stats.rounds
-        << " (root " << result.capacity_blossom_stats.root_rounds << ")\n";
+    out << "[main] Capacity blossom rounds: "
+        << result.capacity_blossom_stats.management.rounds
+        << " (root " << result.capacity_blossom_stats.management.root_rounds << ")\n";
     out << "[main] Capacity blossom candidates: " << result.capacity_blossom_stats.candidates << '\n';
-    out << "[main] Capacity blossom cuts added: " << result.capacity_blossom_stats.cuts_added
-        << " (root " << result.capacity_blossom_stats.root_cuts_added
+    out << "[main] Capacity blossom cuts added: "
+        << result.capacity_blossom_stats.management.cuts_added
+        << " (root " << result.capacity_blossom_stats.management.root_cuts_added
         << ", pickup " << result.capacity_blossom_stats.pickup_cuts
         << ", delivery " << result.capacity_blossom_stats.delivery_cuts << ")\n";
     out << "[main] Capacity blossom rejections: duplicate "
-        << result.capacity_blossom_stats.duplicate_rejections << ", overlap "
-        << result.capacity_blossom_stats.overlap_rejections << '\n';
+        << result.capacity_blossom_stats.management.duplicate_rejections << ", overlap "
+        << result.capacity_blossom_stats.management.overlap_rejections << '\n';
     out << "[main] Capacity blossom largest set: " << result.capacity_blossom_stats.largest_set_size << '\n';
     out << "[main] Capacity blossom max-flow calls: " << result.capacity_blossom_stats.max_flow_calls << '\n';
-    out << "[main] Capacity blossom stopped by cap/time: "
-        << (result.capacity_blossom_stats.stopped_by_total_cap ? 1 : 0) << '/'
-        << (result.capacity_blossom_stats.stopped_by_time_fraction ? 1 : 0) << '\n';
+    out << "[main] Capacity blossom stop reason: "
+        << spdp::cut_management_stop_reason(result.capacity_blossom_stats.management) << '\n';
     out << "[main] Capacity blossom separation seconds: "
-        << format_double(result.capacity_blossom_stats.separation_seconds) << '\n';
+        << format_double(result.capacity_blossom_stats.management.separation_seconds) << '\n';
     out << "[main] Type travel-time cover rows available/added/root: "
         << result.type_cover_stats.rows_available << '/'
-        << result.type_cover_stats.rows_added << '/'
-        << result.type_cover_stats.root_rows_added << '\n';
+        << result.type_cover_stats.management.cuts_added << '/'
+        << result.type_cover_stats.management.root_cuts_added << '\n';
     out << "[main] Type travel-time cover screening rounds/seconds: "
-        << result.type_cover_stats.screening_rounds << '/'
-        << format_double(result.type_cover_stats.screening_seconds) << '\n';
+        << result.type_cover_stats.management.rounds << '/'
+        << format_double(result.type_cover_stats.management.separation_seconds) << '\n';
+    out << "[main] Type travel-time cover rejections: overlap "
+        << result.type_cover_stats.management.overlap_rejections << '\n';
+    out << "[main] Type travel-time cover stop reason: "
+        << spdp::cut_management_stop_reason(result.type_cover_stats.management) << '\n';
     out << "[main] Direct two-index LP cut rounds: " << result.lp_cut_rounds << '\n';
-    out << "[main] Root LP cut phase rounds/rows/seconds: "
-        << result.root_lp_cut_phase_rounds << '/' << result.root_lp_cut_phase_rows << '/'
-        << format_double(result.root_lp_cut_phase_seconds) << '\n';
-    out << "[main] Root LP value before/after cut phase: "
-        << format_double(result.root_lp_value_before) << '/'
-        << format_double(result.root_lp_value_after) << '\n';
+    out << "[main] Pre-MIP root LP rounds/rows/seconds: "
+        << result.pre_mip_rounds << '/' << result.pre_mip_rows << '/'
+        << format_double(result.pre_mip_seconds) << '\n';
+    out << "[main] Pre-MIP root LP value before/after: "
+        << format_double(result.pre_mip_lp_value_before) << '/'
+        << format_double(result.pre_mip_lp_value_after) << '\n';
     out << "[main] MIP time limit used (sec): " << format_double(result.mip_time_limit_used) << '\n';
     out << "[main] Direct two-index solver runtime (sec): "
         << format_double(result.runtime_seconds) << '\n';
@@ -2804,6 +2971,8 @@ void write_direct_two_index_solution(
 int main(int argc, char** argv) {
     try {
         const CliOptions args = parse_cli(argc, argv);
+        g_instance_start = std::chrono::steady_clock::now();
+        g_instance_time_limit = args.instance_time_limit;
         if (args.p < 0) {
             throw std::runtime_error("--p must be nonnegative.");
         }
@@ -3000,8 +3169,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        std::filesystem::path incumbent_cache_path;
-        bool incumbent_cache_loaded = false;
         if (args.solve_model == 1 && args.initial_incumbent_enable == 1) {
             if (!precomputed_k_min_result.has_value()) {
                 throw std::runtime_error(
@@ -3023,70 +3190,6 @@ int main(int argc, char** argv) {
                 << args.initial_incumbent_timeout_action << '\n';
             output_file << "[initial-incumbent] backend="
                 << args.initial_incumbent_backend << '\n';
-
-            // Incumbent cache: the recovered incumbent depends only on the
-            // instance, the main graph, and k, so configuration comparisons
-            // can reuse it instead of repeating the fixed-K MILP search.
-            const std::uint64_t main_graph_fingerprint = spdp::multigraph_fingerprint(graph);
-            if (!args.initial_incumbent_cache_dir.empty()) {
-                incumbent_cache_path = std::filesystem::path(args.initial_incumbent_cache_dir) /
-                    (std::filesystem::path(args.instance).stem().string() + ".incumbent.txt");
-                std::ifstream cache_in(incumbent_cache_path);
-                if (cache_in) {
-                    std::string key;
-                    std::uint64_t cached_fingerprint = 0;
-                    int cached_k = 0;
-                    std::vector<int> cached_edges;
-                    while (cache_in >> key) {
-                        if (key == "fingerprint") {
-                            cache_in >> cached_fingerprint;
-                        } else if (key == "k") {
-                            cache_in >> cached_k;
-                        } else if (key == "edges") {
-                            int edge_id = 0;
-                            while (cache_in >> edge_id) {
-                                cached_edges.push_back(edge_id);
-                            }
-                        }
-                    }
-                    if (cached_fingerprint == main_graph_fingerprint &&
-                        cached_k == initial_k && !cached_edges.empty()) {
-                        spdp::RecoveredSolution recovered =
-                            spdp::recover_selected_edge_solution(
-                                data, graph, cached_edges, 0.0, 0.0);
-                        if (recovered.routes.size() == static_cast<std::size_t>(cached_k)) {
-                            initial_incumbent_duration = 0.0;
-                            initial_incumbent_original_cost = 0.0;
-                            for (const spdp::RecoveredRouteSolution& route : recovered.routes) {
-                                initial_incumbent_duration += route.total_time;
-                                initial_incumbent_original_cost += route.total_cost;
-                            }
-                            recovered.objective_value = initial_incumbent_original_cost;
-                            initial_edge_start.assign(graph.number_of_edges(), 0.0);
-                            for (int edge_id : recovered.active_edge_ids) {
-                                initial_edge_start[static_cast<std::size_t>(edge_id)] = 1.0;
-                            }
-                            initial_incumbent_solution = std::move(recovered);
-                            incumbent_cache_loaded = true;
-                            output_file << "[initial-incumbent] cache_hit=1 path="
-                                << incumbent_cache_path.string() << '\n';
-                            output_file << "[initial-incumbent] k_min=" << initial_k
-                                << " incumbent_k=" << cached_k << " (cached)\n";
-                            output_file << "[initial-incumbent] route_count="
-                                << initial_incumbent_solution->routes.size() << '\n';
-                            output_file << "[initial-incumbent] total_duration="
-                                << format_double(initial_incumbent_duration) << '\n';
-                            output_file << "[initial-incumbent] original_cost="
-                                << format_double(initial_incumbent_original_cost) << '\n';
-                        }
-                    }
-                }
-                if (!incumbent_cache_loaded) {
-                    output_file << "[initial-incumbent] cache_hit=0 path="
-                        << incumbent_cache_path.string() << '\n';
-                }
-            }
-            if (!incumbent_cache_loaded) {
             output_file << "[initial-incumbent] milp_mode="
                 << args.initial_incumbent_milp_mode << '\n';
             output_file << "[initial-incumbent] milp_makespan_horizon_factor="
@@ -3134,11 +3237,8 @@ int main(int argc, char** argv) {
                     args.initial_incumbent_timeout_action
                 );
             search_options.per_attempt_time_limit =
-                args.initial_incumbent_time_limit;
+                phase_time_limit(args.initial_incumbent_time_limit);
             search_options.gurobi_threads = args.gurobi_threads;
-            search_options.time_flow_formulation = args.initial_incumbent_time_flow;
-            search_options.keep_big_m_time_constraints =
-                args.initial_incumbent_big_m_time_constraints == 1;
             search_options.gurobi_log_base_path =
                 build_initial_incumbent_gurobi_log_path(args.instance, args.output_dir).string();
             search_options.cp_sat_log_base_path =
@@ -3412,21 +3512,6 @@ int main(int argc, char** argv) {
                 for (int edge_id : recovered.active_edge_ids) {
                     initial_edge_start[static_cast<std::size_t>(edge_id)] = 1.0;
                 }
-                if (!incumbent_cache_path.empty()) {
-                    std::filesystem::create_directories(incumbent_cache_path.parent_path());
-                    std::ofstream cache_out(incumbent_cache_path, std::ios::trunc);
-                    if (cache_out) {
-                        cache_out << "fingerprint " << main_graph_fingerprint << '\n';
-                        cache_out << "k " << recovered.routes.size() << '\n';
-                        cache_out << "edges";
-                        for (int edge_id : recovered.active_edge_ids) {
-                            cache_out << ' ' << edge_id;
-                        }
-                        cache_out << '\n';
-                        output_file << "[initial-incumbent] cache_written=1 path="
-                            << incumbent_cache_path.string() << '\n';
-                    }
-                }
                 initial_incumbent_solution = std::move(recovered);
 
                 output_file << "[initial-incumbent] route_validation=passed\n";
@@ -3442,7 +3527,6 @@ int main(int argc, char** argv) {
             } else {
                 output_file << "[initial-incumbent] status=no-solution-continue\n";
             }
-            }  // incumbent search (skipped on cache hit)
         } else {
             output_file << "[initial-incumbent] attempted=0\n";
         }
@@ -3671,8 +3755,10 @@ int main(int argc, char** argv) {
             output_file << "[main] Effective VI formulation: edge-y\n";
             output_file << "[main] Direct two-index objective: "
                         << args.enumeration_objective << '\n';
-            output_file << "[main] Direct two-index time constraints: "
-                        << args.vi_44_subproblem_add_time_constraints << '\n';
+            output_file << "[main] Direct two-index big-M time constraints: "
+                        << args.add_big_m_time_constraints << '\n';
+            output_file << "[main] Direct two-index time-flow formulation: "
+                        << args.add_time_flow_formulation << '\n';
 
             if (args.solve_model == 1) {
                 spdp::PstepValidInequalityOptions vi_options;
@@ -3680,8 +3766,6 @@ int main(int argc, char** argv) {
                 vi_options.add_vi_36_combined = args.add_vi_36_combined == 1;
                 vi_options.vi_36_subset_max_size =
                     static_cast<std::size_t>(args.vi_36_subset_max_size);
-                vi_options.vi_36_treatment_boundary =
-                    args.vi_36_treatment_boundary == 1;
                 vi_options.add_vi_request_block_sec =
                     args.add_vi_request_block_sec == 1;
                 vi_options.vi_request_block_sec_max_size =
@@ -3711,60 +3795,56 @@ int main(int argc, char** argv) {
                 direct_options.objective =
                     to_direct_two_index_objective(args.enumeration_objective);
                 direct_options.add_time_constraints =
-                    args.vi_44_subproblem_add_time_constraints == 1;
-                direct_options.solver_time_limit = args.solver_time_limit;
-                direct_options.gurobi_threads = args.gurobi_threads;
-                direct_options.gurobi_log_path = gurobi_log_path.string();
-                if (!solve_lp) {
-                    direct_options.initial_edge_start = initial_edge_start;
-                }
-                direct_options.valid_inequalities = std::move(vi_options);
+                    args.add_big_m_time_constraints == 1;
                 direct_options.add_time_flow_formulation =
                     args.add_time_flow_formulation >= 1;
                 direct_options.time_flow_state_disaggregated =
                     args.add_time_flow_formulation == 2;
-                direct_options.connectivity_cuts.enabled =
-                    args.add_connectivity_cuts == 1;
-                direct_options.connectivity_cuts.root_only =
-                    args.connectivity_cut_scope == "root-only";
-                direct_options.connectivity_cuts.rhs_mode =
-                    args.connectivity_cut_rhs == "one"
-                        ? spdp::ConnectivityCutRhsMode::One
-                        : spdp::ConnectivityCutRhsMode::Duration;
-                direct_options.connectivity_cuts.max_cuts_per_round =
-                    static_cast<std::size_t>(args.connectivity_cut_max_per_round);
-                direct_options.root_lp_cut_phase = args.root_lp_cut_phase == 1;
-                direct_options.root_lp_cut_phase_max_rounds = args.root_lp_cut_phase_max_rounds;
-                direct_options.root_lp_cut_phase_time_limit = args.root_lp_cut_phase_time_limit;
-                direct_options.root_lp_cut_phase_deduct_time =
-                    args.root_lp_cut_phase_deduct_time == 1;
+                direct_options.solver_time_limit =
+                    phase_time_limit(args.solver_time_limit);
+                direct_options.gurobi_threads = args.gurobi_threads;
+                direct_options.gurobi_log_path = gurobi_log_path.string();
+                direct_options.pre_mip_lp_gurobi_log_path =
+                    build_pre_mip_lp_gurobi_log_path(
+                        args.instance, args.p, args.output_dir).string();
+                if (!solve_lp) {
+                    direct_options.initial_edge_start = initial_edge_start;
+                }
+                direct_options.valid_inequalities = std::move(vi_options);
+                direct_options.root_cut_mode = args.root_cut_mode == "pre-mip"
+                    ? spdp::RootCutMode::PreMip
+                    : spdp::RootCutMode::Callback;
+                direct_options.pre_mip_root_lp_time_limit =
+                    phase_time_limit(args.pre_mip_root_lp_time_limit);
+                direct_options.pre_mip_method = args.pre_mip_method;
+                direct_options.pre_mip_crossover = args.pre_mip_crossover;
+                direct_options.mip_method = args.mip_method;
+                direct_options.mip_node_method = args.mip_node_method;
+                direct_options.mip_crossover = args.mip_crossover;
 
                 spdp::CapacityBlossomOptions& blossom = direct_options.capacity_blossom;
                 blossom.enabled = args.add_capacity_blossom_cuts == 1;
-                blossom.scope = args.capacity_blossom_scope == "root-only"
-                    ? spdp::CapacityBlossomScope::RootOnly
-                    : (args.capacity_blossom_scope == "full-tree"
-                           ? spdp::CapacityBlossomScope::FullTree
-                           : spdp::CapacityBlossomScope::AdaptiveTree);
                 blossom.row_form = args.capacity_blossom_row_form == "inbound"
                     ? spdp::CapacityBlossomRowForm::Inbound
                     : spdp::CapacityBlossomRowForm::Internal;
-                blossom.root_max_rounds =
-                    static_cast<std::size_t>(args.capacity_blossom_root_max_rounds);
-                blossom.root_max_cuts =
-                    static_cast<std::size_t>(args.capacity_blossom_root_max_cuts);
-                blossom.root_max_per_round =
-                    static_cast<std::size_t>(args.capacity_blossom_root_max_per_round);
-                blossom.tree_max_per_round =
-                    static_cast<std::size_t>(args.capacity_blossom_tree_max_per_round);
-                blossom.tree_dense_node_limit =
-                    static_cast<std::size_t>(args.capacity_blossom_tree_dense_node_limit);
-                blossom.tree_node_frequency =
-                    static_cast<std::size_t>(args.capacity_blossom_tree_frequency);
-                blossom.max_total_cuts =
-                    static_cast<std::size_t>(args.capacity_blossom_max_total);
-                blossom.min_violation = args.capacity_blossom_min_violation;
-                blossom.max_separation_time_fraction = args.capacity_blossom_time_fraction;
+                blossom.support_tolerance = args.capacity_blossom_support_tolerance;
+                apply_cut_management_options(
+                    blossom.management,
+                    args.capacity_blossom_scope,
+                    args.capacity_blossom_root_max_rounds,
+                    args.capacity_blossom_root_max_cuts,
+                    args.capacity_blossom_root_max_per_round,
+                    args.capacity_blossom_tree_max_per_round,
+                    args.capacity_blossom_tree_dense_node_limit,
+                    args.capacity_blossom_tree_frequency,
+                    args.capacity_blossom_max_total,
+                    args.capacity_blossom_min_violation,
+                    args.capacity_blossom_time_fraction,
+                    args.capacity_blossom_max_overlap_jaccard,
+                    args.capacity_blossom_root_no_cut_round_limit,
+                    args.capacity_blossom_root_low_violation,
+                    args.capacity_blossom_root_low_violation_round_limit
+                );
 
                 spdp::TypeTravelTimeCoverOptions& cover = direct_options.type_cover;
                 cover.enabled = args.add_type_travel_time_cover_cuts == 1;
@@ -3773,16 +3853,29 @@ int main(int argc, char** argv) {
                     : spdp::TypeTravelTimeCoverMode::Screened;
                 cover.max_type_set_size =
                     static_cast<std::size_t>(args.type_travel_time_cover_max_type_set_size);
-                cover.subproblem_time_limit = args.type_travel_time_cover_subproblem_time_limit;
-                cover.total_time_limit = args.type_travel_time_cover_total_time_limit;
-                cover.max_per_round =
-                    static_cast<std::size_t>(args.type_travel_time_cover_max_per_round);
-                cover.add_time_flow_formulation = args.add_time_flow_formulation >= 1;
-                cover.time_flow_state_disaggregated = args.add_time_flow_formulation == 2;
-                cover.add_time_constraints = args.vi_44_subproblem_add_time_constraints == 1;
+                cover.subproblem_time_limit =
+                    phase_time_limit(args.type_travel_time_cover_subproblem_time_limit);
+                cover.total_time_limit =
+                    phase_time_limit(args.type_travel_time_cover_total_time_limit);
                 cover.gurobi_threads = args.type_travel_time_cover_threads;
                 cover.min_rho = args.type_travel_time_cover_min_rho;
-                cover.cache_dir = args.type_travel_time_cover_cache_dir;
+                apply_cut_management_options(
+                    cover.management,
+                    args.type_travel_time_cover_scope,
+                    args.type_travel_time_cover_root_max_rounds,
+                    args.type_travel_time_cover_root_max_cuts,
+                    args.type_travel_time_cover_root_max_per_round,
+                    args.type_travel_time_cover_tree_max_per_round,
+                    args.type_travel_time_cover_tree_dense_node_limit,
+                    args.type_travel_time_cover_tree_frequency,
+                    args.type_travel_time_cover_max_total,
+                    args.type_travel_time_cover_min_violation,
+                    args.type_travel_time_cover_time_fraction,
+                    args.type_travel_time_cover_max_overlap_jaccard,
+                    args.type_travel_time_cover_root_no_cut_round_limit,
+                    args.type_travel_time_cover_root_low_violation,
+                    args.type_travel_time_cover_root_low_violation_round_limit
+                );
                 cover.log_stream = &output_file;
                 if (cover.enabled) {
                     const auto cover_start = std::chrono::steady_clock::now();
@@ -3812,6 +3905,18 @@ int main(int argc, char** argv) {
                 output_file << "[initial-incumbent] direct_y_mip_start_applied="
                     << (!direct_options.initial_edge_start.empty() ? 1 : 0) << '\n';
 
+                // The travel-time cover preprocessing runs between the option
+                // mapping and the solve, so the remaining instance budget is
+                // recomputed here rather than reused from the mapping step.
+                direct_options.solver_time_limit =
+                    phase_time_limit(args.solver_time_limit);
+                direct_options.pre_mip_root_lp_time_limit =
+                    phase_time_limit(args.pre_mip_root_lp_time_limit);
+                output_file << "[main] instance_budget_remaining_before_solve: "
+                    << format_double(remaining_instance_budget()) << '\n';
+                output_file << "[main] main_solve_time_limit: "
+                    << format_double(direct_options.solver_time_limit) << '\n';
+
                 const spdp::DirectTwoIndexResult direct_result =
                     spdp::solve_direct_two_index_model(
                         data,
@@ -3819,28 +3924,6 @@ int main(int argc, char** argv) {
                         direct_options
                     );
                 print_direct_two_index_summary(output_file, direct_result);
-                if (!incumbent_cache_path.empty() && !incumbent_cache_loaded &&
-                    !std::filesystem::exists(incumbent_cache_path) &&
-                    direct_result.has_feasible_solution && cached_k_min != nullptr &&
-                    direct_result.vehicle_count == cached_k_min->selected_k_min) {
-                    // No incumbent was cached (the fixed-K MILP timed out): keep
-                    // the best main-solve solution so later runs start from it.
-                    std::filesystem::create_directories(incumbent_cache_path.parent_path());
-                    std::ofstream cache_out(incumbent_cache_path, std::ios::trunc);
-                    if (cache_out) {
-                        cache_out << "fingerprint " << spdp::multigraph_fingerprint(graph) << '\n';
-                        cache_out << "k " << direct_result.vehicle_count << '\n';
-                        cache_out << "edges";
-                        for (std::size_t edge_id = 0; edge_id < direct_result.edge_values.size(); ++edge_id) {
-                            if (direct_result.edge_values[edge_id] > 0.5) {
-                                cache_out << ' ' << edge_id;
-                            }
-                        }
-                        cache_out << '\n';
-                        output_file << "[initial-incumbent] cache_written_from_main_solution=1 path="
-                            << incumbent_cache_path.string() << '\n';
-                    }
-                }
                 {
                     std::ofstream edge_dump_file(
                         build_edge_dump_output_path(args.instance, args.p, args.output_dir)

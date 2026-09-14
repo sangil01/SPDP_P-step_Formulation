@@ -11,6 +11,7 @@
 #include "PstepValidInequality.h"
 #include "ReadData.h"
 #include "ShortestTravelTimes.h"
+#include "CutManagement.h"
 
 namespace spdp {
 
@@ -28,7 +29,9 @@ namespace spdp {
 //
 // eta(H) is not solved to optimality: the duration IP stops as soon as the
 // rounded safe lower bound and the rounded exact incumbent agree, which
-// certifies rho(H). Uncertified masks are never turned into rows.
+// certifies rho(H). Uncertified masks are never turned into rows. The duration
+// IP always uses the big-M time formulation and is always resolved from
+// scratch; no certificate is ever read from disk.
 
 enum class TypeTravelTimeCoverMode {
     Static,    // add every certified row to the model before solving
@@ -41,16 +44,13 @@ struct TypeTravelTimeCoverOptions {
     std::size_t max_type_set_size = 0;  // 0 = every non-empty union of types
     double subproblem_time_limit = 20.0;
     double total_time_limit = 120.0;
-    std::size_t max_per_round = 8;
-    bool add_time_flow_formulation = true;
-    bool time_flow_state_disaggregated = true;
-    bool add_time_constraints = false;  // big-M rows in the duration IP
     int gurobi_threads = 1;
     // Rows with rho(H) below this value are not added (rho = 1 is an ordinary
     // connectivity requirement).
     int min_rho = 1;
-    double violation_tolerance = 1e-4;
-    std::string cache_dir;  // empty disables the certificate cache
+    // Scope, caps, violation thresholds and tailing-off rules. Screened mode
+    // only; a static family is added to the model before the solve starts.
+    CutManagementOptions management;
     std::ostream* log_stream = nullptr;
 };
 
@@ -69,7 +69,6 @@ struct TypeTravelTimeCoverEntry {
     bool hit_time_limit = false;
     bool skipped = false;
     std::string skip_reason;
-    bool from_cache = false;
     int status = 0;
     double runtime_seconds = 0.0;
 };
@@ -83,7 +82,6 @@ struct TypeTravelTimeCoverResult {
     std::vector<TypeTravelTimeCoverEntry> entries;
     double total_seconds = 0.0;
     bool total_time_limit_hit = false;
-    std::size_t cache_hits = 0;
 };
 
 struct TypeTravelTimeCoverRow {
@@ -94,11 +92,8 @@ struct TypeTravelTimeCoverRow {
 };
 
 struct TypeTravelTimeCoverStats {
+    CutManagementStats management;
     std::size_t rows_available = 0;
-    std::size_t rows_added = 0;
-    std::size_t root_rows_added = 0;
-    std::size_t screening_rounds = 0;
-    double screening_seconds = 0.0;
 };
 
 // Sorted distinct container types of the instance.
@@ -127,14 +122,18 @@ std::vector<TypeTravelTimeCoverRow> build_type_travel_time_cover_rows(
     int min_rho
 );
 
-// Indices of rows not yet added that are violated by y, sorted by decreasing
-// violation and truncated to max_rows.
+// Indices of rows not yet added whose violation exceeds min_violation, sorted
+// by decreasing violation, filtered against overlapping selections of the same
+// round and truncated to max_rows.
 std::vector<std::size_t> screen_type_travel_time_cover_rows(
     const std::vector<TypeTravelTimeCoverRow>& rows,
     const std::vector<double>& y_values,
     const std::vector<bool>& already_added,
-    double violation_tolerance,
-    std::size_t max_rows
+    double min_violation,
+    double max_overlap_jaccard,
+    std::size_t max_rows,
+    double& best_violation,
+    std::size_t& overlap_rejections
 );
 
 void write_type_travel_time_cover_log(
@@ -147,4 +146,3 @@ const char* type_travel_time_cover_mode_name(TypeTravelTimeCoverMode mode);
 }  // namespace spdp
 
 #endif
-

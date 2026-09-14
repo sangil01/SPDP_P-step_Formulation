@@ -293,7 +293,7 @@ std::vector<FamilyCandidate> separate_family(
     std::set<std::vector<int>> seen;
     for (int s = 1; s < static_cast<int>(m); ++s) {
         const double weight = tree.weight[static_cast<std::size_t>(s)];
-        if (weight >= 1.0 - options.min_violation) {
+        if (weight >= 1.0 - options.management.min_violation) {
             continue;
         }
         const std::vector<bool> side = tree_side(tree, s);
@@ -315,7 +315,7 @@ std::vector<FamilyCandidate> separate_family(
         const double internal = capacity_internal_flow(family, compact_set, y_values);
         const double violation =
             internal - static_cast<double>(compact_set.size() - 1U) / 2.0;
-        if (violation <= options.min_violation) {
+        if (violation <= options.management.min_violation) {
             continue;
         }
         candidates.push_back(FamilyCandidate{std::move(compact_set), violation});
@@ -398,15 +398,6 @@ const char* capacity_family_name(CapacityFamily family) {
     switch (family) {
         case CapacityFamily::Pickup: return "pickup";
         case CapacityFamily::Delivery: return "delivery";
-    }
-    return "unknown";
-}
-
-const char* capacity_blossom_scope_name(CapacityBlossomScope scope) {
-    switch (scope) {
-        case CapacityBlossomScope::RootOnly: return "root-only";
-        case CapacityBlossomScope::AdaptiveTree: return "adaptive-tree";
-        case CapacityBlossomScope::FullTree: return "full-tree";
     }
     return "unknown";
 }
@@ -507,20 +498,20 @@ std::vector<CapacityBlossomCut> separate_capacity_blossom_cuts(
             ? pool.emitted_pickup_sets
             : pool.emitted_delivery_sets;
         if (emitted.count(item.candidate.compact_set) != 0U) {
-            ++stats.duplicate_rejections;
+            ++stats.management.duplicate_rejections;
             continue;
         }
         bool overlaps = false;
         for (const Tagged* other : accepted) {
             if (other->family == item.family &&
                 jaccard(other->candidate.compact_set, item.candidate.compact_set) >
-                    options.max_overlap_jaccard) {
+                    options.management.max_overlap_jaccard) {
                 overlaps = true;
                 break;
             }
         }
         if (overlaps) {
-            ++stats.overlap_rejections;
+            ++stats.management.overlap_rejections;
             continue;
         }
         accepted.push_back(&item);
@@ -542,7 +533,7 @@ std::vector<CapacityBlossomCut> separate_capacity_blossom_cuts(
         }
         cuts.push_back(std::move(cut));
     }
-    stats.separation_seconds +=
+    stats.management.separation_seconds +=
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     return cuts;
 }
@@ -582,4 +573,3 @@ double max_capacity_blossom_violation_by_enumeration(
 }
 
 }  // namespace spdp
-

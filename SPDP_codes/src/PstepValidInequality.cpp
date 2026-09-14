@@ -558,7 +558,13 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
                 graph,
                 options.vi_36_subset_max_size,
                 options.add_vi_35,
-                options.vi_36_treatment_boundary
+                // Real graph boundary only. On the action-based multigraph an
+                // emptying keeps the loaded slot occupied, so two pickups (or
+                // two deliveries) joined through a treatment stay inside one
+                // capacity block. Counting that transition as leaving and
+                // re-entering the subset, as the legacy COR projection does,
+                // only weakens the row.
+                false
             )
         );
     }
@@ -597,11 +603,6 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
                         << " subproblem_status=" << result.subproblem_status
                         << " subproblem_time_limit="
                         << options.vi_44_k_min_options.subproblem.time_limit
-                        << " subproblem_time_constraints="
-                        << (options.vi_44_k_min_options.subproblem
-                                    .add_time_constraints
-                                ? 1
-                                : 0)
                         << " subproblem_hit_time_limit="
                         << (result.subproblem_hit_time_limit ? 1 : 0)
                         << " subproblem_has_certified_bound="

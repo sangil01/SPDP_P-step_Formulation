@@ -39,6 +39,14 @@ struct TwoIndexCoreOptions {
     bool enforce_route_duration_limit = true;
     double solver_time_limit = 0.0;
     int gurobi_threads = 1;
+    // Gurobi LP algorithm selection. -1 automatic, 0 primal simplex,
+    // 1 dual simplex, 2 barrier, 4 deterministic concurrent. node_method
+    // accepts -1, 0, 1, 2 only. crossover -1 keeps the Gurobi default and 0
+    // disables the barrier crossover; the caller validates that 0 is used only
+    // with a barrier method.
+    int lp_method = -1;
+    int node_method = -1;
+    int crossover = -1;
     bool output_enabled = false;
     std::string gurobi_log_path;
     std::string name_prefix = "two_index";

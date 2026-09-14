@@ -9,6 +9,7 @@
 
 #include "GenMultiGraph.h"
 #include "PstepValidInequality.h"
+#include "CutManagement.h"
 
 namespace spdp {
 
@@ -33,12 +34,6 @@ enum class CapacityFamily {
     Delivery,
 };
 
-enum class CapacityBlossomScope {
-    RootOnly,
-    AdaptiveTree,
-    FullTree,
-};
-
 enum class CapacityBlossomRowForm {
     Internal,  // sum of edges inside S <= floor(|S|/2)   (sparse for small S)
     Inbound,   // sum of edges entering S >= ceil(|S|/2)
@@ -46,45 +41,20 @@ enum class CapacityBlossomRowForm {
 
 struct CapacityBlossomOptions {
     bool enabled = false;
-    CapacityBlossomScope scope = CapacityBlossomScope::AdaptiveTree;
     CapacityBlossomRowForm row_form = CapacityBlossomRowForm::Internal;
-    std::size_t root_max_rounds = 20;
-    std::size_t root_max_cuts = 256;
-    std::size_t root_max_per_round = 32;
-    std::size_t tree_max_per_round = 8;
-    // Adaptive tree: separate at every node while node_count < tree_dense_node_limit,
-    // afterwards only when node_count % tree_node_frequency == 0.
-    std::size_t tree_dense_node_limit = 50;
-    std::size_t tree_node_frequency = 100;
-    std::size_t max_total_cuts = 2000;
-    double min_violation = 1e-4;
+    // Edges below this weight are dropped from the separation support graph.
     double support_tolerance = 1e-6;
-    // Stop tree separation when the accumulated separation time exceeds this
-    // fraction of the solver runtime (0 disables the check).
-    double max_separation_time_fraction = 0.15;
-    // Candidates of one round whose node set overlaps an already accepted
-    // candidate (same family) by more than this Jaccard index are skipped.
-    double max_overlap_jaccard = 0.9;
-    // Root rounds stop when the best violation of two consecutive rounds is
-    // below this value (tailing off on violation, not on the bound).
-    double root_tailing_off_violation = 0.02;
+    // Scope, caps, violation thresholds and tailing-off rules.
+    CutManagementOptions management;
 };
 
 struct CapacityBlossomStats {
-    std::size_t rounds = 0;
-    std::size_t root_rounds = 0;
+    CutManagementStats management;
     std::size_t candidates = 0;
-    std::size_t cuts_added = 0;
-    std::size_t root_cuts_added = 0;
     std::size_t pickup_cuts = 0;
     std::size_t delivery_cuts = 0;
-    std::size_t duplicate_rejections = 0;
-    std::size_t overlap_rejections = 0;
     std::size_t largest_set_size = 0;
     std::size_t max_flow_calls = 0;
-    bool stopped_by_total_cap = false;
-    bool stopped_by_time_fraction = false;
-    double separation_seconds = 0.0;
 };
 
 struct CapacityBlossomCut {
@@ -151,10 +121,8 @@ double capacity_internal_flow(
 );
 
 const char* capacity_family_name(CapacityFamily family);
-const char* capacity_blossom_scope_name(CapacityBlossomScope scope);
 const char* capacity_blossom_row_form_name(CapacityBlossomRowForm form);
 
 }  // namespace spdp
 
 #endif
-

@@ -18,27 +18,23 @@ using detail::TwoIndexCoreObjective;
 using detail::TwoIndexCoreOptions;
 using detail::build_two_index_model_core;
 
-// Shared state of the three cut families for one direct two-index solve.
+// Shared state of the dynamic cut families for one direct two-index solve.
+// Both families run the same management policy (scope, caps, violation
+// thresholds, tailing-off, time budget) through independent option and state
+// instances; only candidate generation differs.
 struct CutContext {
     // Type-closed travel-time cover rows (screened mode only).
     const std::vector<TypeTravelTimeCoverRow>* cover_rows = nullptr;
     std::vector<bool> cover_added;
     const TypeTravelTimeCoverOptions* cover_options = nullptr;
     TypeTravelTimeCoverStats* cover_stats = nullptr;
+    CutManagementState cover_state;
     // Capacity blossom cuts.
     const CapacityBlossomSeparator* blossom_separator = nullptr;
     const CapacityBlossomOptions* blossom_options = nullptr;
     CapacityBlossomPool blossom_pool;
     CapacityBlossomStats* blossom_stats = nullptr;
-    std::size_t blossom_root_rounds = 0;
-    std::size_t blossom_root_empty_rounds = 0;
-    std::size_t blossom_root_weak_rounds = 0;
-    bool blossom_root_closed = false;
-    bool blossom_tree_closed = false;
-    // Connectivity cuts.
-    const ConnectivitySeparator* connectivity_separator = nullptr;
-    const ConnectivityCutOptions* connectivity_options = nullptr;
-    ConnectivityCutStats* connectivity_stats = nullptr;
+    CutManagementState blossom_state;
 };
 
 bool cover_enabled(const CutContext& context) {
@@ -53,68 +49,12 @@ bool blossom_enabled(const CutContext& context) {
         context.blossom_options->enabled;
 }
 
-bool connectivity_enabled(const CutContext& context) {
-    return context.connectivity_separator != nullptr &&
-        context.connectivity_options != nullptr && context.connectivity_options->enabled;
-}
-
-// Decides whether the capacity blossom separator runs at this node and how many
-// cuts it may return; zero means skip.
-std::size_t blossom_budget_at_node(
-    CutContext& context,
-    bool is_root,
-    double node_count,
-    double runtime_seconds
-) {
-    const CapacityBlossomOptions& options = *context.blossom_options;
-    CapacityBlossomStats& stats = *context.blossom_stats;
-    if (stats.cuts_added >= options.max_total_cuts) {
-        stats.stopped_by_total_cap = true;
-        return 0;
-    }
-    if (is_root) {
-        if (context.blossom_root_closed) {
-            return 0;
-        }
-        if (context.blossom_root_rounds >= options.root_max_rounds ||
-            stats.root_cuts_added >= options.root_max_cuts) {
-            context.blossom_root_closed = true;
-            return 0;
-        }
-        return std::min(
-            options.root_max_per_round,
-            options.root_max_cuts - stats.root_cuts_added
-        );
-    }
-    if (options.scope == CapacityBlossomScope::RootOnly || context.blossom_tree_closed) {
-        return 0;
-    }
-    if (options.max_separation_time_fraction > 0.0 && runtime_seconds > 5.0 &&
-        stats.separation_seconds > options.max_separation_time_fraction * runtime_seconds) {
-        stats.stopped_by_time_fraction = true;
-        context.blossom_tree_closed = true;
-        return 0;
-    }
-    if (options.scope == CapacityBlossomScope::AdaptiveTree) {
-        const auto node = static_cast<unsigned long long>(node_count + 0.5);
-        const bool dense_phase = node < options.tree_dense_node_limit;
-        const bool periodic = options.tree_node_frequency > 0U &&
-            node % options.tree_node_frequency == 0ULL;
-        if (!dense_phase && !periodic) {
-            return 0;
-        }
-    }
-    return options.tree_max_per_round;
-}
-
 // Applies one round of every enabled family to the fractional point y and
 // returns the rows to add. Also updates statistics and pools.
 struct RoundOutput {
     std::vector<PstepValidInequalityRow> rows;
     std::size_t cover_count = 0;
     std::size_t blossom_count = 0;
-    std::size_t connectivity_count = 0;
-    double blossom_best_violation = 0.0;
 };
 
 RoundOutput separate_round(
@@ -122,42 +62,49 @@ RoundOutput separate_round(
     const std::vector<double>& y_values,
     bool is_root,
     double node_count,
-    double runtime_seconds,
-    bool lp_mode
+    double runtime_seconds
 ) {
     RoundOutput output;
 
     if (cover_enabled(context)) {
-        const auto start = std::chrono::steady_clock::now();
-        const std::vector<std::size_t> indices = screen_type_travel_time_cover_rows(
-            *context.cover_rows,
-            y_values,
-            context.cover_added,
-            context.cover_options->violation_tolerance,
-            context.cover_options->max_per_round
-        );
-        for (std::size_t index : indices) {
-            context.cover_added[index] = true;
-            output.rows.push_back((*context.cover_rows)[index].row);
-            ++output.cover_count;
-            ++context.cover_stats->rows_added;
-            if (is_root) {
-                ++context.cover_stats->root_rows_added;
+        const CutManagementOptions& management = context.cover_options->management;
+        CutManagementStats& stats = context.cover_stats->management;
+        const std::size_t budget = cut_management_budget(
+            management, context.cover_state, stats, is_root, node_count, runtime_seconds);
+        if (budget > 0U) {
+            const auto start = std::chrono::steady_clock::now();
+            double best_violation = 0.0;
+            std::size_t overlap_rejections = 0;
+            const std::vector<std::size_t> indices = screen_type_travel_time_cover_rows(
+                *context.cover_rows,
+                y_values,
+                context.cover_added,
+                management.min_violation,
+                management.max_overlap_jaccard,
+                budget,
+                best_violation,
+                overlap_rejections
+            );
+            stats.overlap_rejections += overlap_rejections;
+            for (std::size_t index : indices) {
+                context.cover_added[index] = true;
+                output.rows.push_back((*context.cover_rows)[index].row);
+                ++output.cover_count;
             }
+            cut_management_finish_round(
+                management, context.cover_state, stats, is_root, indices.size(), best_violation);
+            stats.separation_seconds +=
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         }
-        ++context.cover_stats->screening_rounds;
-        context.cover_stats->screening_seconds +=
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     }
 
     if (blossom_enabled(context)) {
-        std::size_t budget = 0;
-        if (lp_mode) {
-            budget = context.blossom_options->root_max_per_round;
-        } else {
-            budget = blossom_budget_at_node(context, is_root, node_count, runtime_seconds);
-        }
+        const CutManagementOptions& management = context.blossom_options->management;
+        CutManagementStats& stats = context.blossom_stats->management;
+        const std::size_t budget = cut_management_budget(
+            management, context.blossom_state, stats, is_root, node_count, runtime_seconds);
         if (budget > 0U) {
+            double best_violation = 0.0;
             const std::vector<CapacityBlossomCut> cuts = separate_capacity_blossom_cuts(
                 *context.blossom_separator,
                 y_values,
@@ -168,59 +115,12 @@ RoundOutput separate_round(
             );
             for (const CapacityBlossomCut& cut : cuts) {
                 output.rows.push_back(cut.row);
-                output.blossom_best_violation =
-                    std::max(output.blossom_best_violation, cut.violation);
+                best_violation = std::max(best_violation, cut.violation);
             }
             output.blossom_count = cuts.size();
-            ++context.blossom_stats->rounds;
-            context.blossom_stats->cuts_added += cuts.size();
-            if (is_root) {
-                ++context.blossom_stats->root_rounds;
-                context.blossom_stats->root_cuts_added += cuts.size();
-                if (!lp_mode) {
-                    ++context.blossom_root_rounds;
-                    if (cuts.empty()) {
-                        ++context.blossom_root_empty_rounds;
-                    } else {
-                        context.blossom_root_empty_rounds = 0;
-                    }
-                    if (output.blossom_best_violation <
-                        context.blossom_options->root_tailing_off_violation) {
-                        ++context.blossom_root_weak_rounds;
-                    } else {
-                        context.blossom_root_weak_rounds = 0;
-                    }
-                    if (context.blossom_root_empty_rounds >= 2U ||
-                        context.blossom_root_weak_rounds >= 2U) {
-                        context.blossom_root_closed = true;
-                    }
-                }
-            }
+            cut_management_finish_round(
+                management, context.blossom_state, stats, is_root, cuts.size(), best_violation);
         }
-    }
-
-    if (connectivity_enabled(context) &&
-        (is_root || !context.connectivity_options->root_only)) {
-        const auto start = std::chrono::steady_clock::now();
-        const std::vector<PstepValidInequalityRow> cuts = separate_connectivity_cuts(
-            *context.connectivity_separator,
-            y_values,
-            *context.connectivity_options
-        );
-        for (const PstepValidInequalityRow& row : cuts) {
-            output.rows.push_back(row);
-            ++context.connectivity_stats->cuts_added;
-            if (is_root) {
-                ++context.connectivity_stats->root_cuts_added;
-            }
-            if (row.rhs >= 2.0 - 1e-9) {
-                ++context.connectivity_stats->rhs_two_or_more_cuts;
-            }
-        }
-        output.connectivity_count = cuts.size();
-        ++context.connectivity_stats->rounds;
-        context.connectivity_stats->separation_seconds +=
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     }
     return output;
 }
@@ -264,15 +164,20 @@ protected:
         const double runtime_seconds = getDoubleInfo(GRB_CB_RUNTIME);
 
         const bool want_cover = cover_enabled(context_) &&
+            !cut_management_exhausted(
+                context_.cover_options->management,
+                context_.cover_state,
+                context_.cover_stats->management,
+                is_root) &&
             std::find(context_.cover_added.begin(), context_.cover_added.end(), false) !=
                 context_.cover_added.end();
         const bool want_blossom = blossom_enabled(context_) &&
-            (is_root ? !context_.blossom_root_closed
-                     : (context_.blossom_options->scope != CapacityBlossomScope::RootOnly &&
-                        !context_.blossom_tree_closed));
-        const bool want_connectivity = connectivity_enabled(context_) &&
-            (is_root || !context_.connectivity_options->root_only);
-        if (!want_cover && !want_blossom && !want_connectivity) {
+            !cut_management_exhausted(
+                context_.blossom_options->management,
+                context_.blossom_state,
+                context_.blossom_stats->management,
+                is_root);
+        if (!want_cover && !want_blossom) {
             return;
         }
 
@@ -284,7 +189,7 @@ protected:
         delete[] raw;
 
         const RoundOutput output =
-            separate_round(context_, values, is_root, node_count, runtime_seconds, false);
+            separate_round(context_, values, is_root, node_count, runtime_seconds);
         for (const PstepValidInequalityRow& row : output.rows) {
             addCut(row_to_temp_constr(row, y_vars_));
         }
@@ -323,6 +228,9 @@ DirectTwoIndexResult solve_direct_two_index_model(
     core_options.time_flow_state_disaggregated = options.time_flow_state_disaggregated;
     core_options.solver_time_limit = options.solver_time_limit;
     core_options.gurobi_threads = options.gurobi_threads;
+    core_options.lp_method = options.mip_method;
+    core_options.node_method = options.mip_node_method;
+    core_options.crossover = options.mip_crossover;
     core_options.output_enabled = true;
     core_options.gurobi_log_path = options.gurobi_log_path;
     core_options.name_prefix = "direct_two_index";
@@ -370,8 +278,8 @@ DirectTwoIndexResult solve_direct_two_index_model(
         options.type_cover.mode == TypeTravelTimeCoverMode::Static) {
         for (const TypeTravelTimeCoverRow& row : options.type_cover_rows) {
             core.model->addConstr(row_to_temp_constr(row.row, core.y_vars), row.row.name);
-            ++result.type_cover_stats.rows_added;
-            ++result.type_cover_stats.root_rows_added;
+            ++result.type_cover_stats.management.cuts_added;
+            ++result.type_cover_stats.management.root_cuts_added;
         }
     }
     core.model->update();
@@ -386,7 +294,6 @@ DirectTwoIndexResult solve_direct_two_index_model(
         static_cast<int>(vi_rows.size()) - result.fixed_vehicle_constraint_count;
 
     CutContext context;
-    ConnectivitySeparator connectivity_separator;
     CapacityBlossomSeparator blossom_separator;
     if (options.type_cover.enabled &&
         options.type_cover.mode == TypeTravelTimeCoverMode::Screened) {
@@ -401,24 +308,20 @@ DirectTwoIndexResult solve_direct_two_index_model(
         context.blossom_options = &options.capacity_blossom;
         context.blossom_stats = &result.capacity_blossom_stats;
     }
-    if (options.connectivity_cuts.enabled) {
-        connectivity_separator = build_connectivity_separator(data, graph);
-        context.connectivity_separator = &connectivity_separator;
-        context.connectivity_options = &options.connectivity_cuts;
-        context.connectivity_stats = &result.connectivity_cut_stats;
-    }
-    const bool any_dynamic_family =
-        cover_enabled(context) || blossom_enabled(context) || connectivity_enabled(context);
+    const bool any_dynamic_family = cover_enabled(context) || blossom_enabled(context);
 
     result.mip_time_limit_used = options.solver_time_limit;
-    if (options.root_lp_cut_phase && any_dynamic_family &&
+    if (options.root_cut_mode == RootCutMode::PreMip && any_dynamic_family &&
         options.model_type == DirectTwoIndexModelType::IP) {
         const auto phase_start = std::chrono::steady_clock::now();
         TwoIndexCoreOptions lp_options = core_options;
         lp_options.binary_y = false;
-        lp_options.output_enabled = false;
-        lp_options.gurobi_log_path.clear();
-        lp_options.solver_time_limit = options.root_lp_cut_phase_time_limit;
+        lp_options.output_enabled = true;
+        lp_options.gurobi_log_path = options.pre_mip_lp_gurobi_log_path;
+        lp_options.lp_method = options.pre_mip_method;
+        lp_options.node_method = -1;
+        lp_options.crossover = options.pre_mip_crossover;
+        lp_options.solver_time_limit = options.pre_mip_root_lp_time_limit;
         lp_options.name_prefix = "root_lp_phase";
         TwoIndexCoreModel lp = build_two_index_model_core(data, graph, lp_options);
         for (const PstepValidInequalityRow& row : vi_rows) {
@@ -438,20 +341,23 @@ DirectTwoIndexResult solve_direct_two_index_model(
                 std::chrono::steady_clock::now() - phase_start).count();
         };
         if (lp.model->get(GRB_IntAttr_Status) == GRB_OPTIMAL) {
-            result.root_lp_value_before = lp.model->get(GRB_DoubleAttr_ObjVal);
+            result.pre_mip_lp_value_before = lp.model->get(GRB_DoubleAttr_ObjVal);
         }
-        for (int round = 0; round < options.root_lp_cut_phase_max_rounds; ++round) {
+        // Each family owns its root round/cut caps and tailing-off rules, so the
+        // loop only guards the phase budget and a hard safety bound.
+        for (int round = 0; round < 100000; ++round) {
             if (lp.model->get(GRB_IntAttr_Status) != GRB_OPTIMAL) {
                 break;
             }
-            if (options.root_lp_cut_phase_time_limit > 0.0 &&
-                elapsed() >= options.root_lp_cut_phase_time_limit) {
+            if (options.pre_mip_root_lp_time_limit > 0.0 &&
+                elapsed() >= options.pre_mip_root_lp_time_limit) {
                 break;
             }
             for (std::size_t i = 0; i < values.size(); ++i) {
                 values[i] = lp.y_vars[i].get(GRB_DoubleAttr_X);
             }
-            const RoundOutput output = separate_round(context, values, true, 0.0, 0.0, true);
+            const RoundOutput output =
+                separate_round(context, values, true, 0.0, elapsed());
             if (output.rows.empty()) {
                 break;
             }
@@ -459,26 +365,34 @@ DirectTwoIndexResult solve_direct_two_index_model(
                 lp.model->addConstr(row_to_temp_constr(row, lp.y_vars), row.name);
                 phase_rows.push_back(row);
             }
-            ++result.root_lp_cut_phase_rounds;
-            if (options.root_lp_cut_phase_time_limit > 0.0) {
-                lp.model->set(GRB_DoubleParam_TimeLimit,
-                    std::max(1.0, options.root_lp_cut_phase_time_limit - elapsed()));
+            ++result.pre_mip_rounds;
+            if (options.pre_mip_root_lp_time_limit > 0.0) {
+                const double remaining = options.pre_mip_root_lp_time_limit - elapsed();
+                if (remaining <= 0.0) {
+                    break;
+                }
+                lp.model->set(GRB_DoubleParam_TimeLimit, remaining);
             }
             lp.model->optimize();
         }
         if (lp.model->get(GRB_IntAttr_Status) == GRB_OPTIMAL) {
-            result.root_lp_value_after = lp.model->get(GRB_DoubleAttr_ObjVal);
+            result.pre_mip_lp_value_after = lp.model->get(GRB_DoubleAttr_ObjVal);
         }
         for (const PstepValidInequalityRow& row : phase_rows) {
             core.model->addConstr(row_to_temp_constr(row, core.y_vars), row.name);
         }
-        result.root_lp_cut_phase_rows = static_cast<int>(phase_rows.size());
-        result.root_lp_cut_phase_seconds = elapsed();
-        if (options.root_lp_cut_phase_deduct_time && options.solver_time_limit > 0.0) {
+        result.pre_mip_rows = static_cast<int>(phase_rows.size());
+        result.pre_mip_seconds = elapsed();
+        // The root phase already consumed part of the instance budget.
+        if (options.solver_time_limit > 0.0) {
             result.mip_time_limit_used = std::max(
-                1.0, options.solver_time_limit - result.root_lp_cut_phase_seconds);
+                0.0, options.solver_time_limit - result.pre_mip_seconds);
             core.model->set(GRB_DoubleParam_TimeLimit, result.mip_time_limit_used);
         }
+        // The root is closed for both families; the callback may still separate
+        // inside the tree when a family asks for it.
+        context.cover_state.root_closed = true;
+        context.blossom_state.root_closed = true;
         core.model->update();
         result.constraint_count = core.model->get(GRB_IntAttr_NumConstrs);
     }
@@ -502,7 +416,7 @@ DirectTwoIndexResult solve_direct_two_index_model(
             for (std::size_t i = 0; i < values.size(); ++i) {
                 values[i] = core.y_vars[i].get(GRB_DoubleAttr_X);
             }
-            const RoundOutput output = separate_round(context, values, true, 0.0, 0.0, true);
+            const RoundOutput output = separate_round(context, values, true, 0.0, 0.0);
             if (output.rows.empty()) {
                 break;
             }
@@ -596,6 +510,26 @@ DirectTwoIndexResult solve_direct_two_index_model(
         );
     }
     return result;
+}
+
+const char* root_cut_mode_name(RootCutMode mode) {
+    switch (mode) {
+        case RootCutMode::PreMip: return "pre-mip";
+        case RootCutMode::Callback: return "callback";
+    }
+    return "unknown";
+}
+
+bool parse_root_cut_mode(const std::string& value, RootCutMode& mode) {
+    if (value == "pre-mip") {
+        mode = RootCutMode::PreMip;
+        return true;
+    }
+    if (value == "callback") {
+        mode = RootCutMode::Callback;
+        return true;
+    }
+    return false;
 }
 
 }  // namespace spdp

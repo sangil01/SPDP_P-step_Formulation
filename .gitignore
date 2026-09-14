@@ -34,7 +34,7 @@ out/
 
 # [데이터 및 프로젝트 결과물]
 SPDP_solution_benchmark/
-SPDP_data/
+SPDP_data
 SPDP_output*/
 SPDP_solution/
 SPDP_optimal/

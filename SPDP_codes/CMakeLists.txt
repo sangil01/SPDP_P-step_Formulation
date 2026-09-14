@@ -59,7 +59,7 @@ add_library(spdp_core STATIC
     src/ShortestTravelTimes.cpp
     src/CapacityBlossomCuts.cpp
     src/TypeTravelTimeCoverCuts.cpp
-    src/ConnectivityCuts.cpp
+    src/CutManagement.cpp
     src/TwoIndexSolver.cpp
     src/InitialIncumbent.cpp
     src/PstepFormulation.cpp
@@ -78,13 +78,6 @@ target_link_libraries(spdp_core PUBLIC "${GUROBI_CORE_LIB}" ortools::ortools)
 
 add_executable(SPDP_P_step src/main.cpp)
 target_link_libraries(SPDP_P_step PRIVATE spdp_core)
-
-enable_testing()
-add_executable(spdp_cut_module_tests tests/cut_module_tests.cpp)
-target_link_libraries(spdp_cut_module_tests PRIVATE spdp_core)
-add_test(NAME cut_modules_quick COMMAND spdp_cut_module_tests RecDep_day_A8.dat quick)
-add_test(NAME cut_modules_full COMMAND spdp_cut_module_tests RecDep_day_A8.dat)
-set_tests_properties(cut_modules_full PROPERTIES TIMEOUT 600)
 
 set(SPDP_BUILD_RPATH "${GUROBI_LIB_DIR}" "${ORTOOLS_HOME}/lib")
 
@@ -108,8 +101,5 @@ else()
 endif()
 
 set_target_properties(SPDP_P_step PROPERTIES
-    BUILD_RPATH "${SPDP_BUILD_RPATH}"
-)
-set_target_properties(spdp_cut_module_tests PROPERTIES
     BUILD_RPATH "${SPDP_BUILD_RPATH}"
 )

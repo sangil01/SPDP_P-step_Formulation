@@ -38,11 +38,6 @@ struct InitialIncumbentSolveOptions {
     int vehicle_count = 0;
     double solver_time_limit = 0.0;  // 0 means no time limit.
     int gurobi_threads = -1;
-    // Duration modelling of the fixed-K MILP: 0 big-M rows only, 1 time-flow
-    // (node conservation), 2 time-flow (node-state conservation). With time
-    // flow the big-M rows are kept only when keep_big_m_time_constraints is set.
-    int time_flow_formulation = 0;
-    bool keep_big_m_time_constraints = true;
     std::string gurobi_log_path;
     InitialIncumbentMilpMode milp_mode = InitialIncumbentMilpMode::Duration;
     double milp_makespan_horizon_factor = 1.5;
@@ -108,8 +103,6 @@ enum class InitialIncumbentTimeoutAction {
 struct InitialIncumbentSearchOptions {
     InitialIncumbentBackend backend = InitialIncumbentBackend::TwoIndexMilp;
     InitialIncumbentMilpMode milp_mode = InitialIncumbentMilpMode::Duration;
-    int time_flow_formulation = 0;
-    bool keep_big_m_time_constraints = true;
     double milp_makespan_horizon_factor = 1.5;
     bool milp_direct_dff_identity_enabled = false;
     bool milp_direct_dff_fs_enabled = false;
