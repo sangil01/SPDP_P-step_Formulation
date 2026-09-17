@@ -28,7 +28,7 @@ BNP_TREE_MODE=root-only # Options: root-only, full-tree
 NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg-3-step
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
 SOLVER_TIME_LIMIT=3600 # seconds
-INITIAL_INCUMBENT_ENABLE=0
+INITIAL_INCUMBENT_ENABLE=1
 INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
@@ -81,23 +81,23 @@ ADD_VI_44=1
 # ============================================
 
 # --- overall budget ---
-INSTANCE_TIME_LIMIT=0 # seconds; wall-clock budget of one instance shared by preprocessing, the VI44 duration IP, the travel-time cover duration IPs, the incumbent MILP, the pre-MIP root LP and the main MIP (0 disables the global budget)
+INSTANCE_TIME_LIMIT=5400 # seconds; wall-clock budget of one instance shared by preprocessing, the VI44 duration IP, the travel-time cover duration IPs, the incumbent MILP, the pre-MIP root LP and the main MIP (0 disables the global budget)
 
 # --- main MILP duration modelling (independent; at least one must be active) ---
-ADD_TIME_FLOW_FORMULATION=0 # 0: off, 1: node conservation (TF1), 2: node-state conservation (TF2)
-ADD_BIG_M_TIME_CONSTRAINTS=1 # 0: drop the big-M route-duration rows, 1: keep them
+ADD_TIME_FLOW_FORMULATION=2 # 0: off, 1: node conservation (TF1), 2: node-state conservation (TF2)
+ADD_BIG_M_TIME_CONSTRAINTS=0 # 0: drop the big-M route-duration rows, 1: keep them
 
 # --- root cut processing ---
-ROOT_CUT_MODE=callback # Options: pre-mip (cut loop on a standalone LP, rows copied into the MIP), callback (separate at the MIP root node)
-PRE_MIP_ROOT_LP_TIME_LIMIT=30 # seconds; budget of the pre-mip LP phase, always deducted from the main MIP budget
-PRE_MIP_METHOD=-1 # Gurobi Method of the pre-mip LP: -1 automatic, 0 primal simplex, 1 dual simplex, 2 barrier, 4 deterministic concurrent
-PRE_MIP_CROSSOVER=-1 # -1 Gurobi default, 0 no crossover (allowed only with ROOT_CUT_MODE=pre-mip and PRE_MIP_METHOD=2)
+ROOT_CUT_MODE=pre-mip # Options: pre-mip (cut loop on a standalone LP, rows copied into the MIP), callback (separate at the MIP root node)
+PRE_MIP_ROOT_LP_TIME_LIMIT=300 # seconds; budget of the pre-mip LP phase, always deducted from the main MIP budget
+PRE_MIP_METHOD=2 # Gurobi Method of the pre-mip LP: -1 automatic, 0 primal simplex, 1 dual simplex, 2 barrier, 4 deterministic concurrent
+PRE_MIP_CROSSOVER=0 # -1 Gurobi default, 0 no crossover (allowed only with ROOT_CUT_MODE=pre-mip and PRE_MIP_METHOD=2)
 MIP_METHOD=-1 # Gurobi Method of the main MIP root relaxation: -1, 0, 1, 2, 4
 MIP_NODE_METHOD=-1 # Gurobi NodeMethod of the main MIP: -1, 0, 1, 2
 MIP_CROSSOVER=-1 # -1 Gurobi default, 0 no crossover (allowed only with MIP_METHOD=2 and MIP_NODE_METHOD=2)
 
 # --- capacity blossom cuts: candidate generation ---
-ADD_CAPACITY_BLOSSOM_CUTS=0 # 1 separates odd-set capacity cuts for pickup/delivery sets (exact Padberg-Rao) as user cuts
+ADD_CAPACITY_BLOSSOM_CUTS=1 # 1 separates odd-set capacity cuts for pickup/delivery sets (exact Padberg-Rao) as user cuts
 CAPACITY_BLOSSOM_ROW_FORM=internal # Options: internal, inbound
 CAPACITY_BLOSSOM_SUPPORT_TOLERANCE=1e-6 # edges below this weight are dropped from the separation support graph
 # --- capacity blossom cuts: cut management ---
@@ -117,15 +117,15 @@ CAPACITY_BLOSSOM_ROOT_LOW_VIOLATION=0.02
 CAPACITY_BLOSSOM_ROOT_LOW_VIOLATION_ROUND_LIMIT=2 # close the root after this many consecutive rounds below the threshold (0 disables)
 
 # --- type-closed travel-time cover cuts: candidate generation ---
-ADD_TYPE_TRAVEL_TIME_COVER_CUTS=0 # 1 adds sum_{delta^-(S_H)} y >= rho(H) for type-closed sets S_H (certified duration IPs on metric-closed restricted instances)
+ADD_TYPE_TRAVEL_TIME_COVER_CUTS=1 # 1 adds sum_{delta^-(S_H)} y >= rho(H) for type-closed sets S_H (certified duration IPs on metric-closed restricted instances)
 TYPE_TRAVEL_TIME_COVER_MODE=screened # Options: static (all certified rows up front), screened (add violated rows as user cuts)
 TYPE_TRAVEL_TIME_COVER_MAX_TYPE_SET_SIZE=0 # 0: every union of types
 TYPE_TRAVEL_TIME_COVER_SUBPROBLEM_TIME_LIMIT=20 # seconds per restricted duration IP
-TYPE_TRAVEL_TIME_COVER_TOTAL_TIME_LIMIT=120 # seconds for the whole preprocessing
+TYPE_TRAVEL_TIME_COVER_TOTAL_TIME_LIMIT=300 # seconds for the whole preprocessing
 TYPE_TRAVEL_TIME_COVER_MIN_RHO=1 # rows with rho(H) below this value are dropped
-TYPE_TRAVEL_TIME_COVER_THREADS=1
+TYPE_TRAVEL_TIME_COVER_THREADS=0
 # --- type-closed travel-time cover cuts: cut management (screened mode only) ---
-TYPE_TRAVEL_TIME_COVER_SCOPE=root-only # Options: root-only, adaptive-tree, full-tree
+TYPE_TRAVEL_TIME_COVER_SCOPE=adaptive-tree # Options: root-only, adaptive-tree, full-tree
 TYPE_TRAVEL_TIME_COVER_ROOT_MAX_ROUNDS=20
 TYPE_TRAVEL_TIME_COVER_ROOT_MAX_CUTS=256
 TYPE_TRAVEL_TIME_COVER_ROOT_MAX_PER_ROUND=8
@@ -230,7 +230,7 @@ DATA_LIST=(
     "RecDep_day_C9.dat"
     "RecDep_day_C10.dat"
     "RecDep_day_C11.dat"
-    "RecDep_day_C12.dat"
+    #"RecDep_day_C12.dat"
     "RecDep_day_D1.dat"
     "RecDep_day_D2.dat"
     #=================================#
@@ -244,11 +244,11 @@ DATA_LIST=(
     "RecDep_day_C13.dat"
     "RecDep_day_C14.dat"
     "RecDep_day_C15.dat"
-    "RecDep_day_C16.dat"
+    #"RecDep_day_C16.dat"
     "RecDep_day_C17.dat"
-    "RecDep_day_C18.dat"
-    "RecDep_day_C19.dat"
-    "RecDep_day_C20.dat"
+    #"RecDep_day_C18.dat"
+    #"RecDep_day_C19.dat"
+    #"RecDep_day_C20.dat"
     "RecDep_day_D3.dat"
     "RecDep_day_D4.dat"
     "RecDep_day_D5.dat"
@@ -256,56 +256,26 @@ DATA_LIST=(
     "RecDep_day_D7.dat"
     #=================================#
     #====Request 100 초과 200 이하====#
-    '''"RecDep_day_D8.dat"
-    "RecDep_day_D9.dat"
-    "RecDep_day_D10.dat"
-    "RecDep_day_D11.dat"
-    "RecDep_day_D12.dat"
-    "RecDep_day_D13.dat"
-    "RecDep_day_D14.dat"
-    "RecDep_day_D15.dat"
-    "RecDep_day_D16.dat"
-    "RecDep_day_D17.dat"
-    "RecDep_day_D18.dat"
-    "RecDep_day_D19.dat"
-    "RecDep_day_D20.dat"'''
+    #"RecDep_day_D8.dat"
+    # "RecDep_day_D9.dat"
+    # "RecDep_day_D10.dat"
+    # "RecDep_day_D11.dat"
+    # "RecDep_day_D12.dat"
+    # "RecDep_day_D13.dat"
+    # "RecDep_day_D14.dat"
+    # "RecDep_day_D15.dat"
+    # "RecDep_day_D16.dat"
+    # "RecDep_day_D17.dat"
+    # "RecDep_day_D18.dat"
+    # "RecDep_day_D19.dat"
+    # "RecDep_day_D20.dat"
     #=================================#
 )
 # Put one data file name per line in DATA_LIST.
 # ============================================
 
 RUN_TAG_SUFFIX="${RUN_TAG_SUFFIX:-}"
-ENUMERATION_SOS1_TAG=""
-if [[ "$SOLVER_MODE" == "enumeration" ]]; then
-    ENUMERATION_SOS1_TAG="_${ENUMERATION_SOS1_MODE}_${ENUMERATION_MODEL_TYPE}_${ENUMERATION_OBJECTIVE}-fk${ADD_FIXED_VEHICLE_NUMBER}"
-fi
-RUN_TAG="P${P}_${SOLVER_MODE}_${BNP_TREE_MODE}_${SOLVER_TIME_LIMIT}s_${NODE_CG_PHASE1_MODE}_${NODE_CG_PHASE2_PRICING_MODE}${ENUMERATION_SOS1_TAG}${RUN_TAG_SUFFIX}"
-RUN_TAG+="_dgmp${DURATION_GRAPH_PRUNE_MIN_TIME_PARALLEL}-dges${DURATION_GRAPH_PRUNE_EMPTY_STATE_CONNECTORS}-igmp${INITIAL_INCUMBENT_GRAPH_PRUNE_MIN_TIME_PARALLEL}-rbs${VI_44_DURATION_IP_ROUNDED_BOUND_STOP}"
-RUN_TAG+="-vifs${VI_44_SUBPROBLEM_DFF_FS_ENABLE}"
-RUN_TAG+="-tf${ADD_TIME_FLOW_FORMULATION}-bigm${ADD_BIG_M_TIME_CONSTRAINTS}-cb${ADD_CAPACITY_BLOSSOM_CUTS}-ttc${ADD_TYPE_TRAVEL_TIME_COVER_CUTS}"
-RUN_TAG+="-rc${ROOT_CUT_MODE}-pm${PRE_MIP_METHOD}-px${PRE_MIP_CROSSOVER}-mm${MIP_METHOD}-nm${MIP_NODE_METHOD}-mx${MIP_CROSSOVER}"
-if [[ "$INITIAL_INCUMBENT_ENABLE" == "1" ]]; then
-    RUN_TAG+="_initial-incumbent-${INITIAL_INCUMBENT_BACKEND}-${INITIAL_INCUMBENT_TIME_LIMIT}s-kinc${INITIAL_INCUMBENT_MAX_K_INCREMENTS}-timeout-${INITIAL_INCUMBENT_TIMEOUT_ACTION}"
-    if [[ "$INITIAL_INCUMBENT_BACKEND" == "two-index-milp" ]]; then
-        RUN_TAG+="-milpm${INITIAL_INCUMBENT_MILP_MODE}"
-        RUN_TAG+="-did${INITIAL_INCUMBENT_MILP_DIRECT_DFF_IDENTITY_ENABLE}-dfs${INITIAL_INCUMBENT_MILP_DIRECT_DFF_FS_ENABLE}"
-        if [[ "$INITIAL_INCUMBENT_MILP_MODE" == "makespan" ]]; then
-            RUN_TAG+="-milpf${INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR}"
-        fi
-    fi
-    if [[ "$INITIAL_INCUMBENT_BACKEND" == "cp-sat" ]]; then
-        RUN_TAG+="-cpg${INITIAL_INCUMBENT_CP_GRAPH_MODE}"
-        RUN_TAG+="-cpm${INITIAL_INCUMBENT_CP_MODE}"
-        if [[ "$INITIAL_INCUMBENT_CP_MODE" == "threshold-optimization" ]]; then
-            RUN_TAG+="-cpf${INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR}"
-        fi
-        RUN_TAG+="-cpw${INITIAL_INCUMBENT_CP_WORKERS}-rtb${INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE}-rfr${INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR}-rcw${INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD}-rad${INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION}-sfp${INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP}-s43${INITIAL_INCUMBENT_CP_SYMMETRY_43}"
-    fi
-fi
-if [[ "$INITIAL_INCUMBENT_MILP_DIRECT_DFF_FS_ENABLE" == "1" || "$VI_44_SUBPROBLEM_DFF_FS_ENABLE" == "1" ]]; then
-    DFF_FS_TAG="${DFF_FS_LAMBDA_LIST//,/_}"
-    RUN_TAG+="-fsl${DFF_FS_TAG}"
-fi
+RUN_TAG="P${P}_${SOLVER_MODE}_${SOLVER_TIME_LIMIT}s${RUN_TAG_SUFFIX}"
 if [[ "$OUTPUT_DIR" = /* ]]; then
     OUTPUT_PATH="$OUTPUT_DIR"
 else
