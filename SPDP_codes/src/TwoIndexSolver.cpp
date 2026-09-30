@@ -163,12 +163,15 @@ protected:
         const bool is_root = node_count < 0.5;
         const double runtime_seconds = getDoubleInfo(GRB_CB_RUNTIME);
 
+        // The scope and the tree schedule are part of this test, so a node the
+        // families skip is left before the node relaxation is copied.
         const bool want_cover = cover_enabled(context_) &&
             !cut_management_exhausted(
                 context_.cover_options->management,
                 context_.cover_state,
                 context_.cover_stats->management,
-                is_root) &&
+                is_root,
+                node_count) &&
             std::find(context_.cover_added.begin(), context_.cover_added.end(), false) !=
                 context_.cover_added.end();
         const bool want_blossom = blossom_enabled(context_) &&
@@ -176,7 +179,8 @@ protected:
                 context_.blossom_options->management,
                 context_.blossom_state,
                 context_.blossom_stats->management,
-                is_root);
+                is_root,
+                node_count);
         if (!want_cover && !want_blossom) {
             return;
         }
@@ -389,10 +393,24 @@ DirectTwoIndexResult solve_direct_two_index_model(
                 0.0, options.solver_time_limit - result.pre_mip_seconds);
             core.model->set(GRB_DoubleParam_TimeLimit, result.mip_time_limit_used);
         }
-        // The root is closed for both families; the callback may still separate
-        // inside the tree when a family asks for it.
-        context.cover_state.root_closed = true;
-        context.blossom_state.root_closed = true;
+        // By default the pre-MIP phase owns the root: both families are closed
+        // there and the callback may only separate inside the tree. When the
+        // caller asks for it, the root phase is reopened so the main MIP root
+        // continues the same cut loop on its own relaxation. Already added rows
+        // stay recorded, so no row is separated twice.
+        if (options.pre_mip_separate_main_mip_root) {
+            if (context.cover_stats != nullptr) {
+                cut_management_reopen_root(
+                    context.cover_state, context.cover_stats->management);
+            }
+            if (context.blossom_stats != nullptr) {
+                cut_management_reopen_root(
+                    context.blossom_state, context.blossom_stats->management);
+            }
+        } else {
+            context.cover_state.root_closed = true;
+            context.blossom_state.root_closed = true;
+        }
         core.model->update();
         result.constraint_count = core.model->get(GRB_IntAttr_NumConstrs);
     }

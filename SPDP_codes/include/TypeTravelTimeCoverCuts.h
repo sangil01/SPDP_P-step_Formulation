@@ -28,10 +28,17 @@ namespace spdp {
 //     sum_{e in delta^-(S_H)} y_e >= rho(H) = ceil(eta(H) / T).
 //
 // eta(H) is not solved to optimality: the duration IP stops as soon as the
-// rounded safe lower bound and the rounded exact incumbent agree, which
-// certifies rho(H). Uncertified masks are never turned into rows. The duration
-// IP always uses the big-M time formulation and is always resolved from
-// scratch; no certificate is ever read from disk.
+// rounded safe lower bound and the rounded exact incumbent agree, which pins
+// rho(H) exactly. When the two disagree the row still uses the rounded safe
+// lower bound, because safe_LB <= eta(H) gives
+//
+//     ceil(safe_LB / T) <= ceil(eta(H) / T) = rho(H),
+//
+// so the row is a weaker but still valid member of the same family. Only the
+// solver objective bound ever feeds a right-hand side; an incumbent duration
+// is used to detect the exact case and never as a right-hand side itself. The
+// duration IP always uses the big-M time formulation and is always resolved
+// from scratch; no certificate is ever read from disk.
 
 enum class TypeTravelTimeCoverMode {
     Static,    // add every certified row to the model before solving
@@ -87,6 +94,10 @@ struct TypeTravelTimeCoverResult {
 struct TypeTravelTimeCoverRow {
     std::uint64_t type_mask = 0;
     int rho = 0;
+    // True when rho was pinned to the exact minimum route count of the
+    // restricted instance; false when it is the rounded safe lower bound of a
+    // duration IP that ran out of time. Both cases are valid rows.
+    bool certified = false;
     std::vector<NodeId> nodes;  // S_H
     PstepValidInequalityRow row;
 };
@@ -113,8 +124,10 @@ TypeTravelTimeCoverResult compute_type_travel_time_cover_bounds(
     const TypeTravelTimeCoverOptions& options
 );
 
-// One row per certified entry with rho >= options.min_rho, skipping the full
-// type set (its row is the departure-count bound already covered by VI44).
+// One row per entry that produced a solver objective bound and reaches
+// rho >= options.min_rho, skipping the full type set (its row is the
+// departure-count bound already covered by VI44). Entries whose duration IP
+// hit its time limit still contribute the rounded safe lower bound.
 std::vector<TypeTravelTimeCoverRow> build_type_travel_time_cover_rows(
     const SPDPData& data,
     const MultiDiGraph& main_graph,

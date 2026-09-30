@@ -235,13 +235,18 @@ std::vector<TypeTravelTimeCoverRow> build_type_travel_time_cover_rows(
     std::vector<TypeTravelTimeCoverRow> rows;
     const std::size_t request_count = data.requests.size();
     for (const TypeTravelTimeCoverEntry& entry : result.entries) {
-        if (entry.skipped || !entry.certified || entry.rho < std::max(1, min_rho)) {
+        // entry.rho is ceil(safe_lower_bound / T). The safe lower bound never
+        // exceeds eta(H), so rho never exceeds the true rho(H) and the row is
+        // valid whether or not an incumbent confirmed the exact value.
+        if (entry.skipped || !entry.has_lower_bound ||
+            entry.rho < std::max(1, min_rho)) {
             continue;
         }
         std::vector<bool> in_set(main_graph.number_of_nodes(), false);
         TypeTravelTimeCoverRow row;
         row.type_mask = entry.type_mask;
         row.rho = entry.rho;
+        row.certified = entry.certified;
         for (std::size_t request_index = 0; request_index < request_count; ++request_index) {
             const int type = data.requests[request_index].container_type;
             if (std::find(entry.types.begin(), entry.types.end(), type) == entry.types.end()) {
@@ -255,7 +260,7 @@ std::vector<TypeTravelTimeCoverRow> build_type_travel_time_cover_rows(
             in_set[static_cast<std::size_t>(delivery)] = true;
         }
         row.row.name = "ttcover_mask" + std::to_string(entry.type_mask) + "_rho" +
-            std::to_string(entry.rho);
+            std::to_string(entry.rho) + (entry.certified ? "" : "_lb");
         row.row.sense = PstepValidInequalitySense::GreaterEqual;
         row.row.rhs = static_cast<double>(entry.rho);
         for (std::size_t edge_id = 0; edge_id < main_graph.number_of_edges(); ++edge_id) {

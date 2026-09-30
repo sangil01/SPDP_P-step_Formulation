@@ -5,6 +5,20 @@
 
 namespace spdp {
 
+bool cut_management_node_scheduled(
+    const CutManagementOptions& options,
+    double node_count
+) {
+    if (options.scope != CutSeparationScope::AdaptiveTree) {
+        return true;
+    }
+    const auto node = static_cast<unsigned long long>(node_count + 0.5);
+    const bool dense_phase = node < options.tree_dense_node_limit;
+    const bool periodic = options.tree_node_frequency > 0U &&
+        node % options.tree_node_frequency == 0ULL;
+    return dense_phase || periodic;
+}
+
 std::size_t cut_management_budget(
     const CutManagementOptions& options,
     CutManagementState& state,
@@ -50,14 +64,8 @@ std::size_t cut_management_budget(
         state.tree_closed = true;
         return 0;
     }
-    if (options.scope == CutSeparationScope::AdaptiveTree) {
-        const auto node = static_cast<unsigned long long>(node_count + 0.5);
-        const bool dense_phase = node < options.tree_dense_node_limit;
-        const bool periodic = options.tree_node_frequency > 0U &&
-            node % options.tree_node_frequency == 0ULL;
-        if (!dense_phase && !periodic) {
-            return 0;
-        }
+    if (!cut_management_node_scheduled(options, node_count)) {
+        return 0;
     }
     return std::min(options.tree_max_per_round, total_remaining);
 }
@@ -106,7 +114,8 @@ bool cut_management_exhausted(
     const CutManagementOptions& options,
     const CutManagementState& state,
     const CutManagementStats& stats,
-    bool is_root
+    bool is_root,
+    double node_count
 ) {
     if (stats.cuts_added >= options.max_total_cuts) {
         return true;
@@ -114,7 +123,24 @@ bool cut_management_exhausted(
     if (is_root) {
         return state.root_closed;
     }
-    return options.scope == CutSeparationScope::RootOnly || state.tree_closed;
+    if (options.scope == CutSeparationScope::RootOnly || state.tree_closed) {
+        return true;
+    }
+    return !cut_management_node_scheduled(options, node_count);
+}
+
+void cut_management_reopen_root(
+    CutManagementState& state,
+    CutManagementStats& stats
+) {
+    state.root_closed = false;
+    state.root_rounds = 0;
+    state.no_cut_streak = 0;
+    state.low_violation_streak = 0;
+    stats.stopped_by_root_rounds = false;
+    stats.stopped_by_root_cuts = false;
+    stats.stopped_by_no_cut_streak = false;
+    stats.stopped_by_low_violation = false;
 }
 
 double cut_set_overlap_jaccard(

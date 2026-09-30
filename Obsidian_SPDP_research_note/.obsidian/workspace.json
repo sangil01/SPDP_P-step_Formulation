@@ -172,7 +172,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 200
+    "width": 266.5
   },
   "right": {
     "id": "b90d585d0fa44aa9",
@@ -279,15 +279,21 @@
   },
   "active": "0a35301e8a398267",
   "lastOpenFiles": [
+    "16_1. Time-flow formulation and connectivity cuts for the fixed-K conditional gap.md",
+    "15. Arc elimination at Multi Graph.md",
+    "16_2. Capacity blossom cuts and type-closed travel-time cover cuts.md",
+    "16. Time-flow formulation and connectivity cuts for the fixed-K conditional gap.md",
+    "14. branch-and-cut algorithm.md",
+    "14. branch-and-cut algorithm",
+    "13_1. Cut for separate fractional solution with both min K and travel cost (ver1 - fail).md",
+    "13_2. Cuts and time-flow formulations for the fixed-K conditional gap (ver2).md",
     "15. Time-flow formulation and connectivity cuts for the fixed-K conditional gap.md",
     "16. Capacity blossom cuts and type-closed travel-time cover cuts.md",
-    "13_2. Cuts and time-flow formulations for the fixed-K conditional gap (ver2).md",
     "11. Revise treatment location state transition.md",
     "2. Skip Pick-up and Delivery Problem (SPDP).md",
     "9_4. Initial-incumbent warm start.md",
     "9_2. 2-index formulation on multigraph.md",
     "9_6. Acceleration method duration IP and incumbent solution.md",
-    "13_1. Cut for separate fractional solution with both min K and travel cost (ver1 - fail).md",
     "9_1. Valid inequalities for tightening LP bound.md",
     "14. Arc elimination at Multi Graph.md",
     "12. Extended SPDP.md",
@@ -303,11 +309,6 @@
     "9_7. Dual-feasible functions for strengthening the route lower bound.md",
     "meeting/260427_forward dominance issue & problem complexity analysis per setting.md",
     "9_3. Exact minimum number of vehicles.md",
-    "meeting/260825_meeting.md",
-    "0. TO DO.md",
-    "1. P-step Formulation For CVRP.md",
-    "13. Route enumeration using LP bound.md",
-    "11. Extended SPDP.md",
     "11. Extended SPDP",
     "9_5. Initial-incumbent warm start.md~",
     "Untitled 1",
@@ -316,7 +317,6 @@
     "images/Pasted image 20260702154259.png",
     "COR (2022) Transport of skips between recycling centers and treatment facilities.pdf",
     "images/proposition1_for_compact_P-step_formulation.png",
-    "Pasted image 20260512160705.png",
-    "home/sangil/Documents/Kaist_PhD (1-1)/Partial Set Partitioning/SPDP_project/Obsidian_SPDP_research_note"
+    "Pasted image 20260512160705.png"
   ]
 }

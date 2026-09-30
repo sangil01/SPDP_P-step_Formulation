@@ -107,6 +107,9 @@ struct CliOptions {
     // --- root cut processing ---
     std::string root_cut_mode = "callback";  // pre-mip, callback
     double pre_mip_root_lp_time_limit = 30.0;
+    // pre-mip mode only: 1 keeps separating at the main MIP root node after the
+    // pre-mip cut loop, 0 closes the root there. Ignored in callback mode.
+    int pre_mip_separate_main_mip_root = 0;
     int pre_mip_method = -1;     // -1 auto, 0 primal, 1 dual, 2 barrier, 4 concurrent
     int pre_mip_crossover = -1;  // -1 default, 0 off (barrier only)
     int mip_method = -1;         // -1 auto, 0 primal, 1 dual, 2 barrier, 4 concurrent
@@ -258,6 +261,7 @@ void print_usage(const char* executable) {
               << " [--add-big-m-time-constraints 0|1]"
               << " [--root-cut-mode pre-mip|callback]"
               << " [--pre-mip-root-lp-time-limit T]"
+              << " [--pre-mip-separate-main-mip-root 0|1]"
               << " [--pre-mip-method -1|0|1|2|4] [--pre-mip-crossover -1|0]"
               << " [--mip-method -1|0|1|2|4] [--mip-node-method -1|0|1|2]"
               << " [--mip-crossover -1|0]"
@@ -1773,7 +1777,8 @@ CliOptions parse_cli(int argc, char** argv) {
 
         if (arg == "--add-big-m-time-constraints" ||
             arg == "--add-capacity-blossom-cuts" ||
-            arg == "--add-type-travel-time-cover-cuts") {
+            arg == "--add-type-travel-time-cover-cuts" ||
+            arg == "--pre-mip-separate-main-mip-root") {
             if (idx + 1 >= argc) {
                 throw std::runtime_error(arg + " requires a value.");
             }
@@ -1782,6 +1787,8 @@ CliOptions parse_cli(int argc, char** argv) {
                 options.add_big_m_time_constraints = value;
             } else if (arg == "--add-capacity-blossom-cuts") {
                 options.add_capacity_blossom_cuts = value;
+            } else if (arg == "--pre-mip-separate-main-mip-root") {
+                options.pre_mip_separate_main_mip_root = value;
             } else {
                 options.add_type_travel_time_cover_cuts = value;
             }
@@ -2530,6 +2537,8 @@ void print_instance_summary(
     out << "[main] add_big_m_time_constraints: " << args.add_big_m_time_constraints << '\n';
     out << "[main] root_cut_mode: " << args.root_cut_mode << '\n';
     out << "[main] pre_mip_root_lp_time_limit: " << args.pre_mip_root_lp_time_limit << '\n';
+    out << "[main] pre_mip_separate_main_mip_root: "
+        << args.pre_mip_separate_main_mip_root << '\n';
     out << "[main] pre_mip_method: " << args.pre_mip_method << '\n';
     out << "[main] pre_mip_crossover: " << args.pre_mip_crossover << '\n';
     out << "[main] mip_method: " << args.mip_method << '\n';
@@ -3816,6 +3825,8 @@ int main(int argc, char** argv) {
                     : spdp::RootCutMode::Callback;
                 direct_options.pre_mip_root_lp_time_limit =
                     phase_time_limit(args.pre_mip_root_lp_time_limit);
+                direct_options.pre_mip_separate_main_mip_root =
+                    args.pre_mip_separate_main_mip_root == 1;
                 direct_options.pre_mip_method = args.pre_mip_method;
                 direct_options.pre_mip_crossover = args.pre_mip_crossover;
                 direct_options.mip_method = args.mip_method;
@@ -3890,16 +3901,25 @@ int main(int argc, char** argv) {
                             ++certified;
                         }
                     }
+                    std::size_t lower_bound_rows = 0;
+                    for (const spdp::TypeTravelTimeCoverRow& row :
+                         direct_options.type_cover_rows) {
+                        if (!row.certified) {
+                            ++lower_bound_rows;
+                        }
+                    }
                     output_file << "[ttcover] preprocessing_seconds="
                         << format_double(std::chrono::duration<double>(
                                std::chrono::steady_clock::now() - cover_start).count())
                         << " certified_masks=" << certified
                         << " rows=" << direct_options.type_cover_rows.size()
+                        << " lower_bound_rows=" << lower_bound_rows
                         << " mode=" << spdp::type_travel_time_cover_mode_name(cover.mode) << '\n';
                     for (const spdp::TypeTravelTimeCoverRow& row : direct_options.type_cover_rows) {
                         output_file << "[ttcover] row mask=" << row.type_mask
                             << " rho=" << row.rho << " nodes=" << row.nodes.size()
-                            << " terms=" << row.row.edge_terms.size() << '\n';
+                            << " terms=" << row.row.edge_terms.size()
+                            << " certified=" << (row.certified ? 1 : 0) << '\n';
                     }
                 }
                 output_file << "[initial-incumbent] direct_y_mip_start_applied="

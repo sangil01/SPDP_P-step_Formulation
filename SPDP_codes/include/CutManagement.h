@@ -97,12 +97,34 @@ void cut_management_finish_round(
     double best_violation
 );
 
-// True when neither the root nor the tree phase can produce another cut.
+// True when the adaptive tree schedule covers this node index. Root-only and
+// full-tree scopes always return true; the adaptive scope separates while the
+// node index stays below tree_dense_node_limit and afterwards only on multiples
+// of tree_node_frequency.
+bool cut_management_node_scheduled(
+    const CutManagementOptions& options,
+    double node_count
+);
+
+// True when the family cannot contribute a cut at this node, either because its
+// stop state is reached or because the scope and the tree schedule skip the
+// node. The node index is part of the test so a callback can decide before it
+// copies the node relaxation.
 bool cut_management_exhausted(
     const CutManagementOptions& options,
     const CutManagementState& state,
     const CutManagementStats& stats,
-    bool is_root
+    bool is_root,
+    double node_count
+);
+
+// Reopens the root phase of one family after the pre-MIP cut loop handed its
+// rows to the main MIP. The round counters and the tailing-off streaks of the
+// finished phase are reset, while the accumulated cut counts are kept so the
+// root and total caps keep applying across both phases.
+void cut_management_reopen_root(
+    CutManagementState& state,
+    CutManagementStats& stats
 );
 
 // Jaccard index of two sorted index sets.

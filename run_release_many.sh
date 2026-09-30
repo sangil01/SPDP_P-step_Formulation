@@ -81,7 +81,7 @@ ADD_VI_44=1
 # ============================================
 
 # --- overall budget ---
-INSTANCE_TIME_LIMIT=5400 # seconds; wall-clock budget of one instance shared by preprocessing, the VI44 duration IP, the travel-time cover duration IPs, the incumbent MILP, the pre-MIP root LP and the main MIP (0 disables the global budget)
+INSTANCE_TIME_LIMIT=6000 # seconds; wall-clock budget of one instance shared by preprocessing, the VI44 duration IP, the travel-time cover duration IPs, the incumbent MILP, the pre-MIP root LP and the main MIP (0 disables the global budget)
 
 # --- main MILP duration modelling (independent; at least one must be active) ---
 ADD_TIME_FLOW_FORMULATION=2 # 0: off, 1: node conservation (TF1), 2: node-state conservation (TF2)
@@ -90,6 +90,7 @@ ADD_BIG_M_TIME_CONSTRAINTS=0 # 0: drop the big-M route-duration rows, 1: keep th
 # --- root cut processing ---
 ROOT_CUT_MODE=pre-mip # Options: pre-mip (cut loop on a standalone LP, rows copied into the MIP), callback (separate at the MIP root node)
 PRE_MIP_ROOT_LP_TIME_LIMIT=300 # seconds; budget of the pre-mip LP phase, always deducted from the main MIP budget
+PRE_MIP_SEPARATE_MAIN_MIP_ROOT=1 # 1 keeps separating both cut families at the main MIP root node after the pre-mip loop, 0 closes the root there; only read when ROOT_CUT_MODE=pre-mip
 PRE_MIP_METHOD=2 # Gurobi Method of the pre-mip LP: -1 automatic, 0 primal simplex, 1 dual simplex, 2 barrier, 4 deterministic concurrent
 PRE_MIP_CROSSOVER=0 # -1 Gurobi default, 0 no crossover (allowed only with ROOT_CUT_MODE=pre-mip and PRE_MIP_METHOD=2)
 MIP_METHOD=-1 # Gurobi Method of the main MIP root relaxation: -1, 0, 1, 2, 4
@@ -120,9 +121,9 @@ CAPACITY_BLOSSOM_ROOT_LOW_VIOLATION_ROUND_LIMIT=2 # close the root after this ma
 ADD_TYPE_TRAVEL_TIME_COVER_CUTS=1 # 1 adds sum_{delta^-(S_H)} y >= rho(H) for type-closed sets S_H (certified duration IPs on metric-closed restricted instances)
 TYPE_TRAVEL_TIME_COVER_MODE=screened # Options: static (all certified rows up front), screened (add violated rows as user cuts)
 TYPE_TRAVEL_TIME_COVER_MAX_TYPE_SET_SIZE=0 # 0: every union of types
-TYPE_TRAVEL_TIME_COVER_SUBPROBLEM_TIME_LIMIT=20 # seconds per restricted duration IP
-TYPE_TRAVEL_TIME_COVER_TOTAL_TIME_LIMIT=300 # seconds for the whole preprocessing
-TYPE_TRAVEL_TIME_COVER_MIN_RHO=1 # rows with rho(H) below this value are dropped
+TYPE_TRAVEL_TIME_COVER_SUBPROBLEM_TIME_LIMIT=60 # seconds per restricted duration IP
+TYPE_TRAVEL_TIME_COVER_TOTAL_TIME_LIMIT=600 # seconds for the whole preprocessing
+TYPE_TRAVEL_TIME_COVER_MIN_RHO=2 # rows with rho(H) below this value are dropped (rho = 1 rows are ordinary connectivity requirements)
 TYPE_TRAVEL_TIME_COVER_THREADS=0
 # --- type-closed travel-time cover cuts: cut management (screened mode only) ---
 TYPE_TRAVEL_TIME_COVER_SCOPE=adaptive-tree # Options: root-only, adaptive-tree, full-tree
@@ -403,6 +404,7 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "add-big-m-time-constraints: $ADD_BIG_M_TIME_CONSTRAINTS"
         echo "root-cut-mode: $ROOT_CUT_MODE"
         echo "pre-mip-root-lp-time-limit: $PRE_MIP_ROOT_LP_TIME_LIMIT"
+        echo "pre-mip-separate-main-mip-root: $PRE_MIP_SEPARATE_MAIN_MIP_ROOT"
         echo "pre-mip-method: $PRE_MIP_METHOD"
         echo "pre-mip-crossover: $PRE_MIP_CROSSOVER"
         echo "mip-method: $MIP_METHOD"
@@ -524,6 +526,7 @@ for data_name in "${DATA_LIST[@]}"; do
         --add-big-m-time-constraints "$ADD_BIG_M_TIME_CONSTRAINTS" \
         --root-cut-mode "$ROOT_CUT_MODE" \
         --pre-mip-root-lp-time-limit "$PRE_MIP_ROOT_LP_TIME_LIMIT" \
+        --pre-mip-separate-main-mip-root "$PRE_MIP_SEPARATE_MAIN_MIP_ROOT" \
         --pre-mip-method "$PRE_MIP_METHOD" \
         --pre-mip-crossover "$PRE_MIP_CROSSOVER" \
         --mip-method "$MIP_METHOD" \

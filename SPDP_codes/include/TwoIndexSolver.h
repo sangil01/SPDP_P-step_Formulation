@@ -58,6 +58,10 @@ struct DirectTwoIndexOptions {
     // Wall-clock budget of the pre-MIP root LP phase; always deducted from the
     // main MIP budget afterwards. 0 means no separate limit.
     double pre_mip_root_lp_time_limit = 30.0;
+    // PreMip mode only: keep separating at the root node of the main MIP after
+    // the pre-MIP cut loop copied its rows into the model. Ignored in Callback
+    // mode, where the root is separated by the callback from the start.
+    bool pre_mip_separate_main_mip_root = false;
     // Gurobi LP algorithms. -1 automatic, 0 primal, 1 dual, 2 barrier,
     // 4 deterministic concurrent (method only). Crossover -1 keeps the default
     // and 0 disables it; 0 is valid only together with barrier.
