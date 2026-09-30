@@ -17,7 +17,7 @@ enum class VI44SubproblemType {
 
 struct VI44SubproblemOptions {
     VI44SubproblemType type = VI44SubproblemType::LP;
-    bool add_time_constraints = false;
+    int gurobi_threads = 1;
     double time_limit = 0.0;  // 0 means no time limit.
     bool rounded_bound_stop = true;
     bool dff_fs_enabled = false;
@@ -112,6 +112,40 @@ VI44KMinResult compute_vi44_k_min(
     const SPDPData& data,
     const MultiDiGraph& graph,
     const VI44KMinOptions& options
+);
+
+// Minimum-total-duration IP with the rounded-bound early stop: the solve is
+// aborted as soon as ceil(safe_LB / T) == ceil(exact_UB / T), because the
+// route-count bound ceil(eta / T) is then certified without an optimal eta.
+struct DurationRoundedBoundOptions {
+    double solver_time_limit = 0.0;  // 0 means no time limit.
+    bool rounded_bound_stop = true;
+    int gurobi_threads = 1;
+    std::string name_prefix = "duration_bound";
+};
+
+struct DurationRoundedBoundResult {
+    int status = 0;
+    bool hit_time_limit = false;
+    bool stopped_by_rounded_bound = false;
+    // Exact duration of the best integer solution (sum of selected edge times),
+    // -1 when none was found.
+    double exact_upper_bound = -1.0;
+    // Solver objective bound and the tolerance-corrected value <= eta.
+    double objective_bound = -1.0;
+    double safe_lower_bound = -1.0;
+    bool has_lower_bound = false;
+    // ceil(safe_lower_bound / T): always a valid route-count bound.
+    int rounded_lower_bound = 0;
+    // True when ceil(safe_lower_bound / T) == ceil(exact_upper_bound / T).
+    bool certified = false;
+    double runtime_seconds = 0.0;
+};
+
+DurationRoundedBoundResult solve_duration_rounded_bound(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const DurationRoundedBoundOptions& options
 );
 
 // Returns the common rounded duration bound only when the safe lower bound

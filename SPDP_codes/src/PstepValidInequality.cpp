@@ -203,14 +203,16 @@ std::pair<int, int> pickup_or_delivery_coefficients(
     const NodeSpec& v,
     bool has_treatment,
     const std::vector<int>& subset,
-    NodeSpec::Kind service_kind
+    NodeSpec::Kind service_kind,
+    bool treatment_boundary
 ) {
     const bool u_in_subset =
         u.kind == service_kind && contains_location(subset, u.location);
     const bool v_in_subset =
         v.kind == service_kind && contains_location(subset, v.location);
-    const int inbound = v_in_subset && (has_treatment || !u_in_subset) ? 1 : 0;
-    const int outbound = u_in_subset && (has_treatment || !v_in_subset) ? 1 : 0;
+    const bool crosses = treatment_boundary && has_treatment;
+    const int inbound = v_in_subset && (crosses || !u_in_subset) ? 1 : 0;
+    const int outbound = u_in_subset && (crosses || !v_in_subset) ? 1 : 0;
     return {inbound, outbound};
 }
 
@@ -244,7 +246,8 @@ std::vector<PstepValidInequalityRow> build_vi36_family_rows(
     const std::map<int, int>& count_by_location,
     LocationFamily family,
     std::size_t max_subset_size,
-    bool skip_full_location_set
+    bool skip_full_location_set,
+    bool treatment_boundary
 ) {
     const std::vector<std::vector<int>> subsets = enumerate_location_subsets(
         count_by_location,
@@ -276,7 +279,8 @@ std::vector<PstepValidInequalityRow> build_vi36_family_rows(
                     graph.node(edge.v),
                     edge_has_treatment(edge),
                     subset,
-                    service_kind
+                    service_kind,
+                    treatment_boundary
                 );
             }
 
@@ -296,7 +300,8 @@ std::vector<PstepValidInequalityRow> build_vi36_family_rows(
 std::vector<PstepValidInequalityRow> build_vi36_rows(
     const MultiDiGraph& graph,
     std::size_t max_subset_size,
-    bool skip_full_location_sets
+    bool skip_full_location_sets,
+    bool treatment_boundary
 ) {
     if (max_subset_size == 0U) {
         return {};
@@ -329,7 +334,8 @@ std::vector<PstepValidInequalityRow> build_vi36_rows(
             pickup_count_by_location,
             LocationFamily::Pickup,
             max_subset_size,
-            skip_full_location_sets
+            skip_full_location_sets,
+            treatment_boundary
         )
     );
     append_rows(
@@ -339,7 +345,8 @@ std::vector<PstepValidInequalityRow> build_vi36_rows(
             treatment_count_by_location,
             LocationFamily::Treatment,
             max_subset_size,
-            skip_full_location_sets
+            skip_full_location_sets,
+            treatment_boundary
         )
     );
     append_rows(
@@ -349,7 +356,8 @@ std::vector<PstepValidInequalityRow> build_vi36_rows(
             delivery_count_by_location,
             LocationFamily::Delivery,
             max_subset_size,
-            skip_full_location_sets
+            skip_full_location_sets,
+            treatment_boundary
         )
     );
     return rows;
@@ -549,7 +557,14 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
             build_vi36_rows(
                 graph,
                 options.vi_36_subset_max_size,
-                options.add_vi_35
+                options.add_vi_35,
+                // Real graph boundary only. On the action-based multigraph an
+                // emptying keeps the loaded slot occupied, so two pickups (or
+                // two deliveries) joined through a treatment stay inside one
+                // capacity block. Counting that transition as leaving and
+                // re-entering the subset, as the legacy COR projection does,
+                // only weakens the row.
+                false
             )
         );
     }
@@ -588,11 +603,6 @@ std::vector<PstepValidInequalityRow> build_pstep_valid_inequality_rows(
                         << " subproblem_status=" << result.subproblem_status
                         << " subproblem_time_limit="
                         << options.vi_44_k_min_options.subproblem.time_limit
-                        << " subproblem_time_constraints="
-                        << (options.vi_44_k_min_options.subproblem
-                                    .add_time_constraints
-                                ? 1
-                                : 0)
                         << " subproblem_hit_time_limit="
                         << (result.subproblem_hit_time_limit ? 1 : 0)
                         << " subproblem_has_certified_bound="

@@ -371,6 +371,7 @@ InitialIncumbentSolveResult solve_fixed_k_hard_horizon_impl(
     TwoIndexCoreOptions core_options;
     core_options.objective = objective;
     core_options.binary_y = true;
+    // The fixed-K incumbent MILP always uses the compact big-M formulation.
     core_options.add_time_constraints = true;
     core_options.solver_time_limit = options.solver_time_limit;
     core_options.gurobi_threads = options.gurobi_threads;

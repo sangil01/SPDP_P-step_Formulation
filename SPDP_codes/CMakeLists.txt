@@ -56,6 +56,10 @@ add_library(spdp_core STATIC
     src/TwoIndexModelCore.cpp
     src/KMinComputation.cpp
     src/PstepValidInequality.cpp
+    src/ShortestTravelTimes.cpp
+    src/CapacityBlossomCuts.cpp
+    src/TypeTravelTimeCoverCuts.cpp
+    src/CutManagement.cpp
     src/TwoIndexSolver.cpp
     src/InitialIncumbent.cpp
     src/PstepFormulation.cpp

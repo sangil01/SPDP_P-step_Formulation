@@ -6,46 +6,73 @@
       {
         "id": "242db59fe749fd4f",
         "type": "tabs",
-        "dimension": 52.7794746487477,
+        "dimension": 56.622911694510734,
         "children": [
           {
-            "id": "03758ec0505e53ba",
+            "id": "0a35301e8a398267",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "9_1. Valid inequalities for tightening LP bound.md",
+                "file": "13_2. Cuts and time-flow formulations for the fixed-K conditional gap (ver2).md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "9_1. Valid inequalities for tightening LP bound"
+              "title": "13_2. Cuts and time-flow formulations for the fixed-K conditional gap (ver2)"
             }
           },
           {
-            "id": "1cf1ab5b99f0b31c",
+            "id": "aa1419e3dffd033a",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "13. Cut for separate fractional solution with both min K and travel cost.md",
+                "file": "15. Time-flow formulation and connectivity cuts for the fixed-K conditional gap.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "13. Cut for separate fractional solution with both min K and travel cost"
+              "title": "15. Time-flow formulation and connectivity cuts for the fixed-K conditional gap"
+            }
+          },
+          {
+            "id": "b3e08a36c47d260e",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "16. Capacity blossom cuts and type-closed travel-time cover cuts.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "16. Capacity blossom cuts and type-closed travel-time cover cuts"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       },
       {
-        "id": "5b4569e2f57c5e3d",
+        "id": "ba67ce7372c902b6",
         "type": "tabs",
-        "dimension": 47.22052535125229,
+        "dimension": 43.37708830548926,
         "children": [
           {
-            "id": "87a87d55c5904b6f",
+            "id": "c46db58837f78f10",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "11. Revise treatment location state transition.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "11. Revise treatment location state transition"
+            }
+          },
+          {
+            "id": "f90c3d86daa1220a",
             "type": "leaf",
             "state": {
               "type": "markdown",
@@ -59,7 +86,7 @@
             }
           },
           {
-            "id": "3275e1b6ea264b9f",
+            "id": "95bb15c347612598",
             "type": "leaf",
             "state": {
               "type": "markdown",
@@ -71,9 +98,22 @@
               "icon": "lucide-file",
               "title": "9_1. Valid inequalities for tightening LP bound"
             }
+          },
+          {
+            "id": "4d388f76460c4c09",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "9_2. 2-index formulation on multigraph.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "9_2. 2-index formulation on multigraph"
+            }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "vertical"
@@ -132,7 +172,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 238.5
+    "width": 266.5
   },
   "right": {
     "id": "b90d585d0fa44aa9",
@@ -237,37 +277,38 @@
       "bases:Create new base": false
     }
   },
-  "active": "1cf1ab5b99f0b31c",
+  "active": "0a35301e8a398267",
   "lastOpenFiles": [
-    "14. Conditional cost cuts - implementation and experiments.md",
-    "9_1. Valid inequalities for tightening LP bound.md",
-    "13. Cut for separate fractional solution with both min K and travel cost.md",
-    "2. Skip Pick-up and Delivery Problem (SPDP).md",
-    "109. SPDP difficulty analysis.md",
-    "3. P-step Formulation for SPDP-flexible.md",
-    "meeting/260910_meeting.md",
-    "meeting/260903_meeting.md",
+    "16_1. Time-flow formulation and connectivity cuts for the fixed-K conditional gap.md",
+    "15. Arc elimination at Multi Graph.md",
+    "16_2. Capacity blossom cuts and type-closed travel-time cover cuts.md",
+    "16. Time-flow formulation and connectivity cuts for the fixed-K conditional gap.md",
+    "14. branch-and-cut algorithm.md",
+    "14. branch-and-cut algorithm",
+    "13_1. Cut for separate fractional solution with both min K and travel cost (ver1 - fail).md",
+    "13_2. Cuts and time-flow formulations for the fixed-K conditional gap (ver2).md",
+    "15. Time-flow formulation and connectivity cuts for the fixed-K conditional gap.md",
+    "16. Capacity blossom cuts and type-closed travel-time cover cuts.md",
     "11. Revise treatment location state transition.md",
+    "2. Skip Pick-up and Delivery Problem (SPDP).md",
     "9_4. Initial-incumbent warm start.md",
-    "4_2. For efficient pricing.md",
-    "10. Comparative analysis with Forbes et al..md",
-    "EJOR (2026) Fragment-based solution of two skip pickup and delivery problems.pdf",
-    "13. Cut for separate fractional solution with both min K and travel cost",
-    "12. Extended SPDP.md",
-    "13. Cut for separate fractional solution with both min K and travel cost",
-    "14. Arc elimination at Multi Graph.md",
-    "15. Route enumeration using LP bound.md",
     "9_2. 2-index formulation on multigraph.md",
     "9_6. Acceleration method duration IP and incumbent solution.md",
+    "9_1. Valid inequalities for tightening LP bound.md",
+    "14. Arc elimination at Multi Graph.md",
+    "12. Extended SPDP.md",
+    "10. Comparative analysis with Forbes et al..md",
+    "meeting/260903_meeting.md",
+    "4_2. For efficient pricing.md",
+    "EJOR (2026) Fragment-based solution of two skip pickup and delivery problems.pdf",
+    "13. Cut for separate fractional solution with both min K and travel cost",
+    "13. Cut for separate fractional solution with both min K and travel cost",
+    "15. Route enumeration using LP bound.md",
+    "109. SPDP difficulty analysis.md",
     "9_5. CP for exact K_min.md",
     "9_7. Dual-feasible functions for strengthening the route lower bound.md",
     "meeting/260427_forward dominance issue & problem complexity analysis per setting.md",
     "9_3. Exact minimum number of vehicles.md",
-    "meeting/260825_meeting.md",
-    "0. TO DO.md",
-    "1. P-step Formulation For CVRP.md",
-    "13. Route enumeration using LP bound.md",
-    "11. Extended SPDP.md",
     "11. Extended SPDP",
     "9_5. Initial-incumbent warm start.md~",
     "Untitled 1",
@@ -276,7 +317,6 @@
     "images/Pasted image 20260702154259.png",
     "COR (2022) Transport of skips between recycling centers and treatment facilities.pdf",
     "images/proposition1_for_compact_P-step_formulation.png",
-    "Pasted image 20260512160705.png",
-    "home/sangil/Documents/Kaist_PhD (1-1)/Partial Set Partitioning/SPDP_project/Obsidian_SPDP_research_note"
+    "Pasted image 20260512160705.png"
   ]
 }
