@@ -279,6 +279,7 @@
   },
   "active": "0a35301e8a398267",
   "lastOpenFiles": [
+    "15. Heuristic algorithm for Incumbent solution.md",
     "16_1. Time-flow formulation and connectivity cuts for the fixed-K conditional gap.md",
     "15. Arc elimination at Multi Graph.md",
     "16_2. Capacity blossom cuts and type-closed travel-time cover cuts.md",
@@ -308,7 +309,6 @@
     "9_5. CP for exact K_min.md",
     "9_7. Dual-feasible functions for strengthening the route lower bound.md",
     "meeting/260427_forward dominance issue & problem complexity analysis per setting.md",
-    "9_3. Exact minimum number of vehicles.md",
     "11. Extended SPDP",
     "9_5. Initial-incumbent warm start.md~",
     "Untitled 1",
