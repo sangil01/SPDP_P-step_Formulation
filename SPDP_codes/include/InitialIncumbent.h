@@ -8,6 +8,7 @@
 
 #include "CpSatSpdpSolver.h"
 #include "GenMultiGraph.h"
+#include "PalnsIncumbent.h"
 #include "ReadData.h"
 
 namespace spdp {
@@ -15,6 +16,7 @@ namespace spdp {
 enum class InitialIncumbentBackend {
     TwoIndexMilp,
     CpSat,
+    Palns,
 };
 
 enum class InitialIncumbentMilpMode {
@@ -93,6 +95,10 @@ struct InitialIncumbentSolveResult {
     std::string adapter_status;
     std::string error_message;
     std::string solution_info;
+    std::string palns_log;
+    double palns_time_to_feasible = -1.0;
+    double palns_time_to_target = -1.0;
+    bool palns_reached_target = false;
 };
 
 enum class InitialIncumbentTimeoutAction {
@@ -116,6 +122,7 @@ struct InitialIncumbentSearchOptions {
     std::string gurobi_log_base_path;
     std::string cp_sat_log_base_path;
     CpSatSolveOptions cp_sat;
+    PalnsOptions palns;
 };
 
 using FixedKSolveCallback =
@@ -142,6 +149,8 @@ struct InitialIncumbentSearchResult {
     double total_runtime_seconds = 0.0;
     std::vector<InitialIncumbentAttemptResult> attempts;
     InitialIncumbentSolveResult incumbent_result;
+    std::string palns_pattern_summary;
+    double palns_pattern_seconds = 0.0;
 };
 
 InitialIncumbentSolveResult solve_fixed_k_initial_incumbent(

@@ -62,6 +62,7 @@ add_library(spdp_core STATIC
     src/CutManagement.cpp
     src/TwoIndexSolver.cpp
     src/InitialIncumbent.cpp
+    src/PalnsIncumbent.cpp
     src/PstepFormulation.cpp
     src/PstepPricing.cpp
     src/PstepMasterCG.cpp

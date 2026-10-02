@@ -422,6 +422,9 @@ DirectTwoIndexResult solve_direct_two_index_model(
         core.model->setCallback(cut_callback.get());
     }
 
+    if (options.mip_start_check_only) {
+        core.model->set(GRB_IntParam_SolutionLimit, 1);
+    }
     core.model->optimize();
     if (any_dynamic_family && options.model_type == DirectTwoIndexModelType::LP) {
         // LP cutting-plane loop: every family is separated until no family
