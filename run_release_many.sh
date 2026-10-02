@@ -48,7 +48,7 @@ INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=1
 INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=1
 INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP=1
 INITIAL_INCUMBENT_CP_SYMMETRY_43=1
-GUROBI_THREADS=0
+GUROBI_THREADS=8
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
 BNP_BRANCHING_RULE=closest-to-half # Options: closest-to-half
@@ -124,7 +124,7 @@ TYPE_TRAVEL_TIME_COVER_MAX_TYPE_SET_SIZE=0 # 0: every union of types
 TYPE_TRAVEL_TIME_COVER_SUBPROBLEM_TIME_LIMIT=60 # seconds per restricted duration IP
 TYPE_TRAVEL_TIME_COVER_TOTAL_TIME_LIMIT=600 # seconds for the whole preprocessing
 TYPE_TRAVEL_TIME_COVER_MIN_RHO=2 # rows with rho(H) below this value are dropped (rho = 1 rows are ordinary connectivity requirements)
-TYPE_TRAVEL_TIME_COVER_THREADS=0
+TYPE_TRAVEL_TIME_COVER_THREADS=8
 # --- type-closed travel-time cover cuts: cut management (screened mode only) ---
 TYPE_TRAVEL_TIME_COVER_SCOPE=adaptive-tree # Options: root-only, adaptive-tree, full-tree
 TYPE_TRAVEL_TIME_COVER_ROOT_MAX_ROUNDS=20
