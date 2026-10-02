@@ -947,11 +947,13 @@ struct PalnsIncumbentSolver::Impl {
     int next_traj = 0;
     int phase = 1;
     double lambda = 1.0;  // Phase II penalty on duration excess
+    double eta_cur = 0.01;  // Phase I weight of the total duration
     Clock::time_point t0;
     Clock::time_point deadline;
     bool has_deadline = false;
     std::atomic<bool>* stop_flag = nullptr;
     SharedBest* shared = nullptr;
+    bool adopt_shared = true;  // odd portfolio threads keep searching independently
 
     void renumber(Solution& s) {
         std::unordered_map<int, int> remap;
@@ -974,8 +976,8 @@ struct PalnsIncumbentSolver::Impl {
         }
     }
 
-    bool adopt(Solution& out, double own_cost) {
-        if (shared == nullptr) return false;
+    bool adopt(Solution& out, double own_cost, bool force = false) {
+        if (shared == nullptr || (!adopt_shared && !force)) return false;
         std::lock_guard<std::mutex> lock(shared->mutex);
         if (!shared->has || shared->cost >= own_cost - kEps) return false;
         out = shared->solution;
@@ -1047,7 +1049,7 @@ struct PalnsIncumbentSolver::Impl {
     }
 
     double objective(const Solution& s) const {
-        return phase == 1 ? s.V + opt.eta * s.D : s.C + lambda * s.V;
+        return phase == 1 ? s.V + eta_cur * s.D : s.C + lambda * s.V;
     }
     double original_cost(const Solution& s) const {
         return s.C + I.F * nonempty_route_count(s);
@@ -1225,7 +1227,7 @@ struct PalnsIncumbentSolver::Impl {
             prev = l;
         }
         if (phase == 1) {
-            return (excess(r.d, I.T) - excess(d, I.T)) + opt.eta * (r.d - d);
+            return (excess(r.d, I.T) - excess(d, I.T)) + eta_cur * (r.d - d);
         }
         return (r.c - c) + lambda * (excess(r.d, I.T) - excess(d, I.T));
     }
@@ -1391,7 +1393,7 @@ struct PalnsIncumbentSolver::Impl {
     // Objective change of replacing route values (d,c) by (nd,nc).
     double route_delta(double d, double c, double nd, double nc) const {
         if (phase == 1) {
-            return (excess(nd, I.T) - excess(d, I.T)) + opt.eta * (nd - d);
+            return (excess(nd, I.T) - excess(d, I.T)) + eta_cur * (nd - d);
         }
         return (nc - c) + lambda * (excess(nd, I.T) - excess(d, I.T));
     }
@@ -1659,7 +1661,7 @@ struct PalnsIncumbentSolver::Impl {
             double f = kInf;
             if (e.route >= 0) {
                 const double V = s.V + e.dV, D = s.D + e.dd, C = s.C + e.dc;
-                f = phase == 1 ? V + opt.eta * D : C + lambda * V;
+                f = phase == 1 ? V + eta_cur * D : C + lambda * V;
             }
             if (f < best_f && opt.ls_first_improvement) {
                 apply_insertion(I, s, B, e);
@@ -1717,6 +1719,7 @@ struct PalnsIncumbentSolver::Impl {
     void record(SearchState& st, const Solution& s) {
         st.best_violation = std::min(st.best_violation, s.V);
         if (s.V > kEps) return;
+        publish(s);
         if (!st.have_feasible || s.C < st.best_feasible.C - kEps) {
             st.best_feasible = s;
             st.have_feasible = true;
@@ -1732,6 +1735,8 @@ struct PalnsIncumbentSolver::Impl {
 
     long long run_phase(int which, Solution start, SearchState& st, std::mt19937_64& rng) {
         phase = which;
+        eta_cur = opt.eta;
+        const bool oscillate = which == 1 && opt.phase1_eta_max > opt.eta;
         refresh_totals(I, start);
         if (which == 2) {
             lambda = std::max(1.0, 2.0 * start.C / std::max(1.0, start.D));
@@ -1746,8 +1751,11 @@ struct PalnsIncumbentSolver::Impl {
         std::vector<int> nd(5, 0), nq(3, 0), nr(5, 0);
         const int weight_period = 50;
         const double rho = 0.1;
-        const double theta0 = std::max(1e-9, opt.sa_start_ratio * std::max(fS, 1e-9) / std::log(2.0));
-        const long long cycle = std::max<long long>(1, opt.sa_cycle_iters);
+        const double start_ratio = (which == 1 && opt.sa_start_ratio_phase1 >= 0.0)
+            ? opt.sa_start_ratio_phase1 : opt.sa_start_ratio;
+        double theta0 = std::max(1e-9, start_ratio * std::max(fS, 1e-9) / std::log(2.0));
+        const long long cycle = std::max<long long>(1,
+            (which == 2 && opt.sa_cycle_iters_phase2 > 0) ? opt.sa_cycle_iters_phase2 : opt.sa_cycle_iters);
         std::unordered_set<std::uint64_t> seen;
         seen.insert(solution_hash(S));
         const int n = I.n;
@@ -1759,9 +1767,25 @@ struct PalnsIncumbentSolver::Impl {
         long long noimp = 0;
         while (!timed_out()) {
             if (which == 1 && st.have_feasible) break;
+            if (which == 1 && shared != nullptr && (iter % 64) == 0) {
+                Solution g;
+                if (adopt(g, kInf, false)) {
+                    record(st, g);
+                    break;
+                }
+            }
             if (st.reached_target) break;
             if (which == 2 && noimp >= opt.phase2_max_noimp) break;
             ++iter;
+            if (oscillate) {
+                const double pos = static_cast<double>((iter - 1) % cycle) / static_cast<double>(cycle);
+                eta_cur = std::exp(std::log(opt.phase1_eta_max) + (std::log(opt.eta) - std::log(opt.phase1_eta_max)) * pos);
+                fS = objective(S);
+                fBest = objective(best);
+                if ((iter - 1) % cycle == 0) {
+                    theta0 = std::max(1e-9, start_ratio * std::max(fS, 1e-9) / std::log(2.0));
+                }
+            }
             std::vector<double> wdd = wd;
             if (which == 2) wdd[4] = 0.0;
             const int dop = roulette_index(wdd, rng);
@@ -1801,8 +1825,10 @@ struct PalnsIncumbentSolver::Impl {
                 }
                 const std::uint64_t h = solution_hash(sp);
                 const bool is_new = seen.find(h) == seen.end();
-                const bool new_best = which == 1 ? (fsp < fBest - 1e-9)
-                                                 : (sp.V <= kEps && sp.C < fBest - 1e-9);
+                const bool new_best = which == 1
+                    ? (oscillate ? (sp.V < best.V - kEps || (std::fabs(sp.V - best.V) <= kEps && sp.D < best.D - kEps))
+                                 : (fsp < fBest - 1e-9))
+                    : (sp.V <= kEps && sp.C < fBest - 1e-9);
                 if (new_best) {
                     best = sp;
                     fBest = which == 1 ? fsp : sp.C;
@@ -2087,6 +2113,15 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
         w->opt.seed = impl_->opt.seed + 7919U * static_cast<unsigned int>(i);
         w->stop_flag = &stop;
         w->shared = &shared;
+        w->adopt_shared = (i % 2) == 0;
+        if (impl_->opt.portfolio_diverse) {
+            static const double start_mul[3] = {1.0, 0.5, 2.0};
+            w->opt.sa_start_ratio = impl_->opt.sa_start_ratio * start_mul[i % 3];
+            if ((i / 4) % 2 == 1) w->opt.kmax_ratio = impl_->opt.kmax_ratio * 2.0;
+        }
+        if (impl_->opt.portfolio_mixed_cycles && ((i / 2) % 2) == 0) {
+            w->opt.sa_cycle_iters_phase2 = 0;
+        }
         workers.push_back(std::move(w));
     }
     std::vector<PalnsFixedKResult> results(static_cast<std::size_t>(nthreads));

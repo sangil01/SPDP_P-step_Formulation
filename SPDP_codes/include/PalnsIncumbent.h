@@ -50,8 +50,18 @@ struct PalnsOptions {
     // at a cycle end the search restarts from the best solution when
     // sa_restart_best is set.
     double sa_start_ratio = 0.05;
+    // Phase I start ratio; negative means sa_start_ratio.
+    double sa_start_ratio_phase1 = -1.0;
     double sa_end_ratio = 1e-3;
     long long sa_cycle_iters = 5000;
+    // Phase II cycle length; <= 0 means sa_cycle_iters.
+    long long sa_cycle_iters_phase2 = 0;
+    // Portfolio: threads with (index / 2) odd use sa_cycle_iters_phase2 in
+    // Phase II, the others sa_cycle_iters (mixed cycle lengths).
+    bool portfolio_mixed_cycles = false;
+    // Portfolio: vary the SA start ratio (x1, x0.5, x2) and the destroy size
+    // ratio (x1, x2) over the threads.
+    bool portfolio_diverse = false;
     bool sa_restart_best = true;
     // Trajectory relocate is applied only to candidates whose objective after
     // the light local search is within ls_deep_ratio of the best objective.
@@ -60,6 +70,9 @@ struct PalnsOptions {
     // that terminates (target, Phase II stop, or time) stops the others; the
     // best feasible solution over all threads is returned.
     int threads = 1;
+    // Phase I strategic oscillation: within each SA cycle eta decreases
+    // geometrically from phase1_eta_max to eta. A value <= eta disables it.
+    double phase1_eta_max = -1.0;
 };
 
 struct PalnsFixedKResult {

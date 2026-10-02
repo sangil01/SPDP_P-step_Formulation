@@ -69,11 +69,16 @@ struct CliOptions {
     int initial_incumbent_palns_phase2_max_noimp = 2000;
     double initial_incumbent_palns_target_cost = -1.0;
     double initial_incumbent_palns_sa_start_ratio = 0.05;
+    double initial_incumbent_palns_sa_start_ratio_phase1 = -1.0;
     double initial_incumbent_palns_sa_end_ratio = 1e-3;
     long long initial_incumbent_palns_sa_cycle_iters = 5000;
+    long long initial_incumbent_palns_sa_cycle_iters_phase2 = 0;
+    int initial_incumbent_palns_portfolio_mixed_cycles = 0;
+    int initial_incumbent_palns_portfolio_diverse = 0;
     int initial_incumbent_palns_sa_restart_best = 1;
     double initial_incumbent_palns_ls_deep_ratio = 0.01;
     int initial_incumbent_palns_threads = 1;
+    double initial_incumbent_palns_phase1_eta_max = -1.0;
     int gurobi_threads = -1;
     std::string solver_mode = "enumeration";
     std::string enumeration_sos1_mode = "default";
@@ -1182,10 +1187,20 @@ CliOptions parse_cli(int argc, char** argv) {
                 options.initial_incumbent_palns_target_cost = parse_double(value, arg);
             } else if (arg == "--initial-incumbent-palns-sa-start-ratio") {
                 options.initial_incumbent_palns_sa_start_ratio = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-sa-start-ratio-phase1") {
+                options.initial_incumbent_palns_sa_start_ratio_phase1 = parse_double(value, arg);
             } else if (arg == "--initial-incumbent-palns-sa-end-ratio") {
                 options.initial_incumbent_palns_sa_end_ratio = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-portfolio-diverse") {
+                options.initial_incumbent_palns_portfolio_diverse = parse_binary_flag(value, arg);
+            } else if (arg == "--initial-incumbent-palns-portfolio-mixed-cycles") {
+                options.initial_incumbent_palns_portfolio_mixed_cycles = parse_binary_flag(value, arg);
+            } else if (arg == "--initial-incumbent-palns-sa-cycle-iters-phase2") {
+                options.initial_incumbent_palns_sa_cycle_iters_phase2 = parse_int(value, arg);
             } else if (arg == "--initial-incumbent-palns-sa-cycle-iters") {
                 options.initial_incumbent_palns_sa_cycle_iters = parse_int(value, arg);
+            } else if (arg == "--initial-incumbent-palns-phase1-eta-max") {
+                options.initial_incumbent_palns_phase1_eta_max = parse_double(value, arg);
             } else if (arg == "--initial-incumbent-palns-threads") {
                 options.initial_incumbent_palns_threads = parse_int(value, arg);
                 if (options.initial_incumbent_palns_threads < 1) {
@@ -3422,11 +3437,16 @@ int main(int argc, char** argv) {
                 args.initial_incumbent_palns_phase2_max_noimp;
             search_options.palns.target_cost = args.initial_incumbent_palns_target_cost;
             search_options.palns.sa_start_ratio = args.initial_incumbent_palns_sa_start_ratio;
+            search_options.palns.sa_start_ratio_phase1 = args.initial_incumbent_palns_sa_start_ratio_phase1;
             search_options.palns.sa_end_ratio = args.initial_incumbent_palns_sa_end_ratio;
             search_options.palns.sa_cycle_iters = args.initial_incumbent_palns_sa_cycle_iters;
+            search_options.palns.sa_cycle_iters_phase2 = args.initial_incumbent_palns_sa_cycle_iters_phase2;
+            search_options.palns.portfolio_mixed_cycles = args.initial_incumbent_palns_portfolio_mixed_cycles == 1;
+            search_options.palns.portfolio_diverse = args.initial_incumbent_palns_portfolio_diverse == 1;
             search_options.palns.sa_restart_best = args.initial_incumbent_palns_sa_restart_best == 1;
             search_options.palns.ls_deep_ratio = args.initial_incumbent_palns_ls_deep_ratio;
             search_options.palns.threads = args.initial_incumbent_palns_threads;
+            search_options.palns.phase1_eta_max = args.initial_incumbent_palns_phase1_eta_max;
             const bool palns_backend =
                 search_options.backend == spdp::InitialIncumbentBackend::Palns;
             if (palns_backend) {
@@ -3448,11 +3468,16 @@ int main(int argc, char** argv) {
                     << " phase2_max_noimp=" << args.initial_incumbent_palns_phase2_max_noimp
                     << " target_cost=" << args.initial_incumbent_palns_target_cost
                     << " sa_start_ratio=" << args.initial_incumbent_palns_sa_start_ratio
+                    << " sa_start_ratio_phase1=" << args.initial_incumbent_palns_sa_start_ratio_phase1
                     << " sa_end_ratio=" << args.initial_incumbent_palns_sa_end_ratio
                     << " sa_cycle_iters=" << args.initial_incumbent_palns_sa_cycle_iters
+                    << " sa_cycle_iters_phase2=" << args.initial_incumbent_palns_sa_cycle_iters_phase2
+                    << " portfolio_mixed_cycles=" << args.initial_incumbent_palns_portfolio_mixed_cycles
+                    << " portfolio_diverse=" << args.initial_incumbent_palns_portfolio_diverse
                     << " sa_restart_best=" << args.initial_incumbent_palns_sa_restart_best
                     << " ls_deep_ratio=" << args.initial_incumbent_palns_ls_deep_ratio
                     << " threads=" << args.initial_incumbent_palns_threads
+                    << " phase1_eta_max=" << args.initial_incumbent_palns_phase1_eta_max
                     << '\n';
             }
 
