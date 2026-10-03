@@ -29,10 +29,18 @@ NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
 SOLVER_TIME_LIMIT=3600 # seconds
 INITIAL_INCUMBENT_ENABLE=1
+# --- Initial incumbent: main settings ---
+INITIAL_INCUMBENT_BACKEND=palns # Options: two-index-milp, cp-sat, palns
 INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
-INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
-INITIAL_INCUMBENT_BACKEND=two-index-milp # Options: two-index-milp, cp-sat, palns
+INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
+STOP_AFTER_INITIAL_INCUMBENT=mip-start # Options: none (끝까지 진행), incumbent ( incumbent 구하면 중지), mip-start (incumbent를 mip-start로 사용하여 MIP를 풀고 중지)
+INITIAL_INCUMBENT_PALNS_THREADS=8 # portfolio threads
+INITIAL_INCUMBENT_PALNS_SEED=1
+INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Phase II after a feasible start
+INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=2000 # Phase II stops after this many non-improving iterations (r3 used 100000000 together with a target cost)
+INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
+# --- Initial incumbent: two-index-milp / cp-sat backend options ---
 INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
 INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR=1.5 # Used only by makespan
 INITIAL_INCUMBENT_MILP_DIRECT_DFF_IDENTITY_ENABLE=0
@@ -48,35 +56,36 @@ INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=1
 INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=1
 INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP=1
 INITIAL_INCUMBENT_CP_SYMMETRY_43=1
-# --- PALNS incumbent backend (used only with INITIAL_INCUMBENT_BACKEND=palns; values follow the r3 run) ---
-INITIAL_INCUMBENT_PALNS_SEED=1
+# --- Initial incumbent: PALNS hyperparameters (used only with INITIAL_INCUMBENT_BACKEND=palns; values follow the r3 run) ---
+# pattern generation
 INITIAL_INCUMBENT_PALNS_COMPOSITE_KAPPA=1
 INITIAL_INCUMBENT_PALNS_COMPOSITE_SKELETONS=all # Options: all, S3,S5
 INITIAL_INCUMBENT_PALNS_SIM_WEIGHTS="1,1,1" # Shaw relatedness weights (distance, time, type)
+# construction
 INITIAL_INCUMBENT_PALNS_CONSTRUCT_STARTS=10
 INITIAL_INCUMBENT_PALNS_CONSTRUCT_COMPOSITE_FILTER=delta-positive # Options: delta-positive, all
 INITIAL_INCUMBENT_PALNS_CONSTRUCT_ORDER=mixed # Options: lpt, random, regret, mixed
+# search
 INITIAL_INCUMBENT_PALNS_ETA=0.01
+INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX=0.5 # Phase I eta oscillates down from this value to ETA; <= ETA disables it
 INITIAL_INCUMBENT_PALNS_KMAX_RATIO=0.1 # k_max = max(KMAX_MIN, ceil(KMAX_RATIO * n))
 INITIAL_INCUMBENT_PALNS_KMAX_MIN=2
+# local search
 INITIAL_INCUMBENT_PALNS_LS_FREQUENCY=every # Options: every, on-improve, every-m
 INITIAL_INCUMBENT_PALNS_LS_EVERY_M=10 # used only with every-m
 INITIAL_INCUMBENT_PALNS_LS_FIRST_IMPROVEMENT=1
 INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO=0.01 # trajectory relocate runs only within this ratio of the best
-INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Phase II after a feasible start
-INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=2000 # Phase II stops after this many non-improving iterations (r3 used 100000000 together with a target cost)
-INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
+# simulated annealing
 INITIAL_INCUMBENT_PALNS_SA_START_RATIO=0.01
 INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1=-1 # negative uses SA_START_RATIO
 INITIAL_INCUMBENT_PALNS_SA_END_RATIO=1e-3
 INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS=5000
 INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS_PHASE2=50000 # <= 0 uses SA_CYCLE_ITERS
 INITIAL_INCUMBENT_PALNS_SA_RESTART_BEST=1 # restart from the best solution at the end of each SA cycle
-INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX=0.5 # Phase I eta oscillates down from this value to ETA; <= ETA disables it
+# portfolio variants
 INITIAL_INCUMBENT_PALNS_PORTFOLIO_MIXED_CYCLES=0
 INITIAL_INCUMBENT_PALNS_PORTFOLIO_DIVERSE=0
-INITIAL_INCUMBENT_PALNS_THREADS=8 # portfolio threads
-STOP_AFTER_INITIAL_INCUMBENT=none # Options: none, incumbent, mip-start
+# --- end --- #
 GUROBI_THREADS=8
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
