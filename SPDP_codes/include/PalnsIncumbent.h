@@ -122,7 +122,9 @@ struct PalnsMappedIncumbent {
 
 // Maps canonicalized PALNS action routes to multigraph edges. Among parallel
 // edges with the same endpoint states, an exact match is preferred; otherwise
-// an edge that is no slower and no more expensive, otherwise the fastest one.
+// an edge that is no slower and no more expensive. A transition with neither
+// is reported as an error, because the multigraph keeps every Pareto edge and
+// such a case means that graph pruning and the PALNS route disagree.
 PalnsMappedIncumbent map_palns_routes_to_multigraph(
     const SPDPData& data,
     const MultiDiGraph& graph,

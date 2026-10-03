@@ -19,8 +19,8 @@ STOP_AFTER="${STOP_AFTER:-mip-start}"          # none | incumbent | mip-start
 JOBS="${JOBS:-4}"
 BASELINE_DIR="${BASELINE_DIR:-SPDP_output_TF2_capacity_cut_travel_time_cut_ver2}"
 TARGET_MODE="${TARGET_MODE:-1}"                # 1: stop at the baseline incumbent cost
-PALNS_SEED="${PALNS_SEED:-1}"
-PALNS_THREADS="${PALNS_THREADS:-$GUROBI_THREADS}"   # same thread budget as the MILP baseline
+PALNS_SEED="${PALNS_SEED:-$INITIAL_INCUMBENT_PALNS_SEED}"
+PALNS_THREADS="${PALNS_THREADS:-$INITIAL_INCUMBENT_PALNS_THREADS}"
 PALNS_EXTRA="${PALNS_EXTRA:-}"
 if [[ -n "${INSTANCES:-}" ]]; then
     read -r -a DATA_LIST <<< "$INSTANCES"
@@ -81,6 +81,30 @@ run_one() {
         --initial-incumbent-cp-redundant-aggregate-duration "$INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION" \
         --initial-incumbent-cp-symmetry-first-pickup "$INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP" \
         --initial-incumbent-cp-symmetry-43 "$INITIAL_INCUMBENT_CP_SYMMETRY_43" \
+        --initial-incumbent-palns-composite-kappa "$INITIAL_INCUMBENT_PALNS_COMPOSITE_KAPPA" \
+        --initial-incumbent-palns-composite-skeletons "$INITIAL_INCUMBENT_PALNS_COMPOSITE_SKELETONS" \
+        --initial-incumbent-palns-sim-weights "$INITIAL_INCUMBENT_PALNS_SIM_WEIGHTS" \
+        --initial-incumbent-palns-construct-starts "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_STARTS" \
+        --initial-incumbent-palns-construct-composite-filter "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_COMPOSITE_FILTER" \
+        --initial-incumbent-palns-construct-order "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_ORDER" \
+        --initial-incumbent-palns-eta "$INITIAL_INCUMBENT_PALNS_ETA" \
+        --initial-incumbent-palns-kmax-ratio "$INITIAL_INCUMBENT_PALNS_KMAX_RATIO" \
+        --initial-incumbent-palns-kmax-min "$INITIAL_INCUMBENT_PALNS_KMAX_MIN" \
+        --initial-incumbent-palns-ls-frequency "$INITIAL_INCUMBENT_PALNS_LS_FREQUENCY" \
+        --initial-incumbent-palns-ls-every-m "$INITIAL_INCUMBENT_PALNS_LS_EVERY_M" \
+        --initial-incumbent-palns-ls-first-improvement "$INITIAL_INCUMBENT_PALNS_LS_FIRST_IMPROVEMENT" \
+        --initial-incumbent-palns-ls-deep-ratio "$INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO" \
+        --initial-incumbent-palns-phase2-enable "$INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE" \
+        --initial-incumbent-palns-phase2-max-noimp "$INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP" \
+        --initial-incumbent-palns-sa-start-ratio "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO" \
+        --initial-incumbent-palns-sa-start-ratio-phase1 "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1" \
+        --initial-incumbent-palns-sa-end-ratio "$INITIAL_INCUMBENT_PALNS_SA_END_RATIO" \
+        --initial-incumbent-palns-sa-cycle-iters "$INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS" \
+        --initial-incumbent-palns-sa-cycle-iters-phase2 "$INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS_PHASE2" \
+        --initial-incumbent-palns-sa-restart-best "$INITIAL_INCUMBENT_PALNS_SA_RESTART_BEST" \
+        --initial-incumbent-palns-phase1-eta-max "$INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX" \
+        --initial-incumbent-palns-portfolio-mixed-cycles "$INITIAL_INCUMBENT_PALNS_PORTFOLIO_MIXED_CYCLES" \
+        --initial-incumbent-palns-portfolio-diverse "$INITIAL_INCUMBENT_PALNS_PORTFOLIO_DIVERSE" \
         --gurobi-threads "$GUROBI_THREADS" \
         --vi-formulation "$VI_FORMULATION" \
         --dump-psteps "$DUMP_PSTEPS" \

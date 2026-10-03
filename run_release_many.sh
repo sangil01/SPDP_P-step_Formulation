@@ -32,7 +32,7 @@ INITIAL_INCUMBENT_ENABLE=1
 INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
-INITIAL_INCUMBENT_BACKEND=two-index-milp # Options: two-index-milp, cp-sat
+INITIAL_INCUMBENT_BACKEND=two-index-milp # Options: two-index-milp, cp-sat, palns
 INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
 INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR=1.5 # Used only by makespan
 INITIAL_INCUMBENT_MILP_DIRECT_DFF_IDENTITY_ENABLE=0
@@ -48,6 +48,35 @@ INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=1
 INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=1
 INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP=1
 INITIAL_INCUMBENT_CP_SYMMETRY_43=1
+# --- PALNS incumbent backend (used only with INITIAL_INCUMBENT_BACKEND=palns; values follow the r3 run) ---
+INITIAL_INCUMBENT_PALNS_SEED=1
+INITIAL_INCUMBENT_PALNS_COMPOSITE_KAPPA=1
+INITIAL_INCUMBENT_PALNS_COMPOSITE_SKELETONS=all # Options: all, S3,S5
+INITIAL_INCUMBENT_PALNS_SIM_WEIGHTS="1,1,1" # Shaw relatedness weights (distance, time, type)
+INITIAL_INCUMBENT_PALNS_CONSTRUCT_STARTS=10
+INITIAL_INCUMBENT_PALNS_CONSTRUCT_COMPOSITE_FILTER=delta-positive # Options: delta-positive, all
+INITIAL_INCUMBENT_PALNS_CONSTRUCT_ORDER=mixed # Options: lpt, random, regret, mixed
+INITIAL_INCUMBENT_PALNS_ETA=0.01
+INITIAL_INCUMBENT_PALNS_KMAX_RATIO=0.1 # k_max = max(KMAX_MIN, ceil(KMAX_RATIO * n))
+INITIAL_INCUMBENT_PALNS_KMAX_MIN=2
+INITIAL_INCUMBENT_PALNS_LS_FREQUENCY=every # Options: every, on-improve, every-m
+INITIAL_INCUMBENT_PALNS_LS_EVERY_M=10 # used only with every-m
+INITIAL_INCUMBENT_PALNS_LS_FIRST_IMPROVEMENT=1
+INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO=0.01 # trajectory relocate runs only within this ratio of the best
+INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Phase II after a feasible start
+INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=2000 # Phase II stops after this many non-improving iterations (r3 used 100000000 together with a target cost)
+INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
+INITIAL_INCUMBENT_PALNS_SA_START_RATIO=0.01
+INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1=-1 # negative uses SA_START_RATIO
+INITIAL_INCUMBENT_PALNS_SA_END_RATIO=1e-3
+INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS=5000
+INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS_PHASE2=50000 # <= 0 uses SA_CYCLE_ITERS
+INITIAL_INCUMBENT_PALNS_SA_RESTART_BEST=1 # restart from the best solution at the end of each SA cycle
+INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX=0.5 # Phase I eta oscillates down from this value to ETA; <= ETA disables it
+INITIAL_INCUMBENT_PALNS_PORTFOLIO_MIXED_CYCLES=0
+INITIAL_INCUMBENT_PALNS_PORTFOLIO_DIVERSE=0
+INITIAL_INCUMBENT_PALNS_THREADS=8 # portfolio threads
+STOP_AFTER_INITIAL_INCUMBENT=none # Options: none, incumbent, mip-start
 GUROBI_THREADS=8
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
@@ -356,6 +385,34 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-cp-redundant-aggregate-duration: $INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION"
         echo "initial-incumbent-cp-symmetry-first-pickup: $INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP"
         echo "initial-incumbent-cp-symmetry-43: $INITIAL_INCUMBENT_CP_SYMMETRY_43"
+        echo "initial-incumbent-palns-seed: $INITIAL_INCUMBENT_PALNS_SEED"
+        echo "initial-incumbent-palns-composite-kappa: $INITIAL_INCUMBENT_PALNS_COMPOSITE_KAPPA"
+        echo "initial-incumbent-palns-composite-skeletons: $INITIAL_INCUMBENT_PALNS_COMPOSITE_SKELETONS"
+        echo "initial-incumbent-palns-sim-weights: $INITIAL_INCUMBENT_PALNS_SIM_WEIGHTS"
+        echo "initial-incumbent-palns-construct-starts: $INITIAL_INCUMBENT_PALNS_CONSTRUCT_STARTS"
+        echo "initial-incumbent-palns-construct-composite-filter: $INITIAL_INCUMBENT_PALNS_CONSTRUCT_COMPOSITE_FILTER"
+        echo "initial-incumbent-palns-construct-order: $INITIAL_INCUMBENT_PALNS_CONSTRUCT_ORDER"
+        echo "initial-incumbent-palns-eta: $INITIAL_INCUMBENT_PALNS_ETA"
+        echo "initial-incumbent-palns-kmax-ratio: $INITIAL_INCUMBENT_PALNS_KMAX_RATIO"
+        echo "initial-incumbent-palns-kmax-min: $INITIAL_INCUMBENT_PALNS_KMAX_MIN"
+        echo "initial-incumbent-palns-ls-frequency: $INITIAL_INCUMBENT_PALNS_LS_FREQUENCY"
+        echo "initial-incumbent-palns-ls-every-m: $INITIAL_INCUMBENT_PALNS_LS_EVERY_M"
+        echo "initial-incumbent-palns-ls-first-improvement: $INITIAL_INCUMBENT_PALNS_LS_FIRST_IMPROVEMENT"
+        echo "initial-incumbent-palns-ls-deep-ratio: $INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO"
+        echo "initial-incumbent-palns-phase2-enable: $INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE"
+        echo "initial-incumbent-palns-phase2-max-noimp: $INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP"
+        echo "initial-incumbent-palns-target-cost: $INITIAL_INCUMBENT_PALNS_TARGET_COST"
+        echo "initial-incumbent-palns-sa-start-ratio: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO"
+        echo "initial-incumbent-palns-sa-start-ratio-phase1: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1"
+        echo "initial-incumbent-palns-sa-end-ratio: $INITIAL_INCUMBENT_PALNS_SA_END_RATIO"
+        echo "initial-incumbent-palns-sa-cycle-iters: $INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS"
+        echo "initial-incumbent-palns-sa-cycle-iters-phase2: $INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS_PHASE2"
+        echo "initial-incumbent-palns-sa-restart-best: $INITIAL_INCUMBENT_PALNS_SA_RESTART_BEST"
+        echo "initial-incumbent-palns-phase1-eta-max: $INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX"
+        echo "initial-incumbent-palns-portfolio-mixed-cycles: $INITIAL_INCUMBENT_PALNS_PORTFOLIO_MIXED_CYCLES"
+        echo "initial-incumbent-palns-portfolio-diverse: $INITIAL_INCUMBENT_PALNS_PORTFOLIO_DIVERSE"
+        echo "initial-incumbent-palns-threads: $INITIAL_INCUMBENT_PALNS_THREADS"
+        echo "stop-after-initial-incumbent: $STOP_AFTER_INITIAL_INCUMBENT"
         echo "vi-formulation: $VI_FORMULATION"
         echo "cg-max-iterations-per-phase: $CG_MAX_ITERATIONS_PER_PHASE"
         echo "exact-pricing-max-columns-per-start: $EXACT_PRICING_MAX_COLUMNS_PER_START"
@@ -501,6 +558,34 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-cp-redundant-aggregate-duration "$INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION" \
         --initial-incumbent-cp-symmetry-first-pickup "$INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP" \
         --initial-incumbent-cp-symmetry-43 "$INITIAL_INCUMBENT_CP_SYMMETRY_43" \
+        --initial-incumbent-palns-seed "$INITIAL_INCUMBENT_PALNS_SEED" \
+        --initial-incumbent-palns-composite-kappa "$INITIAL_INCUMBENT_PALNS_COMPOSITE_KAPPA" \
+        --initial-incumbent-palns-composite-skeletons "$INITIAL_INCUMBENT_PALNS_COMPOSITE_SKELETONS" \
+        --initial-incumbent-palns-sim-weights "$INITIAL_INCUMBENT_PALNS_SIM_WEIGHTS" \
+        --initial-incumbent-palns-construct-starts "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_STARTS" \
+        --initial-incumbent-palns-construct-composite-filter "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_COMPOSITE_FILTER" \
+        --initial-incumbent-palns-construct-order "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_ORDER" \
+        --initial-incumbent-palns-eta "$INITIAL_INCUMBENT_PALNS_ETA" \
+        --initial-incumbent-palns-kmax-ratio "$INITIAL_INCUMBENT_PALNS_KMAX_RATIO" \
+        --initial-incumbent-palns-kmax-min "$INITIAL_INCUMBENT_PALNS_KMAX_MIN" \
+        --initial-incumbent-palns-ls-frequency "$INITIAL_INCUMBENT_PALNS_LS_FREQUENCY" \
+        --initial-incumbent-palns-ls-every-m "$INITIAL_INCUMBENT_PALNS_LS_EVERY_M" \
+        --initial-incumbent-palns-ls-first-improvement "$INITIAL_INCUMBENT_PALNS_LS_FIRST_IMPROVEMENT" \
+        --initial-incumbent-palns-ls-deep-ratio "$INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO" \
+        --initial-incumbent-palns-phase2-enable "$INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE" \
+        --initial-incumbent-palns-phase2-max-noimp "$INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP" \
+        --initial-incumbent-palns-target-cost "$INITIAL_INCUMBENT_PALNS_TARGET_COST" \
+        --initial-incumbent-palns-sa-start-ratio "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO" \
+        --initial-incumbent-palns-sa-start-ratio-phase1 "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1" \
+        --initial-incumbent-palns-sa-end-ratio "$INITIAL_INCUMBENT_PALNS_SA_END_RATIO" \
+        --initial-incumbent-palns-sa-cycle-iters "$INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS" \
+        --initial-incumbent-palns-sa-cycle-iters-phase2 "$INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS_PHASE2" \
+        --initial-incumbent-palns-sa-restart-best "$INITIAL_INCUMBENT_PALNS_SA_RESTART_BEST" \
+        --initial-incumbent-palns-phase1-eta-max "$INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX" \
+        --initial-incumbent-palns-portfolio-mixed-cycles "$INITIAL_INCUMBENT_PALNS_PORTFOLIO_MIXED_CYCLES" \
+        --initial-incumbent-palns-portfolio-diverse "$INITIAL_INCUMBENT_PALNS_PORTFOLIO_DIVERSE" \
+        --initial-incumbent-palns-threads "$INITIAL_INCUMBENT_PALNS_THREADS" \
+        --stop-after-initial-incumbent "$STOP_AFTER_INITIAL_INCUMBENT" \
         --gurobi-threads "$GUROBI_THREADS" \
         --vi-formulation "$VI_FORMULATION" \
         --dump-psteps "$DUMP_PSTEPS" \

@@ -217,6 +217,7 @@ struct PatternPool {
     std::vector<Composite> comps;
     std::unordered_map<long long, std::vector<int>> comp_by_pair;
     std::vector<std::vector<double>> sim;
+    std::array<double, 4> sim_raw_range{{0.0, 0.0, 0.0, 0.0}};  // lo/hi of the two raw travel terms
     std::size_t raw = 0, duplicates = 0, dominated = 0;
 };
 
@@ -247,15 +248,35 @@ void build_pattern_pool(const Instance& I, const PalnsOptions& opt, PatternPool&
         });
     }
 
-    pool.sim.assign(static_cast<std::size_t>(P), std::vector<double>(static_cast<std::size_t>(P), 0.0));
-    for (int p = 0; p < P; ++p) {
-        for (int r = 0; r < P; ++r) {
-            const double s1 = 1.0 / (1.0 + I.tt(I.pa[static_cast<std::size_t>(p)], I.pa[static_cast<std::size_t>(r)]));
-            const double s2 = 1.0 / (1.0 + I.tt(I.pb[static_cast<std::size_t>(p)], I.pb[static_cast<std::size_t>(r)]));
-            const double s3 = I.pf[static_cast<std::size_t>(p)] == I.pf[static_cast<std::size_t>(r)] ? 1.0 : 0.0;
-            pool.sim[static_cast<std::size_t>(p)][static_cast<std::size_t>(r)] =
-                opt.sim_s1 * s1 + opt.sim_s2 * s2 + opt.sim_s3 * s3;
+    // SIM: the two travel-time terms are min-max normalized over all pairs
+    // p != p' so that each term ranges over [0, 1] like the type indicator.
+    const std::size_t PS = static_cast<std::size_t>(P);
+    std::vector<std::vector<double>> raw1(PS, std::vector<double>(PS, 0.0)), raw2 = raw1;
+    double lo1 = kInf, hi1 = -kInf, lo2 = kInf, hi2 = -kInf;
+    for (std::size_t p = 0; p < PS; ++p) {
+        for (std::size_t r = 0; r < PS; ++r) {
+            raw1[p][r] = 1.0 / (1.0 + I.tt(I.pa[p], I.pa[r]));
+            raw2[p][r] = 1.0 / (1.0 + I.tt(I.pb[p], I.pb[r]));
+            if (p == r) continue;
+            lo1 = std::min(lo1, raw1[p][r]); hi1 = std::max(hi1, raw1[p][r]);
+            lo2 = std::min(lo2, raw2[p][r]); hi2 = std::max(hi2, raw2[p][r]);
         }
+    }
+    auto norm = [](double x, double lo, double hi) {
+        if (!(hi > lo + 1e-12)) return x > hi + 1e-12 ? 1.0 : 0.0;
+        return std::min(1.0, std::max(0.0, (x - lo) / (hi - lo)));
+    };
+    pool.sim.assign(PS, std::vector<double>(PS, 0.0));
+    for (std::size_t p = 0; p < PS; ++p) {
+        for (std::size_t r = 0; r < PS; ++r) {
+            const double s1 = norm(raw1[p][r], lo1, hi1);
+            const double s2 = norm(raw2[p][r], lo2, hi2);
+            const double s3 = I.pf[p] == I.pf[r] ? 1.0 : 0.0;
+            pool.sim[p][r] = opt.sim_s1 * s1 + opt.sim_s2 * s2 + opt.sim_s3 * s3;
+        }
+    }
+    if (P > 1) {
+        pool.sim_raw_range = {{lo1, hi1, lo2, hi2}};
     }
 
     const int kappa = std::max(1, opt.composite_kappa);
@@ -2091,6 +2112,8 @@ std::string PalnsIncumbentSolver::pattern_summary() const {
         << " composite_dominated=" << impl_->pool.dominated
         << " composites=" << impl_->pool.comps.size()
         << " generation_seconds=" << impl_->pattern_seconds
+        << " sim_alpha_raw_range=" << impl_->pool.sim_raw_range[0] << ',' << impl_->pool.sim_raw_range[1]
+        << " sim_beta_raw_range=" << impl_->pool.sim_raw_range[2] << ',' << impl_->pool.sim_raw_range[3]
         << " kappa=" << impl_->opt.composite_kappa
         << " skeletons=" << palns_skeleton_set_name(impl_->opt.composite_skeletons);
     return out.str();
@@ -2243,7 +2266,7 @@ PalnsMappedIncumbent map_palns_routes_to_multigraph(
                 }
                 const double our_time = travel + static_cast<double>(treatment_requests.size()) * data.time_empty + destination_service;
                 if (current_node == 0 && destination != nullptr) cost += data.fixed_vehicle_cost;
-                int exact = -1, dominating = -1, fastest = -1;
+                int exact = -1, dominating = -1;
                 for (std::size_t edge_id : graph.outgoing_edge_indices(current_node)) {
                     const EdgeRecord& e = graph.edges()[edge_id];
                     if (e.v != next_node || e.data.start_state != start_state || e.data.end_state != end_state) continue;
@@ -2254,16 +2277,13 @@ PalnsMappedIncumbent map_palns_routes_to_multigraph(
                     if (e.data.time <= our_time + 1e-6 && e.data.cost <= cost + 1e-6) {
                         if (dominating < 0 || e.data.time < graph.edges()[static_cast<std::size_t>(dominating)].data.time) dominating = id;
                     }
-                    if (fastest < 0 || e.data.time < graph.edges()[static_cast<std::size_t>(fastest)].data.time ||
-                        (e.data.time == graph.edges()[static_cast<std::size_t>(fastest)].data.time &&
-                         e.data.cost < graph.edges()[static_cast<std::size_t>(fastest)].data.cost)) {
-                        fastest = id;
-                    }
                 }
-                int chosen = exact >= 0 ? exact : (dominating >= 0 ? dominating : fastest);
+                const int chosen = exact >= 0 ? exact : dominating;
                 if (chosen < 0) {
                     std::ostringstream error;
-                    error << "No multigraph edge for PALNS transition " << current_node << " -> " << next_node << '.';
+                    error << "No multigraph edge matching or dominating PALNS transition "
+                          << current_node << " -> " << next_node
+                          << " (time=" << our_time << ", cost=" << cost << ").";
                     throw std::runtime_error(error.str());
                 }
                 mapped.active_edge_ids.push_back(chosen);
