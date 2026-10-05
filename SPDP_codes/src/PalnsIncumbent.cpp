@@ -956,6 +956,7 @@ struct SharedBest {
     bool has = false;
     double cost = 0.0;
     Solution solution;
+    std::atomic<long long> version{0};  // incremented whenever cost improves
 };
 }  // namespace
 
@@ -994,6 +995,7 @@ struct PalnsIncumbentSolver::Impl {
             shared->has = true;
             shared->cost = s.C;
             shared->solution = s;
+            shared->version.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
@@ -1786,7 +1788,13 @@ struct PalnsIncumbentSolver::Impl {
         std::uniform_real_distribution<double> U01(0.0, 1.0);
         long long iter = 0;
         long long noimp = 0;
+        long long seen_version = shared != nullptr ? shared->version.load(std::memory_order_relaxed) : 0;
         while (!timed_out()) {
+            // Stagnation is measured against the portfolio's shared best.
+            if (which == 2 && shared != nullptr) {
+                const long long v = shared->version.load(std::memory_order_relaxed);
+                if (v != seen_version) { seen_version = v; noimp = 0; }
+            }
             if (which == 1 && st.have_feasible) break;
             if (which == 1 && shared != nullptr && (iter % 64) == 0) {
                 Solution g;

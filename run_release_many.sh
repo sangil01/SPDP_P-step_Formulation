@@ -38,7 +38,7 @@ STOP_AFTER_INITIAL_INCUMBENT=mip-start # Options: none (끝까지 진행), incum
 INITIAL_INCUMBENT_PALNS_THREADS=8 # portfolio threads
 INITIAL_INCUMBENT_PALNS_SEED=1
 INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Phase II after a feasible start
-INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=2000 # Phase II stops after this many non-improving iterations (r3 used 100000000 together with a target cost)
+INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=200000 # Phase II stops after this many iterations of a thread without improving the portfolio's shared best
 INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
 # --- Initial incumbent: two-index-milp / cp-sat backend options ---
 INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan

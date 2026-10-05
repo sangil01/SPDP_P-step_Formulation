@@ -40,6 +40,9 @@ struct PalnsOptions {
     bool ls_first_improvement = true;
     // 6. Phase II and termination
     bool phase2_enable = true;
+    // Phase II stops after this many iterations of a thread without any
+    // improvement of the portfolio's shared best (the counter is reset whenever
+    // any thread improves the shared best).
     int phase2_max_noimp = 2000;
     // Search-mode stop (a): stop as soon as a feasible solution with
     // original cost <= target_cost is found. Negative disables it (mode b).
