@@ -31,14 +31,20 @@ SOLVER_TIME_LIMIT=3600 # seconds
 INITIAL_INCUMBENT_ENABLE=1
 # --- Initial incumbent: main settings ---
 INITIAL_INCUMBENT_BACKEND=palns # Options: two-index-milp, cp-sat, palns
-INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
+INITIAL_INCUMBENT_TIME_LIMIT=600 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 STOP_AFTER_INITIAL_INCUMBENT=mip-start # Options: none (끝까지 진행), incumbent ( incumbent 구하면 중지), mip-start (incumbent를 mip-start로 사용하여 MIP를 풀고 중지)
 INITIAL_INCUMBENT_PALNS_THREADS=8 # portfolio threads
 INITIAL_INCUMBENT_PALNS_SEED=1
 INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Phase II after a feasible start
-INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=200000 # Phase II stops after this many iterations of a thread without improving the portfolio's shared best
+# Candidates (gamma / N_min / N_max):
+#   aggressive   0.60 / 30000 /  75000
+#   balanced     0.60 / 30000 / 200000   (default)
+#   conservative 0.65 / 50000 / 200000
+INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=200000 # N_max: absolute cap on stagnant iterations
+INITIAL_INCUMBENT_PALNS_STAG_RATIO=0.6 # gamma
+INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS=30000 # N_min
 INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
 # --- Initial incumbent: two-index-milp / cp-sat backend options ---
 INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
@@ -410,6 +416,8 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-palns-ls-deep-ratio: $INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO"
         echo "initial-incumbent-palns-phase2-enable: $INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE"
         echo "initial-incumbent-palns-phase2-max-noimp: $INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP"
+        echo "initial-incumbent-palns-stag-ratio: $INITIAL_INCUMBENT_PALNS_STAG_RATIO"
+        echo "initial-incumbent-palns-stag-min-iters: $INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS"
         echo "initial-incumbent-palns-target-cost: $INITIAL_INCUMBENT_PALNS_TARGET_COST"
         echo "initial-incumbent-palns-sa-start-ratio: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO"
         echo "initial-incumbent-palns-sa-start-ratio-phase1: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1"
@@ -583,6 +591,8 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-palns-ls-deep-ratio "$INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO" \
         --initial-incumbent-palns-phase2-enable "$INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE" \
         --initial-incumbent-palns-phase2-max-noimp "$INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP" \
+        --initial-incumbent-palns-stag-ratio "$INITIAL_INCUMBENT_PALNS_STAG_RATIO" \
+        --initial-incumbent-palns-stag-min-iters "$INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS" \
         --initial-incumbent-palns-target-cost "$INITIAL_INCUMBENT_PALNS_TARGET_COST" \
         --initial-incumbent-palns-sa-start-ratio "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO" \
         --initial-incumbent-palns-sa-start-ratio-phase1 "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1" \

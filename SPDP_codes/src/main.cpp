@@ -67,6 +67,8 @@ struct CliOptions {
     int initial_incumbent_palns_ls_first_improvement = 1;
     int initial_incumbent_palns_phase2_enable = 1;
     int initial_incumbent_palns_phase2_max_noimp = 2000;
+    double initial_incumbent_palns_stag_ratio = -1.0;
+    long long initial_incumbent_palns_stag_min_iters = 5000;
     double initial_incumbent_palns_target_cost = -1.0;
     double initial_incumbent_palns_sa_start_ratio = 0.05;
     double initial_incumbent_palns_sa_start_ratio_phase1 = -1.0;
@@ -1208,6 +1210,10 @@ CliOptions parse_cli(int argc, char** argv) {
                 }
             } else if (arg == "--initial-incumbent-palns-ls-deep-ratio") {
                 options.initial_incumbent_palns_ls_deep_ratio = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-stag-ratio") {
+                options.initial_incumbent_palns_stag_ratio = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-stag-min-iters") {
+                options.initial_incumbent_palns_stag_min_iters = parse_int(value, arg);
             } else if (arg == "--initial-incumbent-palns-sa-restart-best") {
                 options.initial_incumbent_palns_sa_restart_best = parse_binary_flag(value, arg);
             } else {
@@ -3435,6 +3441,8 @@ int main(int argc, char** argv) {
                 args.initial_incumbent_palns_phase2_enable == 1;
             search_options.palns.phase2_max_noimp =
                 args.initial_incumbent_palns_phase2_max_noimp;
+            search_options.palns.stag_ratio = args.initial_incumbent_palns_stag_ratio;
+            search_options.palns.stag_min_iters = args.initial_incumbent_palns_stag_min_iters;
             search_options.palns.target_cost = args.initial_incumbent_palns_target_cost;
             search_options.palns.sa_start_ratio = args.initial_incumbent_palns_sa_start_ratio;
             search_options.palns.sa_start_ratio_phase1 = args.initial_incumbent_palns_sa_start_ratio_phase1;
@@ -3466,6 +3474,8 @@ int main(int argc, char** argv) {
                     << " ls_first_improvement=" << args.initial_incumbent_palns_ls_first_improvement
                     << " phase2_enable=" << args.initial_incumbent_palns_phase2_enable
                     << " phase2_max_noimp=" << args.initial_incumbent_palns_phase2_max_noimp
+                    << " stag_ratio=" << args.initial_incumbent_palns_stag_ratio
+                    << " stag_min_iters=" << args.initial_incumbent_palns_stag_min_iters
                     << " target_cost=" << args.initial_incumbent_palns_target_cost
                     << " sa_start_ratio=" << args.initial_incumbent_palns_sa_start_ratio
                     << " sa_start_ratio_phase1=" << args.initial_incumbent_palns_sa_start_ratio_phase1

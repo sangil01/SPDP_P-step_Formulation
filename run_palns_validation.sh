@@ -96,6 +96,8 @@ run_one() {
         --initial-incumbent-palns-ls-deep-ratio "$INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO" \
         --initial-incumbent-palns-phase2-enable "$INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE" \
         --initial-incumbent-palns-phase2-max-noimp "$INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP" \
+        --initial-incumbent-palns-stag-ratio "$INITIAL_INCUMBENT_PALNS_STAG_RATIO" \
+        --initial-incumbent-palns-stag-min-iters "$INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS" \
         --initial-incumbent-palns-sa-start-ratio "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO" \
         --initial-incumbent-palns-sa-start-ratio-phase1 "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1" \
         --initial-incumbent-palns-sa-end-ratio "$INITIAL_INCUMBENT_PALNS_SA_END_RATIO" \

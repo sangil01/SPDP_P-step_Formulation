@@ -44,6 +44,12 @@ struct PalnsOptions {
     // improvement of the portfolio's shared best (the counter is reset whenever
     // any thread improves the shared best).
     int phase2_max_noimp = 2000;
+    // Relative stagnation stop (used together with the cap phase2_max_noimp
+    // when stag_ratio > 0): Phase II also stops once the shared best has not
+    // improved for at least stag_ratio * (elapsed time) and the thread has done
+    // stag_min_iters iterations since the last improvement of the shared best.
+    double stag_ratio = -1.0;
+    long long stag_min_iters = 5000;
     // Search-mode stop (a): stop as soon as a feasible solution with
     // original cost <= target_cost is found. Negative disables it (mode b).
     double target_cost = -1.0;

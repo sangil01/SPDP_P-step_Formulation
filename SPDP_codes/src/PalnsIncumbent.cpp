@@ -957,6 +957,9 @@ struct SharedBest {
     double cost = 0.0;
     Solution solution;
     std::atomic<long long> version{0};  // incremented whenever cost improves
+    Clock::time_point t0 = Clock::now();  // portfolio start
+    std::atomic<double> last_improve{0.0};  // seconds since t0 of the last improvement
+    std::vector<std::pair<double, double>> trace;  // (seconds since t0, original cost)
 };
 }  // namespace
 
@@ -995,6 +998,9 @@ struct PalnsIncumbentSolver::Impl {
             shared->has = true;
             shared->cost = s.C;
             shared->solution = s;
+            const double now = std::chrono::duration<double>(Clock::now() - shared->t0).count();
+            shared->last_improve.store(now, std::memory_order_relaxed);
+            shared->trace.push_back({now, original_cost(s)});
             shared->version.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -1804,7 +1810,26 @@ struct PalnsIncumbentSolver::Impl {
                 }
             }
             if (st.reached_target) break;
-            if (which == 2 && noimp >= opt.phase2_max_noimp) break;
+            if (which == 2) {
+                // Absolute cap (N_max): always stop after phase2_max_noimp
+                // iterations without a shared improvement.
+                if (noimp >= opt.phase2_max_noimp) break;
+                // Relative stagnation: stop once the shared best has not
+                // improved for stag_ratio * elapsed and stag_min_iters iterations.
+                if (opt.stag_ratio > 0.0) {
+                    if (noimp >= opt.stag_min_iters) {
+                        double now, last;
+                        if (shared != nullptr) {
+                            now = std::chrono::duration<double>(Clock::now() - shared->t0).count();
+                            last = shared->last_improve.load(std::memory_order_relaxed);
+                        } else {
+                            now = elapsed();
+                            last = st.trace.empty() ? 0.0 : st.trace.back().first;
+                        }
+                        if (now - last >= opt.stag_ratio * now) break;
+                    }
+                }
+            }
             ++iter;
             if (oscillate) {
                 const double pos = static_cast<double>((iter - 1) % cycle) / static_cast<double>(cycle);
@@ -2138,6 +2163,7 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
     const auto wall_start = Clock::now();
     std::atomic<bool> stop{false};
     SharedBest shared;
+    shared.t0 = wall_start;
     std::vector<std::unique_ptr<Impl>> workers;
     for (int i = 0; i < nthreads; ++i) {
         auto w = std::make_unique<Impl>(*impl_);
@@ -2214,6 +2240,9 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
             << " stop_reason=" << r.stop_reason << " cost=" << r.best_original_cost
             << " time_to_feasible=" << r.time_to_feasible << " time_to_target=" << r.time_to_target << '\n';
     }
+    log << "[palns-shared-trace] k=" << vehicle_count << " improvements=" << shared.trace.size() << " points=";
+    for (const auto& p : shared.trace) log << p.first << ':' << p.second << ';';
+    log << '\n';
     out.log = log.str();
     if (!out.log.empty() && out.log.back() == '\n') out.log.pop_back();
     return out;
