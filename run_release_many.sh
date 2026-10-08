@@ -34,7 +34,7 @@ INITIAL_INCUMBENT_BACKEND=palns # Options: two-index-milp, cp-sat, palns
 INITIAL_INCUMBENT_TIME_LIMIT=600 # seconds; 0 means no time limit
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
-STOP_AFTER_INITIAL_INCUMBENT=mip-start # Options: none (끝까지 진행), incumbent ( incumbent 구하면 중지), mip-start (incumbent를 mip-start로 사용하여 MIP를 풀고 중지)
+STOP_AFTER_INITIAL_INCUMBENT=none # Options: none (끝까지 진행), incumbent ( incumbent 구하면 중지), mip-start (incumbent를 mip-start로 사용하여 MIP를 풀고 중지)
 INITIAL_INCUMBENT_PALNS_THREADS=8 # portfolio threads
 INITIAL_INCUMBENT_PALNS_SEED=1
 INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Phase II after a feasible start
@@ -162,7 +162,7 @@ CAPACITY_BLOSSOM_ROOT_LOW_VIOLATION=0.02
 CAPACITY_BLOSSOM_ROOT_LOW_VIOLATION_ROUND_LIMIT=2 # close the root after this many consecutive rounds below the threshold (0 disables)
 
 # --- type-closed travel-time cover cuts: candidate generation ---
-ADD_TYPE_TRAVEL_TIME_COVER_CUTS=1 # 1 adds sum_{delta^-(S_H)} y >= rho(H) for type-closed sets S_H (certified duration IPs on metric-closed restricted instances)
+ADD_TYPE_TRAVEL_TIME_COVER_CUTS=0 # 1 adds sum_{delta^-(S_H)} y >= rho(H) for type-closed sets S_H (certified duration IPs on metric-closed restricted instances)
 TYPE_TRAVEL_TIME_COVER_MODE=screened # Options: static (all certified rows up front), screened (add violated rows as user cuts)
 TYPE_TRAVEL_TIME_COVER_MAX_TYPE_SET_SIZE=0 # 0: every union of types
 TYPE_TRAVEL_TIME_COVER_SUBPROBLEM_TIME_LIMIT=60 # seconds per restricted duration IP
@@ -291,9 +291,9 @@ DATA_LIST=(
     "RecDep_day_C15.dat"
     "RecDep_day_C16.dat"
     "RecDep_day_C17.dat"
-    #"RecDep_day_C18.dat"
+    "RecDep_day_C18.dat"
     "RecDep_day_C19.dat"
-    #"RecDep_day_C20.dat"
+    "RecDep_day_C20.dat"
     "RecDep_day_D3.dat"
     "RecDep_day_D4.dat"
     "RecDep_day_D5.dat"
