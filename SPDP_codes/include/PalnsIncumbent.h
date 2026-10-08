@@ -40,16 +40,20 @@ struct PalnsOptions {
     bool ls_first_improvement = true;
     // 6. Phase II and termination
     bool phase2_enable = true;
-    // Phase II stops after this many iterations of a thread without any
-    // improvement of the portfolio's shared best (the counter is reset whenever
-    // any thread improves the shared best).
-    int phase2_max_noimp = 2000;
-    // Relative stagnation stop (used together with the cap phase2_max_noimp
-    // when stag_ratio > 0): Phase II also stops once the shared best has not
-    // improved for at least stag_ratio * (elapsed time) and the thread has done
-    // stag_min_iters iterations since the last improvement of the shared best.
-    double stag_ratio = -1.0;
-    long long stag_min_iters = 5000;
+    // Termination (deterministic, iteration based). The portfolio threads run
+    // in lockstep epochs of sync_iters iterations; at every epoch barrier the
+    // shared best is merged and the stop rule is evaluated. With I the number
+    // of iterations per thread since the start of PALNS (Phase I included) and
+    // I_last the iteration at which the shared best last improved, PALNS stops
+    // once a feasible solution exists and
+    //   (I - I_last >= stag_ratio * I  and  I - I_last >= stag_min_iters)
+    //   or  I - I_last >= phase2_max_noimp.
+    // stag_ratio <= 0 disables the relative part, phase2_max_noimp <= 0 the cap.
+    long long phase2_max_noimp = 200000;
+    double stag_ratio = 0.6;
+    long long stag_min_iters = 30000;
+    // Epoch length (iterations per thread between two synchronizations).
+    int sync_iters = 64;
     // Search-mode stop (a): stop as soon as a feasible solution with
     // original cost <= target_cost is found. Negative disables it (mode b).
     double target_cost = -1.0;
@@ -75,9 +79,9 @@ struct PalnsOptions {
     // Trajectory relocate is applied only to candidates whose objective after
     // the light local search is within ls_deep_ratio of the best objective.
     double ls_deep_ratio = 0.01;
-    // Independent portfolio threads with different seeds. The first thread
-    // that terminates (target, Phase II stop, or time) stops the others; the
-    // best feasible solution over all threads is returned.
+    // Portfolio threads with different seeds, synchronized every sync_iters
+    // iterations (deterministic for a fixed seed). The best feasible solution
+    // over all threads is returned.
     int threads = 1;
     // Phase I strategic oscillation: within each SA cycle eta decreases
     // geometrically from phase1_eta_max to eta. A value <= eta disables it.

@@ -4,7 +4,10 @@
 #include <array>
 #include <atomic>
 #include <thread>
+#include <tuple>
 #include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -950,17 +953,50 @@ int roulette_index(const std::vector<T>& weights, std::mt19937_64& rng) {
 // ---------------------------------------------------------------- solver
 
 namespace {
-// Best feasible solution shared by the portfolio threads.
-struct SharedBest {
-    std::mutex mutex;
-    bool has = false;
+// Epoch barrier of the portfolio. Threads run sync_iters iterations, then
+// wait here; the last arriving thread runs on_barrier (merge of the thread
+// bests in thread order, stop rule) while all others are blocked. Between two
+// barriers the shared best snapshot below is read-only, so the search is
+// deterministic for a fixed seed.
+struct SyncHub {
+    std::mutex m;
+    std::condition_variable cv;
+    int participants = 0;
+    int arrived = 0;
+    long long generation = 0;
+    bool stop = false;
+    std::function<void()> on_barrier;
+    bool has = false;       // shared best snapshot
     double cost = 0.0;
     Solution solution;
-    std::atomic<long long> version{0};  // incremented whenever cost improves
-    Clock::time_point t0 = Clock::now();  // portfolio start
-    std::atomic<double> last_improve{0.0};  // seconds since t0 of the last improvement
-    std::vector<std::pair<double, double>> trace;  // (seconds since t0, original cost)
 };
+
+bool hub_arrive(SyncHub& h, double& wait_seconds) {
+    const auto w0 = Clock::now();
+    std::unique_lock<std::mutex> lk(h.m);
+    const long long gen = h.generation;
+    if (++h.arrived >= h.participants) {
+        if (h.on_barrier) h.on_barrier();
+        h.arrived = 0;
+        ++h.generation;
+        h.cv.notify_all();
+    } else {
+        h.cv.wait(lk, [&]() { return h.generation != gen; });
+    }
+    wait_seconds += std::chrono::duration<double>(Clock::now() - w0).count();
+    return h.stop;
+}
+
+void hub_leave(SyncHub& h) {
+    std::unique_lock<std::mutex> lk(h.m);
+    --h.participants;
+    if (h.participants > 0 && h.arrived > 0 && h.arrived >= h.participants) {
+        if (h.on_barrier) h.on_barrier();
+        h.arrived = 0;
+        ++h.generation;
+        h.cv.notify_all();
+    }
+}
 }  // namespace
 
 struct PalnsIncumbentSolver::Impl {
@@ -976,9 +1012,15 @@ struct PalnsIncumbentSolver::Impl {
     Clock::time_point t0;
     Clock::time_point deadline;
     bool has_deadline = false;
-    std::atomic<bool>* stop_flag = nullptr;
-    SharedBest* shared = nullptr;
+    SyncHub* hub = nullptr;
     bool adopt_shared = true;  // odd portfolio threads keep searching independently
+    long long gi = 0;          // iterations of this thread since the start (both phases)
+    double wait_seconds = 0.0; // time spent at epoch barriers
+    // Best feasible solution of this thread (merged at the next barrier).
+    bool cand_has = false;
+    double cand_cost = 0.0;
+    long long cand_gi = 0;
+    Solution cand;
 
     void renumber(Solution& s) {
         std::unordered_map<int, int> remap;
@@ -991,25 +1033,23 @@ struct PalnsIncumbentSolver::Impl {
         }
     }
 
+    // Records a feasible solution of this thread; it reaches the shared best
+    // only at the next epoch barrier.
     void publish(const Solution& s) {
-        if (shared == nullptr || s.V > kEps) return;
-        std::lock_guard<std::mutex> lock(shared->mutex);
-        if (!shared->has || s.C < shared->cost - kEps) {
-            shared->has = true;
-            shared->cost = s.C;
-            shared->solution = s;
-            const double now = std::chrono::duration<double>(Clock::now() - shared->t0).count();
-            shared->last_improve.store(now, std::memory_order_relaxed);
-            shared->trace.push_back({now, original_cost(s)});
-            shared->version.fetch_add(1, std::memory_order_relaxed);
+        if (s.V > kEps) return;
+        if (!cand_has || s.C < cand_cost - kEps) {
+            cand_has = true;
+            cand_cost = s.C;
+            cand_gi = gi;
+            cand = s;
         }
     }
 
+    // Reads the shared best snapshot taken at the last barrier.
     bool adopt(Solution& out, double own_cost, bool force = false) {
-        if (shared == nullptr || (!adopt_shared && !force)) return false;
-        std::lock_guard<std::mutex> lock(shared->mutex);
-        if (!shared->has || shared->cost >= own_cost - kEps) return false;
-        out = shared->solution;
+        if (hub == nullptr || (!adopt_shared && !force)) return false;
+        if (!hub->has || hub->cost >= own_cost - kEps) return false;
+        out = hub->solution;
         renumber(out);
         return true;
     }
@@ -1073,7 +1113,7 @@ struct PalnsIncumbentSolver::Impl {
         return std::chrono::duration<double>(Clock::now() - t0).count();
     }
     bool timed_out() const {
-        if (stop_flag != nullptr && stop_flag->load(std::memory_order_relaxed)) return true;
+        if (hub != nullptr && hub->stop) return true;
         return has_deadline && Clock::now() >= deadline;
     }
 
@@ -1793,43 +1833,8 @@ struct PalnsIncumbentSolver::Impl {
         std::uniform_int_distribution<int> kdist(1, kmax);
         std::uniform_real_distribution<double> U01(0.0, 1.0);
         long long iter = 0;
-        long long noimp = 0;
-        long long seen_version = shared != nullptr ? shared->version.load(std::memory_order_relaxed) : 0;
         while (!timed_out()) {
-            // Stagnation is measured against the portfolio's shared best.
-            if (which == 2 && shared != nullptr) {
-                const long long v = shared->version.load(std::memory_order_relaxed);
-                if (v != seen_version) { seen_version = v; noimp = 0; }
-            }
             if (which == 1 && st.have_feasible) break;
-            if (which == 1 && shared != nullptr && (iter % 64) == 0) {
-                Solution g;
-                if (adopt(g, kInf, false)) {
-                    record(st, g);
-                    break;
-                }
-            }
-            if (st.reached_target) break;
-            if (which == 2) {
-                // Absolute cap (N_max): always stop after phase2_max_noimp
-                // iterations without a shared improvement.
-                if (noimp >= opt.phase2_max_noimp) break;
-                // Relative stagnation: stop once the shared best has not
-                // improved for stag_ratio * elapsed and stag_min_iters iterations.
-                if (opt.stag_ratio > 0.0) {
-                    if (noimp >= opt.stag_min_iters) {
-                        double now, last;
-                        if (shared != nullptr) {
-                            now = std::chrono::duration<double>(Clock::now() - shared->t0).count();
-                            last = shared->last_improve.load(std::memory_order_relaxed);
-                        } else {
-                            now = elapsed();
-                            last = st.trace.empty() ? 0.0 : st.trace.back().first;
-                        }
-                        if (now - last >= opt.stag_ratio * now) break;
-                    }
-                }
-            }
             ++iter;
             if (oscillate) {
                 const double pos = static_cast<double>((iter - 1) % cycle) / static_cast<double>(cycle);
@@ -1886,11 +1891,9 @@ struct PalnsIncumbentSolver::Impl {
                 if (new_best) {
                     best = sp;
                     fBest = which == 1 ? fsp : sp.C;
-                    noimp = 0;
                     reward = 10.0;
                     if (which == 2) publish(sp);
                 } else {
-                    ++noimp;
                     if (fsp < fS - 1e-9) reward = 3.0;
                     else if (accept && is_new) reward = 1.0;
                 }
@@ -1939,6 +1942,18 @@ struct PalnsIncumbentSolver::Impl {
                 upd(wd, sd, nd);
                 upd(wq, sq, nq);
                 upd(wr, sr, nr);
+            }
+            ++gi;
+            if (hub != nullptr && gi % std::max(1, opt.sync_iters) == 0) {
+                if (hub_arrive(*hub, wait_seconds)) break;
+                // Phase I: even threads move on to Phase II with the shared best.
+                if (which == 1) {
+                    Solution g;
+                    if (adopt(g, kInf, false)) {
+                        record(st, g);
+                        break;
+                    }
+                }
             }
         }
         return iter;
@@ -2156,41 +2171,96 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
     if (vehicle_count <= 0) {
         throw std::runtime_error("PALNS requires a positive vehicle count.");
     }
-    const int nthreads = std::max(1, impl_->opt.threads);
-    if (nthreads == 1) {
-        return impl_->solve(vehicle_count, time_limit_seconds);
-    }
+    const PalnsOptions& O = impl_->opt;
+    const int nthreads = std::max(1, O.threads);
+    const long long E = std::max(1, O.sync_iters);
     const auto wall_start = Clock::now();
-    std::atomic<bool> stop{false};
-    SharedBest shared;
-    shared.t0 = wall_start;
+    auto since_start = [&]() { return std::chrono::duration<double>(Clock::now() - wall_start).count(); };
+
+    SyncHub hub;
+    hub.participants = nthreads;
     std::vector<std::unique_ptr<Impl>> workers;
     for (int i = 0; i < nthreads; ++i) {
         auto w = std::make_unique<Impl>(*impl_);
-        w->opt.seed = impl_->opt.seed + 7919U * static_cast<unsigned int>(i);
-        w->stop_flag = &stop;
-        w->shared = &shared;
+        w->opt.seed = O.seed + 7919U * static_cast<unsigned int>(i);
+        w->hub = &hub;
         w->adopt_shared = (i % 2) == 0;
-        if (impl_->opt.portfolio_diverse) {
+        if (O.portfolio_diverse) {
             static const double start_mul[3] = {1.0, 0.5, 2.0};
-            w->opt.sa_start_ratio = impl_->opt.sa_start_ratio * start_mul[i % 3];
-            if ((i / 4) % 2 == 1) w->opt.kmax_ratio = impl_->opt.kmax_ratio * 2.0;
+            w->opt.sa_start_ratio = O.sa_start_ratio * start_mul[i % 3];
+            if ((i / 4) % 2 == 1) w->opt.kmax_ratio = O.kmax_ratio * 2.0;
         }
-        if (impl_->opt.portfolio_mixed_cycles && ((i / 2) % 2) == 0) {
+        if (O.portfolio_mixed_cycles && ((i / 2) % 2) == 0) {
             w->opt.sa_cycle_iters_phase2 = 0;
         }
         workers.push_back(std::move(w));
     }
+
+    // Barrier action: merge the thread bests (min cost, then earliest
+    // iteration, then smallest thread index) and evaluate the stop rule.
+    long long epoch = 0;
+    long long I_last = 0;
+    bool time_limit_hit = false;
+    std::string stop_rule = "none";
+    std::vector<std::tuple<long long, double, double>> trace;  // (I_last, seconds, original cost)
+    std::vector<std::pair<long long, double>> clock;           // (I, seconds)
+    hub.on_barrier = [&]() {
+        ++epoch;
+        const long long I = epoch * E;
+        const double now = since_start();
+        int pick = -1;
+        for (int i = 0; i < nthreads; ++i) {
+            const Impl& w = *workers[static_cast<std::size_t>(i)];
+            if (!w.cand_has) continue;
+            if (pick < 0) { pick = i; continue; }
+            const Impl& p = *workers[static_cast<std::size_t>(pick)];
+            if (w.cand_cost < p.cand_cost - kEps ||
+                (std::fabs(w.cand_cost - p.cand_cost) <= kEps && w.cand_gi < p.cand_gi)) {
+                pick = i;
+            }
+        }
+        if (pick >= 0) {
+            const Impl& p = *workers[static_cast<std::size_t>(pick)];
+            if (!hub.has || p.cand_cost < hub.cost - kEps) {
+                hub.has = true;
+                hub.cost = p.cand_cost;
+                hub.solution = p.cand;
+                I_last = p.cand_gi;
+                trace.emplace_back(I_last, now, workers[0]->original_cost(p.cand));
+            }
+        }
+        if (epoch % 8 == 0) clock.emplace_back(I, now);
+        if (hub.has) {
+            const long long D = I - I_last;
+            if (O.target_cost >= 0.0 && workers[0]->original_cost(hub.solution) <= O.target_cost + 1e-6) {
+                hub.stop = true; stop_rule = "target";
+            } else if (!O.phase2_enable) {
+                hub.stop = true; stop_rule = "feasible";
+            } else if (O.phase2_max_noimp > 0 && D >= O.phase2_max_noimp) {
+                hub.stop = true; stop_rule = "max-noimp";
+            } else if (O.stag_ratio > 0.0 && D >= O.stag_min_iters &&
+                       static_cast<double>(D) >= O.stag_ratio * static_cast<double>(I)) {
+                hub.stop = true; stop_rule = "stag-ratio";
+            }
+        }
+        if (!hub.stop && time_limit_seconds > 0.0 && now >= time_limit_seconds) {
+            hub.stop = true; stop_rule = "time-limit"; time_limit_hit = true;
+        }
+        if (hub.stop) clock.emplace_back(I, now);
+    };
+
     std::vector<PalnsFixedKResult> results(static_cast<std::size_t>(nthreads));
     std::vector<std::thread> pool_threads;
     for (int i = 0; i < nthreads; ++i) {
         pool_threads.emplace_back([&, i]() {
+            // The time limit is checked only at the barriers.
             results[static_cast<std::size_t>(i)] =
-                workers[static_cast<std::size_t>(i)]->solve(vehicle_count, time_limit_seconds);
-            stop.store(true);
+                workers[static_cast<std::size_t>(i)]->solve(vehicle_count, 0.0);
+            hub_leave(hub);
         });
     }
     for (std::thread& t : pool_threads) t.join();
+
     int best = -1;
     for (int i = 0; i < nthreads; ++i) {
         const PalnsFixedKResult& r = results[static_cast<std::size_t>(i)];
@@ -2198,23 +2268,27 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
         if (best < 0 || r.best_original_cost < results[static_cast<std::size_t>(best)].best_original_cost - 1e-9) best = i;
     }
     PalnsFixedKResult out = results[static_cast<std::size_t>(best >= 0 ? best : 0)];
-    out.runtime_seconds = std::chrono::duration<double>(Clock::now() - wall_start).count();
-    double ttf = -1.0, ttt = -1.0;
+    out.runtime_seconds = since_start();
+    double ttf = -1.0, ttt = -1.0, wait = 0.0;
     long long it1 = 0, it2 = 0;
-    for (const PalnsFixedKResult& r : results) {
+    for (int i = 0; i < nthreads; ++i) {
+        const PalnsFixedKResult& r = results[static_cast<std::size_t>(i)];
         if (r.time_to_feasible >= 0.0 && (ttf < 0.0 || r.time_to_feasible < ttf)) ttf = r.time_to_feasible;
         if (r.time_to_target >= 0.0 && (ttt < 0.0 || r.time_to_target < ttt)) ttt = r.time_to_target;
         it1 += r.phase1_iterations;
         it2 += r.phase2_iterations;
         out.reached_target = out.reached_target || r.reached_target;
+        wait += workers[static_cast<std::size_t>(i)]->wait_seconds;
     }
     out.time_to_feasible = ttf;
     out.time_to_target = ttt;
     out.phase1_iterations = it1;
     out.phase2_iterations = it2;
-    if (best < 0) {
-        out.feasible = false;
-        out.hit_time_limit = true;
+    out.stop_reason = (best >= 0) ? stop_rule : (stop_rule == "none" ? "no-feasible" : stop_rule);
+    out.hit_time_limit = best < 0;
+    if (best < 0) out.feasible = false;
+    else if (results[static_cast<std::size_t>(best)].stop_reason.rfind("output-error", 0) == 0) {
+        out.stop_reason = results[static_cast<std::size_t>(best)].stop_reason;
     }
     std::ostringstream log;
     log << "[palns] k=" << vehicle_count
@@ -2226,25 +2300,33 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
         << " construction_feasible=" << (out.construction_feasible ? 1 : 0)
         << " time_to_feasible=" << out.time_to_feasible
         << " time_to_target=" << out.time_to_target
-        << " target_cost=" << impl_->opt.target_cost
+        << " target_cost=" << O.target_cost
         << " best_violation=" << (std::isfinite(out.best_violation) ? out.best_violation : -1.0)
         << " best_original_cost=" << out.best_original_cost
         << " best_duration=" << out.best_duration
         << " phase1_iterations=" << out.phase1_iterations
         << " phase2_iterations=" << out.phase2_iterations
         << " threads=" << nthreads
-        << " best_thread=" << best << '\n';
+        << " best_thread=" << best
+        << " sync_iters=" << E
+        << " epochs=" << epoch
+        << " iterations_per_thread=" << epoch * E
+        << " last_improvement_iteration=" << I_last
+        << " barrier_wait_seconds=" << wait
+        << " time_limit_hit=" << (time_limit_hit ? 1 : 0) << '\n';
     for (int i = 0; i < nthreads; ++i) {
         const PalnsFixedKResult& r = results[static_cast<std::size_t>(i)];
         log << "[palns-thread] index=" << i << " feasible=" << (r.feasible ? 1 : 0)
-            << " stop_reason=" << r.stop_reason << " cost=" << r.best_original_cost
-            << " time_to_feasible=" << r.time_to_feasible << " time_to_target=" << r.time_to_target << '\n';
+            << " cost=" << r.best_original_cost
+            << " time_to_feasible=" << r.time_to_feasible
+            << " iterations=" << workers[static_cast<std::size_t>(i)]->gi
+            << " barrier_wait_seconds=" << workers[static_cast<std::size_t>(i)]->wait_seconds << '\n';
     }
-    log << "[palns-shared-trace] k=" << vehicle_count << " improvements=" << shared.trace.size() << " points=";
-    for (const auto& p : shared.trace) log << p.first << ':' << p.second << ';';
-    log << '\n';
+    log << "[palns-shared-trace] k=" << vehicle_count << " improvements=" << trace.size() << " points=";
+    for (const auto& p : trace) log << std::get<0>(p) << ':' << std::get<1>(p) << ':' << std::get<2>(p) << ';';
+    log << "\n[palns-iter-clock] k=" << vehicle_count << " points=";
+    for (const auto& p : clock) log << p.first << ':' << p.second << ';';
     out.log = log.str();
-    if (!out.log.empty() && out.log.back() == '\n') out.log.pop_back();
     return out;
 }
 

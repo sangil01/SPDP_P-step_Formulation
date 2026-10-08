@@ -38,13 +38,15 @@ STOP_AFTER_INITIAL_INCUMBENT=none # Options: none (끝까지 진행), incumbent 
 INITIAL_INCUMBENT_PALNS_THREADS=8 # portfolio threads
 INITIAL_INCUMBENT_PALNS_SEED=1
 INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Phase II after a feasible start
-# Candidates (gamma / N_min / N_max):
-#   aggressive   0.60 / 30000 /  75000
-#   balanced     0.60 / 30000 / 200000   (default)
-#   conservative 0.65 / 50000 / 200000
-INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=200000 # N_max: absolute cap on stagnant iterations
+# PALNS stop rule (deterministic, iteration based; I = iterations per thread since the start of PALNS,
+# I_last = iteration of the last improvement of the shared best), checked at every sync barrier once a
+# feasible solution exists:
+#   (I - I_last >= STAG_RATIO * I  and  I - I_last >= STAG_MIN_ITERS)  or  I - I_last >= PHASE2_MAX_NOIMP
+#   STAG_RATIO <= 0 disables the relative part, PHASE2_MAX_NOIMP <= 0 disables the cap.
+INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=200000 # N_max
 INITIAL_INCUMBENT_PALNS_STAG_RATIO=0.6 # gamma
 INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS=30000 # N_min
+INITIAL_INCUMBENT_PALNS_SYNC_ITERS=64 # E: iterations per thread between two synchronizations of the portfolio
 INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
 # --- Initial incumbent: two-index-milp / cp-sat backend options ---
 INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
@@ -418,6 +420,7 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-palns-phase2-max-noimp: $INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP"
         echo "initial-incumbent-palns-stag-ratio: $INITIAL_INCUMBENT_PALNS_STAG_RATIO"
         echo "initial-incumbent-palns-stag-min-iters: $INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS"
+        echo "initial-incumbent-palns-sync-iters: $INITIAL_INCUMBENT_PALNS_SYNC_ITERS"
         echo "initial-incumbent-palns-target-cost: $INITIAL_INCUMBENT_PALNS_TARGET_COST"
         echo "initial-incumbent-palns-sa-start-ratio: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO"
         echo "initial-incumbent-palns-sa-start-ratio-phase1: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1"
@@ -593,6 +596,7 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-palns-phase2-max-noimp "$INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP" \
         --initial-incumbent-palns-stag-ratio "$INITIAL_INCUMBENT_PALNS_STAG_RATIO" \
         --initial-incumbent-palns-stag-min-iters "$INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS" \
+        --initial-incumbent-palns-sync-iters "$INITIAL_INCUMBENT_PALNS_SYNC_ITERS" \
         --initial-incumbent-palns-target-cost "$INITIAL_INCUMBENT_PALNS_TARGET_COST" \
         --initial-incumbent-palns-sa-start-ratio "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO" \
         --initial-incumbent-palns-sa-start-ratio-phase1 "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1" \

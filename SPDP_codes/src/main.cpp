@@ -66,9 +66,10 @@ struct CliOptions {
     int initial_incumbent_palns_ls_every_m = 10;
     int initial_incumbent_palns_ls_first_improvement = 1;
     int initial_incumbent_palns_phase2_enable = 1;
-    int initial_incumbent_palns_phase2_max_noimp = 2000;
-    double initial_incumbent_palns_stag_ratio = -1.0;
-    long long initial_incumbent_palns_stag_min_iters = 5000;
+    long long initial_incumbent_palns_phase2_max_noimp = 200000;
+    double initial_incumbent_palns_stag_ratio = 0.6;
+    long long initial_incumbent_palns_stag_min_iters = 30000;
+    int initial_incumbent_palns_sync_iters = 64;
     double initial_incumbent_palns_target_cost = -1.0;
     double initial_incumbent_palns_sa_start_ratio = 0.05;
     double initial_incumbent_palns_sa_start_ratio_phase1 = -1.0;
@@ -1184,7 +1185,7 @@ CliOptions parse_cli(int argc, char** argv) {
             } else if (arg == "--initial-incumbent-palns-phase2-enable") {
                 options.initial_incumbent_palns_phase2_enable = parse_binary_flag(value, arg);
             } else if (arg == "--initial-incumbent-palns-phase2-max-noimp") {
-                options.initial_incumbent_palns_phase2_max_noimp = parse_int(value, arg);
+                options.initial_incumbent_palns_phase2_max_noimp = static_cast<long long>(std::llround(parse_double(value, arg)));
             } else if (arg == "--initial-incumbent-palns-target-cost") {
                 options.initial_incumbent_palns_target_cost = parse_double(value, arg);
             } else if (arg == "--initial-incumbent-palns-sa-start-ratio") {
@@ -1213,7 +1214,12 @@ CliOptions parse_cli(int argc, char** argv) {
             } else if (arg == "--initial-incumbent-palns-stag-ratio") {
                 options.initial_incumbent_palns_stag_ratio = parse_double(value, arg);
             } else if (arg == "--initial-incumbent-palns-stag-min-iters") {
-                options.initial_incumbent_palns_stag_min_iters = parse_int(value, arg);
+                options.initial_incumbent_palns_stag_min_iters = static_cast<long long>(std::llround(parse_double(value, arg)));
+            } else if (arg == "--initial-incumbent-palns-sync-iters") {
+                options.initial_incumbent_palns_sync_iters = parse_int(value, arg);
+                if (options.initial_incumbent_palns_sync_iters < 1) {
+                    throw std::runtime_error(arg + " must be positive.");
+                }
             } else if (arg == "--initial-incumbent-palns-sa-restart-best") {
                 options.initial_incumbent_palns_sa_restart_best = parse_binary_flag(value, arg);
             } else {
@@ -3443,6 +3449,7 @@ int main(int argc, char** argv) {
                 args.initial_incumbent_palns_phase2_max_noimp;
             search_options.palns.stag_ratio = args.initial_incumbent_palns_stag_ratio;
             search_options.palns.stag_min_iters = args.initial_incumbent_palns_stag_min_iters;
+            search_options.palns.sync_iters = args.initial_incumbent_palns_sync_iters;
             search_options.palns.target_cost = args.initial_incumbent_palns_target_cost;
             search_options.palns.sa_start_ratio = args.initial_incumbent_palns_sa_start_ratio;
             search_options.palns.sa_start_ratio_phase1 = args.initial_incumbent_palns_sa_start_ratio_phase1;
@@ -3476,6 +3483,7 @@ int main(int argc, char** argv) {
                     << " phase2_max_noimp=" << args.initial_incumbent_palns_phase2_max_noimp
                     << " stag_ratio=" << args.initial_incumbent_palns_stag_ratio
                     << " stag_min_iters=" << args.initial_incumbent_palns_stag_min_iters
+                    << " sync_iters=" << args.initial_incumbent_palns_sync_iters
                     << " target_cost=" << args.initial_incumbent_palns_target_cost
                     << " sa_start_ratio=" << args.initial_incumbent_palns_sa_start_ratio
                     << " sa_start_ratio_phase1=" << args.initial_incumbent_palns_sa_start_ratio_phase1
