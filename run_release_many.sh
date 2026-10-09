@@ -31,7 +31,7 @@ SOLVER_TIME_LIMIT=3600 # seconds
 INITIAL_INCUMBENT_ENABLE=1
 # --- Initial incumbent: main settings ---
 INITIAL_INCUMBENT_BACKEND=palns # Options: two-index-milp, cp-sat, palns
-INITIAL_INCUMBENT_TIME_LIMIT=600 # seconds; 0 means no time limit
+INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit (1200 = smallest limit that does not change PALNS results; C17 needs it)
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 STOP_AFTER_INITIAL_INCUMBENT=none # Options: none (끝까지 진행), incumbent ( incumbent 구하면 중지), mip-start (incumbent를 mip-start로 사용하여 MIP를 풀고 중지)
@@ -43,10 +43,14 @@ INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Ph
 # feasible solution exists:
 #   (I - I_last >= STAG_RATIO * I  and  I - I_last >= STAG_MIN_ITERS)  or  I - I_last >= PHASE2_MAX_NOIMP
 #   STAG_RATIO <= 0 disables the relative part, PHASE2_MAX_NOIMP <= 0 disables the cap.
-INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=200000 # N_max
-INITIAL_INCUMBENT_PALNS_STAG_RATIO=0.6 # gamma
-INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS=30000 # N_min
-INITIAL_INCUMBENT_PALNS_SYNC_ITERS=64 # E: iterations per thread between two synchronizations of the portfolio
+# Candidates (deterministic reference run, E=1024, seed 1, TIME_LIMIT=1200):
+#   balanced (default):     gamma=0.7, N_min=1000,  N_max=100000 -> all 62 better than MILP baseline, C12/C16/C19 found
+#   fastest total time:     gamma=0.6, N_min=10000, N_max=100000 -> all 62 <= MILP baseline, C12/C16/C19 found
+#   targets C13/C17/D6/D7:  gamma=0.8, N_min=500,   N_max=300000 -> also C13<=5293, C17<=7062, D6<=4906, D7<=6314
+INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=100000 # N_max
+INITIAL_INCUMBENT_PALNS_STAG_RATIO=0.7 # gamma
+INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS=1000 # N_min
+INITIAL_INCUMBENT_PALNS_SYNC_ITERS=1024 # E: iterations per thread between two synchronizations of the portfolio
 INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
 # --- Initial incumbent: two-index-milp / cp-sat backend options ---
 INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
