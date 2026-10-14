@@ -31,7 +31,7 @@ SOLVER_TIME_LIMIT=3600 # seconds
 INITIAL_INCUMBENT_ENABLE=1
 # --- Initial incumbent: main settings ---
 INITIAL_INCUMBENT_BACKEND=palns # Options: two-index-milp, cp-sat, palns
-INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit (1200 = smallest limit that does not change PALNS results; C17 needs it)
+INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit (C17 first reaches the MILP baseline cost after ~1055 s, C20 first feasible after ~840 s)
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 STOP_AFTER_INITIAL_INCUMBENT=none # Options: none (끝까지 진행), incumbent ( incumbent 구하면 중지), mip-start (incumbent를 mip-start로 사용하여 MIP를 풀고 중지)
@@ -43,13 +43,20 @@ INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Ph
 # feasible solution exists:
 #   (I - I_last >= STAG_RATIO * I  and  I - I_last >= STAG_MIN_ITERS)  or  I - I_last >= PHASE2_MAX_NOIMP
 #   STAG_RATIO <= 0 disables the relative part, PHASE2_MAX_NOIMP <= 0 disables the cap.
-# Candidates (deterministic reference run, E=1024, seed 1, TIME_LIMIT=1200):
-#   balanced (default):     gamma=0.7, N_min=1000,  N_max=100000 -> all 62 better than MILP baseline, C12/C16/C19 found
-#   fastest total time:     gamma=0.6, N_min=10000, N_max=100000 -> all 62 <= MILP baseline, C12/C16/C19 found
-#   targets C13/C17/D6/D7:  gamma=0.8, N_min=500,   N_max=300000 -> also C13<=5293, C17<=7062, D6<=4906, D7<=6314
-INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=100000 # N_max
-INITIAL_INCUMBENT_PALNS_STAG_RATIO=0.7 # gamma
-INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS=1000 # N_min
+# How the values were chosen (note 15, sec. 4.3): one deterministic reference run (E=1024, seed 1, gamma=0.95,
+# N_min=200000, no N_max, 1800 s) on 65 instances; the incumbent and stop iteration of any less patient rule follow
+# exactly from that run. Candidates (full runs with MIP: proved optima out of 67 with INSTANCE_TIME_LIMIT=6000):
+#   time_first: gamma=0.6,  N_min=10000, N_max=100000 -> smallest PALNS time, all 62 <= MILP baseline (59 proved)
+#   balance:    gamma=0.7,  N_min=1000,  N_max=100000 -> smallest geomean time ratio vs MILP baseline (58 proved)
+#   OFV_first:  gamma=0.8,  N_min=500,   N_max=300000 -> also C13<=5293, C17<=7062, D6<=4906, D7<=6314 (59 proved)
+#   current:    gamma=0.8,  N_min=500,   N_max=150000 -> C6/C13/C17/D6/D7 get an incumbent with which Gurobi proved
+#               optimality in the runs above. The fastest such rule is
+#               gamma=0.77; gamma is rounded up to 0.8.
+#               All instances except C18/C20 stop by the iteration rule before ~870 s, so the 1200 s limit does not
+#               change their incumbents (C20 stops at 1200 s with 9514, C18 has no incumbent with K=9).
+INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=150000 # N_max
+INITIAL_INCUMBENT_PALNS_STAG_RATIO=0.8 # gamma
+INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS=500 # N_min
 INITIAL_INCUMBENT_PALNS_SYNC_ITERS=1024 # E: iterations per thread between two synchronizations of the portfolio
 INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
 # --- Initial incumbent: two-index-milp / cp-sat backend options ---
@@ -131,7 +138,7 @@ ADD_VI_44=1
 # ============================================
 
 # --- overall budget ---
-INSTANCE_TIME_LIMIT=6000 # seconds; wall-clock budget of one instance shared by preprocessing, the VI44 duration IP, the travel-time cover duration IPs, the incumbent MILP, the pre-MIP root LP and the main MIP (0 disables the global budget)
+INSTANCE_TIME_LIMIT=3600 # seconds; wall-clock budget of one instance shared by preprocessing, the VI44 duration IP, the travel-time cover duration IPs, the incumbent MILP, the pre-MIP root LP and the main MIP (0 disables the global budget)
 
 # --- main MILP duration modelling (independent; at least one must be active) ---
 ADD_TIME_FLOW_FORMULATION=2 # 0: off, 1: node conservation (TF1), 2: node-state conservation (TF2)
@@ -148,7 +155,7 @@ MIP_NODE_METHOD=-1 # Gurobi NodeMethod of the main MIP: -1, 0, 1, 2
 MIP_CROSSOVER=-1 # -1 Gurobi default, 0 no crossover (allowed only with MIP_METHOD=2 and MIP_NODE_METHOD=2)
 
 # --- capacity blossom cuts: candidate generation ---
-ADD_CAPACITY_BLOSSOM_CUTS=1 # 1 separates odd-set capacity cuts for pickup/delivery sets (exact Padberg-Rao) as user cuts
+ADD_CAPACITY_BLOSSOM_CUTS=0 # 1 separates odd-set capacity cuts for pickup/delivery sets (exact Padberg-Rao) as user cuts
 CAPACITY_BLOSSOM_ROW_FORM=internal # Options: internal, inbound
 CAPACITY_BLOSSOM_SUPPORT_TOLERANCE=1e-6 # edges below this weight are dropped from the separation support graph
 # --- capacity blossom cuts: cut management ---

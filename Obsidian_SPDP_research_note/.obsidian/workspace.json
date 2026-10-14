@@ -14,12 +14,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "15. Heuristic algorithm for Incumbent solution.md",
+                "file": "9_2. 2-index formulation on multigraph.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "15. Heuristic algorithm for Incumbent solution"
+              "title": "9_2. 2-index formulation on multigraph"
             }
           },
           {
@@ -279,8 +279,8 @@
   },
   "active": "0a35301e8a398267",
   "lastOpenFiles": [
-    "13_2. Cuts and time-flow formulations for the fixed-K conditional gap (ver2).md",
     "15. Heuristic algorithm for Incumbent solution.md",
+    "13_2. Cuts and time-flow formulations for the fixed-K conditional gap (ver2).md",
     "16_1. Time-flow formulation and connectivity cuts for the fixed-K conditional gap.md",
     "15. Arc elimination at Multi Graph.md",
     "16_2. Capacity blossom cuts and type-closed travel-time cover cuts.md",
