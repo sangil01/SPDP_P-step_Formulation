@@ -70,6 +70,9 @@ struct DirectTwoIndexOptions {
     int mip_method = -1;
     int mip_node_method = -1;
     int mip_crossover = -1;
+    // Verification mode: stop the main MIP at its first solution so that the
+    // acceptance of the supplied MIP start can be checked quickly.
+    bool mip_start_check_only = false;
 };
 
 struct DirectTwoIndexResult {

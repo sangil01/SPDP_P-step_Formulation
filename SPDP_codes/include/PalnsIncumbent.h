@@ -1,0 +1,159 @@
+#ifndef SPDP_PALNS_INCUMBENT_H
+#define SPDP_PALNS_INCUMBENT_H
+
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "CpSatSpdpSolver.h"
+#include "GenMultiGraph.h"
+#include "ReadData.h"
+
+namespace spdp {
+
+// Pattern-based ALNS for the fixed-K incumbent problem (note 15).
+enum class PalnsSkeletonSet { All, S3S5 };
+enum class PalnsCompositeFilter { DeltaPositive, All };
+enum class PalnsConstructOrder { Lpt, Random, Regret, Mixed };
+enum class PalnsLsFrequency { Every, OnImprove, EveryM };
+
+struct PalnsOptions {
+    unsigned int seed = 1;
+    // 1. Pattern generation
+    int composite_kappa = 1;
+    PalnsSkeletonSet composite_skeletons = PalnsSkeletonSet::All;
+    double sim_s1 = 1.0;
+    double sim_s2 = 1.0;
+    double sim_s3 = 1.0;
+    // 2. Construction
+    int construct_starts = 10;
+    PalnsCompositeFilter construct_composite_filter =
+        PalnsCompositeFilter::DeltaPositive;
+    PalnsConstructOrder construct_order = PalnsConstructOrder::Mixed;
+    // 3. PALNS search
+    double eta = 0.01;
+    double kmax_ratio = 0.1;
+    int kmax_min = 2;
+    // 4. Local search
+    PalnsLsFrequency ls_frequency = PalnsLsFrequency::Every;
+    int ls_every_m = 10;
+    bool ls_first_improvement = true;
+    // 6. Phase II and termination
+    bool phase2_enable = true;
+    // Termination (deterministic, iteration based). The portfolio threads run
+    // in lockstep epochs of sync_iters iterations; at every epoch barrier the
+    // shared best is merged and the stop rule is evaluated. With I the number
+    // of iterations per thread since the start of PALNS (Phase I included) and
+    // I_last the iteration at which the shared best last improved, PALNS stops
+    // once a feasible solution exists and
+    //   (I - I_last >= stag_ratio * I  and  I - I_last >= stag_min_iters)
+    //   or  I - I_last >= phase2_max_noimp.
+    // stag_ratio <= 0 disables the relative part, phase2_max_noimp <= 0 the cap.
+    long long phase2_max_noimp = 200000;
+    double stag_ratio = 0.6;
+    long long stag_min_iters = 30000;
+    // Epoch length (iterations per thread between two synchronizations).
+    int sync_iters = 64;
+    // Search-mode stop (a): stop as soon as a feasible solution with
+    // original cost <= target_cost is found. Negative disables it (mode b).
+    double target_cost = -1.0;
+    // Simulated-annealing parameters (tuning knobs, not part of note 4.2).
+    // Theta0 = sa_start_ratio * f(phase start) / ln 2; geometric cooling to
+    // sa_end_ratio * Theta0 within each cycle of sa_cycle_iters iterations;
+    // at a cycle end the search restarts from the best solution when
+    // sa_restart_best is set.
+    double sa_start_ratio = 0.05;
+    // Phase I start ratio; negative means sa_start_ratio.
+    double sa_start_ratio_phase1 = -1.0;
+    double sa_end_ratio = 1e-3;
+    long long sa_cycle_iters = 5000;
+    // Phase II cycle length; <= 0 means sa_cycle_iters.
+    long long sa_cycle_iters_phase2 = 0;
+    // Portfolio: threads with (index / 2) odd use sa_cycle_iters_phase2 in
+    // Phase II, the others sa_cycle_iters (mixed cycle lengths).
+    bool portfolio_mixed_cycles = false;
+    // Portfolio: vary the SA start ratio (x1, x0.5, x2) and the destroy size
+    // ratio (x1, x2) over the threads.
+    bool portfolio_diverse = false;
+    bool sa_restart_best = true;
+    // Trajectory relocate is applied only to candidates whose objective after
+    // the light local search is within ls_deep_ratio of the best objective.
+    double ls_deep_ratio = 0.01;
+    // Portfolio threads with different seeds, synchronized every sync_iters
+    // iterations (deterministic for a fixed seed). The best feasible solution
+    // over all threads is returned.
+    int threads = 1;
+    // Phase I strategic oscillation: within each SA cycle eta decreases
+    // geometrically from phase1_eta_max to eta. A value <= eta disables it.
+    double phase1_eta_max = -1.0;
+};
+
+struct PalnsFixedKResult {
+    bool feasible = false;
+    bool hit_time_limit = false;
+    bool reached_target = false;
+    bool construction_feasible = false;
+    double runtime_seconds = 0.0;
+    double construction_seconds = 0.0;
+    double time_to_feasible = -1.0;
+    double time_to_target = -1.0;
+    double best_violation = 0.0;
+    double best_duration = 0.0;
+    double best_travel_cost = 0.0;
+    double best_original_cost = 0.0;
+    long long phase1_iterations = 0;
+    long long phase2_iterations = 0;
+    int construction_starts_done = 0;
+    std::string stop_reason;
+    std::vector<CpActionRoute> routes;
+    std::string log;
+};
+
+class PalnsIncumbentSolver {
+public:
+    PalnsIncumbentSolver(const SPDPData& data, const PalnsOptions& options);
+    ~PalnsIncumbentSolver();
+    PalnsIncumbentSolver(const PalnsIncumbentSolver&) = delete;
+    PalnsIncumbentSolver& operator=(const PalnsIncumbentSolver&) = delete;
+
+    double pattern_generation_seconds() const;
+    std::string pattern_summary() const;
+    PalnsFixedKResult solve_fixed_k(int vehicle_count, double time_limit_seconds);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+struct PalnsMappedIncumbent {
+    bool success = false;
+    std::string error_message;
+    std::vector<int> active_edge_ids;
+    double total_duration = 0.0;
+    double total_original_cost = 0.0;
+};
+
+// Maps canonicalized PALNS action routes to multigraph edges. Among parallel
+// edges with the same endpoint states, an exact match is preferred; otherwise
+// an edge that is no slower and no more expensive. A transition with neither
+// is reported as an error, because the multigraph keeps every Pareto edge and
+// such a case means that graph pruning and the PALNS route disagree.
+PalnsMappedIncumbent map_palns_routes_to_multigraph(
+    const SPDPData& data,
+    const MultiDiGraph& graph,
+    const std::vector<CpActionRoute>& routes,
+    int expected_vehicle_count
+);
+
+const char* palns_skeleton_set_name(PalnsSkeletonSet value);
+const char* palns_composite_filter_name(PalnsCompositeFilter value);
+const char* palns_construct_order_name(PalnsConstructOrder value);
+const char* palns_ls_frequency_name(PalnsLsFrequency value);
+bool parse_palns_skeleton_set(const std::string& text, PalnsSkeletonSet& value);
+bool parse_palns_composite_filter(const std::string& text, PalnsCompositeFilter& value);
+bool parse_palns_construct_order(const std::string& text, PalnsConstructOrder& value);
+bool parse_palns_ls_frequency(const std::string& text, PalnsLsFrequency& value);
+
+}  // namespace spdp
+
+#endif

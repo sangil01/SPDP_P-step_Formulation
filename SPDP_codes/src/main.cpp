@@ -51,6 +51,37 @@ struct CliOptions {
     int initial_incumbent_cp_redundant_aggregate_duration = 1;
     int initial_incumbent_cp_symmetry_first_pickup = 0;
     int initial_incumbent_cp_symmetry_43 = 0;
+    std::string stop_after_initial_incumbent = "none";
+    int initial_incumbent_palns_seed = 1;
+    int initial_incumbent_palns_composite_kappa = 1;
+    std::string initial_incumbent_palns_composite_skeletons = "all";
+    std::vector<double> initial_incumbent_palns_sim_weights{1.0, 1.0, 1.0};
+    int initial_incumbent_palns_construct_starts = 10;
+    std::string initial_incumbent_palns_construct_composite_filter = "delta-positive";
+    std::string initial_incumbent_palns_construct_order = "mixed";
+    double initial_incumbent_palns_eta = 0.01;
+    double initial_incumbent_palns_kmax_ratio = 0.1;
+    int initial_incumbent_palns_kmax_min = 2;
+    std::string initial_incumbent_palns_ls_frequency = "every";
+    int initial_incumbent_palns_ls_every_m = 10;
+    int initial_incumbent_palns_ls_first_improvement = 1;
+    int initial_incumbent_palns_phase2_enable = 1;
+    long long initial_incumbent_palns_phase2_max_noimp = 200000;
+    double initial_incumbent_palns_stag_ratio = 0.6;
+    long long initial_incumbent_palns_stag_min_iters = 30000;
+    int initial_incumbent_palns_sync_iters = 64;
+    double initial_incumbent_palns_target_cost = -1.0;
+    double initial_incumbent_palns_sa_start_ratio = 0.05;
+    double initial_incumbent_palns_sa_start_ratio_phase1 = -1.0;
+    double initial_incumbent_palns_sa_end_ratio = 1e-3;
+    long long initial_incumbent_palns_sa_cycle_iters = 5000;
+    long long initial_incumbent_palns_sa_cycle_iters_phase2 = 0;
+    int initial_incumbent_palns_portfolio_mixed_cycles = 0;
+    int initial_incumbent_palns_portfolio_diverse = 0;
+    int initial_incumbent_palns_sa_restart_best = 1;
+    double initial_incumbent_palns_ls_deep_ratio = 0.01;
+    int initial_incumbent_palns_threads = 1;
+    double initial_incumbent_palns_phase1_eta_max = -1.0;
     int gurobi_threads = -1;
     std::string solver_mode = "enumeration";
     std::string enumeration_sos1_mode = "default";
@@ -211,7 +242,8 @@ void print_usage(const char* executable) {
               << " [--initial-incumbent-time-limit T]"
               << " [--initial-incumbent-max-k-increments N]"
               << " [--initial-incumbent-timeout-action stop|advance]"
-              << " [--initial-incumbent-backend two-index-milp|cp-sat]"
+              << " [--initial-incumbent-backend two-index-milp|cp-sat|palns]"
+              << " [--initial-incumbent-palns-* ...] [--stop-after-initial-incumbent none|incumbent|mip-start]"
               << " [--initial-incumbent-milp-mode duration|feasibility|makespan]"
               << " [--initial-incumbent-milp-makespan-horizon-factor F]"
               << " [--initial-incumbent-milp-direct-dff-identity-enable 0|1]"
@@ -436,7 +468,7 @@ std::string parse_initial_incumbent_timeout_action(const std::string& value) {
 }
 
 std::string parse_initial_incumbent_backend(const std::string& value) {
-    if (value == "two-index-milp" || value == "cp-sat") {
+    if (value == "two-index-milp" || value == "cp-sat" || value == "palns") {
         return value;
     }
     throw std::runtime_error(
@@ -682,6 +714,9 @@ spdp::InitialIncumbentBackend to_initial_incumbent_backend(
     }
     if (value == "cp-sat") {
         return spdp::InitialIncumbentBackend::CpSat;
+    }
+    if (value == "palns") {
+        return spdp::InitialIncumbentBackend::Palns;
     }
     throw std::runtime_error("Unsupported initial-incumbent backend: " + value);
 }
@@ -1080,6 +1115,116 @@ CliOptions parse_cli(int argc, char** argv) {
             }
             options.initial_incumbent_timeout_action =
                 parse_initial_incumbent_timeout_action(argv[++idx]);
+            continue;
+        }
+
+        if (arg.rfind("--initial-incumbent-palns-", 0) == 0 ||
+            arg == "--stop-after-initial-incumbent") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const std::string value = argv[++idx];
+            if (arg == "--stop-after-initial-incumbent") {
+                if (value != "none" && value != "incumbent" && value != "mip-start") {
+                    throw std::runtime_error(
+                        "--stop-after-initial-incumbent must be none, incumbent or mip-start.");
+                }
+                options.stop_after_initial_incumbent = value;
+            } else if (arg == "--initial-incumbent-palns-seed") {
+                options.initial_incumbent_palns_seed = parse_int(value, arg);
+            } else if (arg == "--initial-incumbent-palns-composite-kappa") {
+                options.initial_incumbent_palns_composite_kappa = parse_int(value, arg);
+                if (options.initial_incumbent_palns_composite_kappa < 1) {
+                    throw std::runtime_error(arg + " must be positive.");
+                }
+            } else if (arg == "--initial-incumbent-palns-composite-skeletons") {
+                spdp::PalnsSkeletonSet parsed;
+                if (!spdp::parse_palns_skeleton_set(value, parsed)) {
+                    throw std::runtime_error(arg + " must be all or S3,S5.");
+                }
+                options.initial_incumbent_palns_composite_skeletons = value;
+            } else if (arg == "--initial-incumbent-palns-sim-weights") {
+                const std::vector<double> weights = parse_double_list(value, arg);
+                if (weights.size() != 3U) {
+                    throw std::runtime_error(arg + " needs three comma-separated values.");
+                }
+                options.initial_incumbent_palns_sim_weights = weights;
+            } else if (arg == "--initial-incumbent-palns-construct-starts") {
+                options.initial_incumbent_palns_construct_starts = parse_int(value, arg);
+                if (options.initial_incumbent_palns_construct_starts < 1) {
+                    throw std::runtime_error(arg + " must be positive.");
+                }
+            } else if (arg == "--initial-incumbent-palns-construct-composite-filter") {
+                spdp::PalnsCompositeFilter parsed;
+                if (!spdp::parse_palns_composite_filter(value, parsed)) {
+                    throw std::runtime_error(arg + " must be delta-positive or all.");
+                }
+                options.initial_incumbent_palns_construct_composite_filter = value;
+            } else if (arg == "--initial-incumbent-palns-construct-order") {
+                spdp::PalnsConstructOrder parsed;
+                if (!spdp::parse_palns_construct_order(value, parsed)) {
+                    throw std::runtime_error(arg + " must be lpt, random, regret or mixed.");
+                }
+                options.initial_incumbent_palns_construct_order = value;
+            } else if (arg == "--initial-incumbent-palns-eta") {
+                options.initial_incumbent_palns_eta = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-kmax-ratio") {
+                options.initial_incumbent_palns_kmax_ratio = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-kmax-min") {
+                options.initial_incumbent_palns_kmax_min = parse_int(value, arg);
+            } else if (arg == "--initial-incumbent-palns-ls-frequency") {
+                spdp::PalnsLsFrequency parsed;
+                if (!spdp::parse_palns_ls_frequency(value, parsed)) {
+                    throw std::runtime_error(arg + " must be every, on-improve or every-m.");
+                }
+                options.initial_incumbent_palns_ls_frequency = value;
+            } else if (arg == "--initial-incumbent-palns-ls-every-m") {
+                options.initial_incumbent_palns_ls_every_m = parse_int(value, arg);
+            } else if (arg == "--initial-incumbent-palns-ls-first-improvement") {
+                options.initial_incumbent_palns_ls_first_improvement = parse_binary_flag(value, arg);
+            } else if (arg == "--initial-incumbent-palns-phase2-enable") {
+                options.initial_incumbent_palns_phase2_enable = parse_binary_flag(value, arg);
+            } else if (arg == "--initial-incumbent-palns-phase2-max-noimp") {
+                options.initial_incumbent_palns_phase2_max_noimp = static_cast<long long>(std::llround(parse_double(value, arg)));
+            } else if (arg == "--initial-incumbent-palns-target-cost") {
+                options.initial_incumbent_palns_target_cost = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-sa-start-ratio") {
+                options.initial_incumbent_palns_sa_start_ratio = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-sa-start-ratio-phase1") {
+                options.initial_incumbent_palns_sa_start_ratio_phase1 = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-sa-end-ratio") {
+                options.initial_incumbent_palns_sa_end_ratio = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-portfolio-diverse") {
+                options.initial_incumbent_palns_portfolio_diverse = parse_binary_flag(value, arg);
+            } else if (arg == "--initial-incumbent-palns-portfolio-mixed-cycles") {
+                options.initial_incumbent_palns_portfolio_mixed_cycles = parse_binary_flag(value, arg);
+            } else if (arg == "--initial-incumbent-palns-sa-cycle-iters-phase2") {
+                options.initial_incumbent_palns_sa_cycle_iters_phase2 = parse_int(value, arg);
+            } else if (arg == "--initial-incumbent-palns-sa-cycle-iters") {
+                options.initial_incumbent_palns_sa_cycle_iters = parse_int(value, arg);
+            } else if (arg == "--initial-incumbent-palns-phase1-eta-max") {
+                options.initial_incumbent_palns_phase1_eta_max = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-threads") {
+                options.initial_incumbent_palns_threads = parse_int(value, arg);
+                if (options.initial_incumbent_palns_threads < 1) {
+                    throw std::runtime_error(arg + " must be positive.");
+                }
+            } else if (arg == "--initial-incumbent-palns-ls-deep-ratio") {
+                options.initial_incumbent_palns_ls_deep_ratio = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-stag-ratio") {
+                options.initial_incumbent_palns_stag_ratio = parse_double(value, arg);
+            } else if (arg == "--initial-incumbent-palns-stag-min-iters") {
+                options.initial_incumbent_palns_stag_min_iters = static_cast<long long>(std::llround(parse_double(value, arg)));
+            } else if (arg == "--initial-incumbent-palns-sync-iters") {
+                options.initial_incumbent_palns_sync_iters = parse_int(value, arg);
+                if (options.initial_incumbent_palns_sync_iters < 1) {
+                    throw std::runtime_error(arg + " must be positive.");
+                }
+            } else if (arg == "--initial-incumbent-palns-sa-restart-best") {
+                options.initial_incumbent_palns_sa_restart_best = parse_binary_flag(value, arg);
+            } else {
+                throw std::runtime_error("Unknown PALNS option: " + arg);
+            }
             continue;
         }
 
@@ -3271,11 +3416,93 @@ int main(int argc, char** argv) {
                 args.initial_incumbent_cp_symmetry_first_pickup == 1;
             search_options.cp_sat.symmetry.cor_43_identical_pickup_time_ordering =
                 args.initial_incumbent_cp_symmetry_43 == 1;
+            search_options.palns.seed =
+                static_cast<unsigned int>(args.initial_incumbent_palns_seed);
+            search_options.palns.composite_kappa =
+                args.initial_incumbent_palns_composite_kappa;
+            spdp::parse_palns_skeleton_set(
+                args.initial_incumbent_palns_composite_skeletons,
+                search_options.palns.composite_skeletons);
+            search_options.palns.sim_s1 = args.initial_incumbent_palns_sim_weights[0];
+            search_options.palns.sim_s2 = args.initial_incumbent_palns_sim_weights[1];
+            search_options.palns.sim_s3 = args.initial_incumbent_palns_sim_weights[2];
+            search_options.palns.construct_starts =
+                args.initial_incumbent_palns_construct_starts;
+            spdp::parse_palns_composite_filter(
+                args.initial_incumbent_palns_construct_composite_filter,
+                search_options.palns.construct_composite_filter);
+            spdp::parse_palns_construct_order(
+                args.initial_incumbent_palns_construct_order,
+                search_options.palns.construct_order);
+            search_options.palns.eta = args.initial_incumbent_palns_eta;
+            search_options.palns.kmax_ratio = args.initial_incumbent_palns_kmax_ratio;
+            search_options.palns.kmax_min = args.initial_incumbent_palns_kmax_min;
+            spdp::parse_palns_ls_frequency(
+                args.initial_incumbent_palns_ls_frequency,
+                search_options.palns.ls_frequency);
+            search_options.palns.ls_every_m = args.initial_incumbent_palns_ls_every_m;
+            search_options.palns.ls_first_improvement =
+                args.initial_incumbent_palns_ls_first_improvement == 1;
+            search_options.palns.phase2_enable =
+                args.initial_incumbent_palns_phase2_enable == 1;
+            search_options.palns.phase2_max_noimp =
+                args.initial_incumbent_palns_phase2_max_noimp;
+            search_options.palns.stag_ratio = args.initial_incumbent_palns_stag_ratio;
+            search_options.palns.stag_min_iters = args.initial_incumbent_palns_stag_min_iters;
+            search_options.palns.sync_iters = args.initial_incumbent_palns_sync_iters;
+            search_options.palns.target_cost = args.initial_incumbent_palns_target_cost;
+            search_options.palns.sa_start_ratio = args.initial_incumbent_palns_sa_start_ratio;
+            search_options.palns.sa_start_ratio_phase1 = args.initial_incumbent_palns_sa_start_ratio_phase1;
+            search_options.palns.sa_end_ratio = args.initial_incumbent_palns_sa_end_ratio;
+            search_options.palns.sa_cycle_iters = args.initial_incumbent_palns_sa_cycle_iters;
+            search_options.palns.sa_cycle_iters_phase2 = args.initial_incumbent_palns_sa_cycle_iters_phase2;
+            search_options.palns.portfolio_mixed_cycles = args.initial_incumbent_palns_portfolio_mixed_cycles == 1;
+            search_options.palns.portfolio_diverse = args.initial_incumbent_palns_portfolio_diverse == 1;
+            search_options.palns.sa_restart_best = args.initial_incumbent_palns_sa_restart_best == 1;
+            search_options.palns.ls_deep_ratio = args.initial_incumbent_palns_ls_deep_ratio;
+            search_options.palns.threads = args.initial_incumbent_palns_threads;
+            search_options.palns.phase1_eta_max = args.initial_incumbent_palns_phase1_eta_max;
+            const bool palns_backend =
+                search_options.backend == spdp::InitialIncumbentBackend::Palns;
+            if (palns_backend) {
+                output_file << "[initial-incumbent] palns_options seed="
+                    << args.initial_incumbent_palns_seed
+                    << " composite_kappa=" << args.initial_incumbent_palns_composite_kappa
+                    << " composite_skeletons=" << args.initial_incumbent_palns_composite_skeletons
+                    << " sim_weights=" << format_double_list(args.initial_incumbent_palns_sim_weights)
+                    << " construct_starts=" << args.initial_incumbent_palns_construct_starts
+                    << " construct_composite_filter=" << args.initial_incumbent_palns_construct_composite_filter
+                    << " construct_order=" << args.initial_incumbent_palns_construct_order
+                    << " eta=" << args.initial_incumbent_palns_eta
+                    << " kmax_ratio=" << args.initial_incumbent_palns_kmax_ratio
+                    << " kmax_min=" << args.initial_incumbent_palns_kmax_min
+                    << " ls_frequency=" << args.initial_incumbent_palns_ls_frequency
+                    << " ls_every_m=" << args.initial_incumbent_palns_ls_every_m
+                    << " ls_first_improvement=" << args.initial_incumbent_palns_ls_first_improvement
+                    << " phase2_enable=" << args.initial_incumbent_palns_phase2_enable
+                    << " phase2_max_noimp=" << args.initial_incumbent_palns_phase2_max_noimp
+                    << " stag_ratio=" << args.initial_incumbent_palns_stag_ratio
+                    << " stag_min_iters=" << args.initial_incumbent_palns_stag_min_iters
+                    << " sync_iters=" << args.initial_incumbent_palns_sync_iters
+                    << " target_cost=" << args.initial_incumbent_palns_target_cost
+                    << " sa_start_ratio=" << args.initial_incumbent_palns_sa_start_ratio
+                    << " sa_start_ratio_phase1=" << args.initial_incumbent_palns_sa_start_ratio_phase1
+                    << " sa_end_ratio=" << args.initial_incumbent_palns_sa_end_ratio
+                    << " sa_cycle_iters=" << args.initial_incumbent_palns_sa_cycle_iters
+                    << " sa_cycle_iters_phase2=" << args.initial_incumbent_palns_sa_cycle_iters_phase2
+                    << " portfolio_mixed_cycles=" << args.initial_incumbent_palns_portfolio_mixed_cycles
+                    << " portfolio_diverse=" << args.initial_incumbent_palns_portfolio_diverse
+                    << " sa_restart_best=" << args.initial_incumbent_palns_sa_restart_best
+                    << " ls_deep_ratio=" << args.initial_incumbent_palns_ls_deep_ratio
+                    << " threads=" << args.initial_incumbent_palns_threads
+                    << " phase1_eta_max=" << args.initial_incumbent_palns_phase1_eta_max
+                    << '\n';
+            }
 
             const spdp::InitialIncumbentSearchResult search_result =
                 spdp::solve_iterative_initial_incumbent(
                     data,
-                    incumbent_graph.graph,
+                    palns_backend ? graph : incumbent_graph.graph,
                     search_options
                 );
             precomputed_k_min_result->selected_k_min =
@@ -3292,7 +3519,10 @@ int main(int argc, char** argv) {
                     << " backend="
                     << (attempt.solve_result.backend ==
                             spdp::InitialIncumbentBackend::CpSat
-                        ? "cp-sat" : "two-index-milp")
+                        ? "cp-sat"
+                        : (attempt.solve_result.backend ==
+                                spdp::InitialIncumbentBackend::Palns
+                            ? "palns" : "two-index-milp"))
                     << " status_name=" << attempt.solve_result.status_name
                     << " termination_name="
                     << attempt.solve_result.termination_name
@@ -3410,6 +3640,9 @@ int main(int argc, char** argv) {
                     ))
                     << " gurobi_log_path=" << attempt.gurobi_log_path
                     << '\n';
+                if (!attempt.solve_result.palns_log.empty()) {
+                    output_file << attempt.solve_result.palns_log << '\n';
+                }
                 if (!attempt.solve_result.error_message.empty()) {
                     output_file << "[initial-incumbent-attempt-error] index="
                         << attempt.attempt_index << " message="
@@ -3417,6 +3650,9 @@ int main(int argc, char** argv) {
                 }
             }
 
+            if (!search_result.palns_pattern_summary.empty()) {
+                output_file << search_result.palns_pattern_summary << '\n';
+            }
             const spdp::InitialIncumbentAttemptResult& last_attempt =
                 search_result.attempts.back();
             output_file << "[initial-incumbent] k_min="
@@ -3457,7 +3693,10 @@ int main(int argc, char** argv) {
                     search_result.incumbent_result;
                 std::vector<int> active_edge_ids;
                 active_edge_ids.reserve(initial_result.active_edge_ids.size());
-                for (int local_edge_id : initial_result.active_edge_ids) {
+                if (palns_backend) {
+                    active_edge_ids = initial_result.active_edge_ids;
+                }
+                for (int local_edge_id : palns_backend ? std::vector<int>{} : initial_result.active_edge_ids) {
                     if (local_edge_id < 0 ||
                         static_cast<std::size_t>(local_edge_id) >=
                             incumbent_graph.local_to_main_edge.size()) {
@@ -3538,6 +3777,11 @@ int main(int argc, char** argv) {
             }
         } else {
             output_file << "[initial-incumbent] attempted=0\n";
+        }
+        if (args.stop_after_initial_incumbent == "incumbent") {
+            output_file << "[main] stopped_after_initial_incumbent=1\n";
+            solution_file << "Solution:\n  Stopped after the initial incumbent stage\nSolution done \n";
+            return 0;
         }
 
         const spdp::VI44KMinResult* cached_k_min =
@@ -3832,6 +4076,8 @@ int main(int argc, char** argv) {
                 direct_options.mip_method = args.mip_method;
                 direct_options.mip_node_method = args.mip_node_method;
                 direct_options.mip_crossover = args.mip_crossover;
+                direct_options.mip_start_check_only =
+                    args.stop_after_initial_incumbent == "mip-start";
 
                 spdp::CapacityBlossomOptions& blossom = direct_options.capacity_blossom;
                 blossom.enabled = args.add_capacity_blossom_cuts == 1;
@@ -3888,6 +4134,10 @@ int main(int argc, char** argv) {
                     args.type_travel_time_cover_root_low_violation_round_limit
                 );
                 cover.log_stream = &output_file;
+                if (direct_options.mip_start_check_only) {
+                    cover.enabled = false;
+                    blossom.enabled = false;
+                }
                 if (cover.enabled) {
                     const auto cover_start = std::chrono::steady_clock::now();
                     const spdp::TypeTravelTimeCoverResult cover_result =
@@ -3944,6 +4194,14 @@ int main(int argc, char** argv) {
                         direct_options
                     );
                 print_direct_two_index_summary(output_file, direct_result);
+                if (direct_options.mip_start_check_only) {
+                    output_file << "[mip-start-check] start_supplied="
+                        << (!direct_options.initial_edge_start.empty() ? 1 : 0)
+                        << " solution_found=" << (direct_result.has_feasible_solution ? 1 : 0)
+                        << " objective=" << format_double(direct_result.objective_value)
+                        << " incumbent_cost=" << format_double(initial_incumbent_original_cost)
+                        << '\n';
+                }
                 {
                     std::ofstream edge_dump_file(
                         build_edge_dump_output_path(args.instance, args.p, args.output_dir)

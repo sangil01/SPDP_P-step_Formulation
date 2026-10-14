@@ -29,10 +29,37 @@ NODE_CG_PHASE1_MODE=heuristic-cg # Options: exact-cg, heuristic-cg, heuristic-cg
 NODE_CG_PHASE2_PRICING_MODE=full-enumeration # Options: exact-pricing, heuristic-pricing-then-exact, full-enumeration
 SOLVER_TIME_LIMIT=3600 # seconds
 INITIAL_INCUMBENT_ENABLE=1
-INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit
-INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
+# --- Initial incumbent: main settings ---
+INITIAL_INCUMBENT_BACKEND=palns # Options: two-index-milp, cp-sat, palns
+INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit (C17 first reaches the MILP baseline cost after ~1055 s, C20 first feasible after ~840 s)
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
-INITIAL_INCUMBENT_BACKEND=two-index-milp # Options: two-index-milp, cp-sat
+INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
+STOP_AFTER_INITIAL_INCUMBENT=none # Options: none (끝까지 진행), incumbent ( incumbent 구하면 중지), mip-start (incumbent를 mip-start로 사용하여 MIP를 풀고 중지)
+INITIAL_INCUMBENT_PALNS_THREADS=8 # portfolio threads
+INITIAL_INCUMBENT_PALNS_SEED=1
+INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Phase II after a feasible start
+# PALNS stop rule (deterministic, iteration based; I = iterations per thread since the start of PALNS,
+# I_last = iteration of the last improvement of the shared best), checked at every sync barrier once a
+# feasible solution exists:
+#   (I - I_last >= STAG_RATIO * I  and  I - I_last >= STAG_MIN_ITERS)  or  I - I_last >= PHASE2_MAX_NOIMP
+#   STAG_RATIO <= 0 disables the relative part, PHASE2_MAX_NOIMP <= 0 disables the cap.
+# How the values were chosen (note 15, sec. 4.3): one deterministic reference run (E=1024, seed 1, gamma=0.95,
+# N_min=200000, no N_max, 1800 s) on 65 instances; the incumbent and stop iteration of any less patient rule follow
+# exactly from that run. Candidates (full runs with MIP: proved optima out of 67 with INSTANCE_TIME_LIMIT=6000):
+#   time_first: gamma=0.6,  N_min=10000, N_max=100000 -> smallest PALNS time, all 62 <= MILP baseline (59 proved)
+#   balance:    gamma=0.7,  N_min=1000,  N_max=100000 -> smallest geomean time ratio vs MILP baseline (58 proved)
+#   OFV_first:  gamma=0.8,  N_min=500,   N_max=300000 -> also C13<=5293, C17<=7062, D6<=4906, D7<=6314 (59 proved)
+#   current:    gamma=0.8,  N_min=500,   N_max=150000 -> C6/C13/C17/D6/D7 get an incumbent with which Gurobi proved
+#               optimality in the runs above. The fastest such rule is
+#               gamma=0.77; gamma is rounded up to 0.8.
+#               All instances except C18/C20 stop by the iteration rule before ~870 s, so the 1200 s limit does not
+#               change their incumbents (C20 stops at 1200 s with 9514, C18 has no incumbent with K=9).
+INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=150000 # N_max
+INITIAL_INCUMBENT_PALNS_STAG_RATIO=0.8 # gamma
+INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS=500 # N_min
+INITIAL_INCUMBENT_PALNS_SYNC_ITERS=1024 # E: iterations per thread between two synchronizations of the portfolio
+INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
+# --- Initial incumbent: two-index-milp / cp-sat backend options ---
 INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
 INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR=1.5 # Used only by makespan
 INITIAL_INCUMBENT_MILP_DIRECT_DFF_IDENTITY_ENABLE=0
@@ -48,7 +75,37 @@ INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=1
 INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=1
 INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP=1
 INITIAL_INCUMBENT_CP_SYMMETRY_43=1
-GUROBI_THREADS=0
+# --- Initial incumbent: PALNS hyperparameters (used only with INITIAL_INCUMBENT_BACKEND=palns; values follow the r3 run) ---
+# pattern generation
+INITIAL_INCUMBENT_PALNS_COMPOSITE_KAPPA=1
+INITIAL_INCUMBENT_PALNS_COMPOSITE_SKELETONS=all # Options: all, S3,S5
+INITIAL_INCUMBENT_PALNS_SIM_WEIGHTS="1,1,1" # Shaw relatedness weights (distance, time, type)
+# construction
+INITIAL_INCUMBENT_PALNS_CONSTRUCT_STARTS=10
+INITIAL_INCUMBENT_PALNS_CONSTRUCT_COMPOSITE_FILTER=delta-positive # Options: delta-positive, all
+INITIAL_INCUMBENT_PALNS_CONSTRUCT_ORDER=mixed # Options: lpt, random, regret, mixed
+# search
+INITIAL_INCUMBENT_PALNS_ETA=0.01
+INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX=0.5 # Phase I eta oscillates down from this value to ETA; <= ETA disables it
+INITIAL_INCUMBENT_PALNS_KMAX_RATIO=0.1 # k_max = max(KMAX_MIN, ceil(KMAX_RATIO * n))
+INITIAL_INCUMBENT_PALNS_KMAX_MIN=2
+# local search
+INITIAL_INCUMBENT_PALNS_LS_FREQUENCY=every # Options: every, on-improve, every-m
+INITIAL_INCUMBENT_PALNS_LS_EVERY_M=10 # used only with every-m
+INITIAL_INCUMBENT_PALNS_LS_FIRST_IMPROVEMENT=1
+INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO=0.01 # trajectory relocate runs only within this ratio of the best
+# simulated annealing
+INITIAL_INCUMBENT_PALNS_SA_START_RATIO=0.01
+INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1=-1 # negative uses SA_START_RATIO
+INITIAL_INCUMBENT_PALNS_SA_END_RATIO=1e-3
+INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS=5000
+INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS_PHASE2=50000 # <= 0 uses SA_CYCLE_ITERS
+INITIAL_INCUMBENT_PALNS_SA_RESTART_BEST=1 # restart from the best solution at the end of each SA cycle
+# portfolio variants
+INITIAL_INCUMBENT_PALNS_PORTFOLIO_MIXED_CYCLES=0
+INITIAL_INCUMBENT_PALNS_PORTFOLIO_DIVERSE=0
+# --- end --- #
+GUROBI_THREADS=8
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
 BNP_BRANCHING_RULE=closest-to-half # Options: closest-to-half
@@ -81,7 +138,7 @@ ADD_VI_44=1
 # ============================================
 
 # --- overall budget ---
-INSTANCE_TIME_LIMIT=6000 # seconds; wall-clock budget of one instance shared by preprocessing, the VI44 duration IP, the travel-time cover duration IPs, the incumbent MILP, the pre-MIP root LP and the main MIP (0 disables the global budget)
+INSTANCE_TIME_LIMIT=3600 # seconds; wall-clock budget of one instance shared by preprocessing, the VI44 duration IP, the travel-time cover duration IPs, the incumbent MILP, the pre-MIP root LP and the main MIP (0 disables the global budget)
 
 # --- main MILP duration modelling (independent; at least one must be active) ---
 ADD_TIME_FLOW_FORMULATION=2 # 0: off, 1: node conservation (TF1), 2: node-state conservation (TF2)
@@ -98,7 +155,7 @@ MIP_NODE_METHOD=-1 # Gurobi NodeMethod of the main MIP: -1, 0, 1, 2
 MIP_CROSSOVER=-1 # -1 Gurobi default, 0 no crossover (allowed only with MIP_METHOD=2 and MIP_NODE_METHOD=2)
 
 # --- capacity blossom cuts: candidate generation ---
-ADD_CAPACITY_BLOSSOM_CUTS=1 # 1 separates odd-set capacity cuts for pickup/delivery sets (exact Padberg-Rao) as user cuts
+ADD_CAPACITY_BLOSSOM_CUTS=0 # 1 separates odd-set capacity cuts for pickup/delivery sets (exact Padberg-Rao) as user cuts
 CAPACITY_BLOSSOM_ROW_FORM=internal # Options: internal, inbound
 CAPACITY_BLOSSOM_SUPPORT_TOLERANCE=1e-6 # edges below this weight are dropped from the separation support graph
 # --- capacity blossom cuts: cut management ---
@@ -118,13 +175,13 @@ CAPACITY_BLOSSOM_ROOT_LOW_VIOLATION=0.02
 CAPACITY_BLOSSOM_ROOT_LOW_VIOLATION_ROUND_LIMIT=2 # close the root after this many consecutive rounds below the threshold (0 disables)
 
 # --- type-closed travel-time cover cuts: candidate generation ---
-ADD_TYPE_TRAVEL_TIME_COVER_CUTS=1 # 1 adds sum_{delta^-(S_H)} y >= rho(H) for type-closed sets S_H (certified duration IPs on metric-closed restricted instances)
+ADD_TYPE_TRAVEL_TIME_COVER_CUTS=0 # 1 adds sum_{delta^-(S_H)} y >= rho(H) for type-closed sets S_H (certified duration IPs on metric-closed restricted instances)
 TYPE_TRAVEL_TIME_COVER_MODE=screened # Options: static (all certified rows up front), screened (add violated rows as user cuts)
 TYPE_TRAVEL_TIME_COVER_MAX_TYPE_SET_SIZE=0 # 0: every union of types
 TYPE_TRAVEL_TIME_COVER_SUBPROBLEM_TIME_LIMIT=60 # seconds per restricted duration IP
 TYPE_TRAVEL_TIME_COVER_TOTAL_TIME_LIMIT=600 # seconds for the whole preprocessing
 TYPE_TRAVEL_TIME_COVER_MIN_RHO=2 # rows with rho(H) below this value are dropped (rho = 1 rows are ordinary connectivity requirements)
-TYPE_TRAVEL_TIME_COVER_THREADS=0
+TYPE_TRAVEL_TIME_COVER_THREADS=8
 # --- type-closed travel-time cover cuts: cut management (screened mode only) ---
 TYPE_TRAVEL_TIME_COVER_SCOPE=adaptive-tree # Options: root-only, adaptive-tree, full-tree
 TYPE_TRAVEL_TIME_COVER_ROOT_MAX_ROUNDS=20
@@ -231,7 +288,7 @@ DATA_LIST=(
     "RecDep_day_C9.dat"
     "RecDep_day_C10.dat"
     "RecDep_day_C11.dat"
-    #"RecDep_day_C12.dat"
+    "RecDep_day_C12.dat"
     "RecDep_day_D1.dat"
     "RecDep_day_D2.dat"
     #=================================#
@@ -245,11 +302,11 @@ DATA_LIST=(
     "RecDep_day_C13.dat"
     "RecDep_day_C14.dat"
     "RecDep_day_C15.dat"
-    #"RecDep_day_C16.dat"
+    "RecDep_day_C16.dat"
     "RecDep_day_C17.dat"
-    #"RecDep_day_C18.dat"
-    #"RecDep_day_C19.dat"
-    #"RecDep_day_C20.dat"
+    "RecDep_day_C18.dat"
+    "RecDep_day_C19.dat"
+    "RecDep_day_C20.dat"
     "RecDep_day_D3.dat"
     "RecDep_day_D4.dat"
     "RecDep_day_D5.dat"
@@ -356,6 +413,37 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-cp-redundant-aggregate-duration: $INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION"
         echo "initial-incumbent-cp-symmetry-first-pickup: $INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP"
         echo "initial-incumbent-cp-symmetry-43: $INITIAL_INCUMBENT_CP_SYMMETRY_43"
+        echo "initial-incumbent-palns-seed: $INITIAL_INCUMBENT_PALNS_SEED"
+        echo "initial-incumbent-palns-composite-kappa: $INITIAL_INCUMBENT_PALNS_COMPOSITE_KAPPA"
+        echo "initial-incumbent-palns-composite-skeletons: $INITIAL_INCUMBENT_PALNS_COMPOSITE_SKELETONS"
+        echo "initial-incumbent-palns-sim-weights: $INITIAL_INCUMBENT_PALNS_SIM_WEIGHTS"
+        echo "initial-incumbent-palns-construct-starts: $INITIAL_INCUMBENT_PALNS_CONSTRUCT_STARTS"
+        echo "initial-incumbent-palns-construct-composite-filter: $INITIAL_INCUMBENT_PALNS_CONSTRUCT_COMPOSITE_FILTER"
+        echo "initial-incumbent-palns-construct-order: $INITIAL_INCUMBENT_PALNS_CONSTRUCT_ORDER"
+        echo "initial-incumbent-palns-eta: $INITIAL_INCUMBENT_PALNS_ETA"
+        echo "initial-incumbent-palns-kmax-ratio: $INITIAL_INCUMBENT_PALNS_KMAX_RATIO"
+        echo "initial-incumbent-palns-kmax-min: $INITIAL_INCUMBENT_PALNS_KMAX_MIN"
+        echo "initial-incumbent-palns-ls-frequency: $INITIAL_INCUMBENT_PALNS_LS_FREQUENCY"
+        echo "initial-incumbent-palns-ls-every-m: $INITIAL_INCUMBENT_PALNS_LS_EVERY_M"
+        echo "initial-incumbent-palns-ls-first-improvement: $INITIAL_INCUMBENT_PALNS_LS_FIRST_IMPROVEMENT"
+        echo "initial-incumbent-palns-ls-deep-ratio: $INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO"
+        echo "initial-incumbent-palns-phase2-enable: $INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE"
+        echo "initial-incumbent-palns-phase2-max-noimp: $INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP"
+        echo "initial-incumbent-palns-stag-ratio: $INITIAL_INCUMBENT_PALNS_STAG_RATIO"
+        echo "initial-incumbent-palns-stag-min-iters: $INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS"
+        echo "initial-incumbent-palns-sync-iters: $INITIAL_INCUMBENT_PALNS_SYNC_ITERS"
+        echo "initial-incumbent-palns-target-cost: $INITIAL_INCUMBENT_PALNS_TARGET_COST"
+        echo "initial-incumbent-palns-sa-start-ratio: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO"
+        echo "initial-incumbent-palns-sa-start-ratio-phase1: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1"
+        echo "initial-incumbent-palns-sa-end-ratio: $INITIAL_INCUMBENT_PALNS_SA_END_RATIO"
+        echo "initial-incumbent-palns-sa-cycle-iters: $INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS"
+        echo "initial-incumbent-palns-sa-cycle-iters-phase2: $INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS_PHASE2"
+        echo "initial-incumbent-palns-sa-restart-best: $INITIAL_INCUMBENT_PALNS_SA_RESTART_BEST"
+        echo "initial-incumbent-palns-phase1-eta-max: $INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX"
+        echo "initial-incumbent-palns-portfolio-mixed-cycles: $INITIAL_INCUMBENT_PALNS_PORTFOLIO_MIXED_CYCLES"
+        echo "initial-incumbent-palns-portfolio-diverse: $INITIAL_INCUMBENT_PALNS_PORTFOLIO_DIVERSE"
+        echo "initial-incumbent-palns-threads: $INITIAL_INCUMBENT_PALNS_THREADS"
+        echo "stop-after-initial-incumbent: $STOP_AFTER_INITIAL_INCUMBENT"
         echo "vi-formulation: $VI_FORMULATION"
         echo "cg-max-iterations-per-phase: $CG_MAX_ITERATIONS_PER_PHASE"
         echo "exact-pricing-max-columns-per-start: $EXACT_PRICING_MAX_COLUMNS_PER_START"
@@ -501,6 +589,37 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-cp-redundant-aggregate-duration "$INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION" \
         --initial-incumbent-cp-symmetry-first-pickup "$INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP" \
         --initial-incumbent-cp-symmetry-43 "$INITIAL_INCUMBENT_CP_SYMMETRY_43" \
+        --initial-incumbent-palns-seed "$INITIAL_INCUMBENT_PALNS_SEED" \
+        --initial-incumbent-palns-composite-kappa "$INITIAL_INCUMBENT_PALNS_COMPOSITE_KAPPA" \
+        --initial-incumbent-palns-composite-skeletons "$INITIAL_INCUMBENT_PALNS_COMPOSITE_SKELETONS" \
+        --initial-incumbent-palns-sim-weights "$INITIAL_INCUMBENT_PALNS_SIM_WEIGHTS" \
+        --initial-incumbent-palns-construct-starts "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_STARTS" \
+        --initial-incumbent-palns-construct-composite-filter "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_COMPOSITE_FILTER" \
+        --initial-incumbent-palns-construct-order "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_ORDER" \
+        --initial-incumbent-palns-eta "$INITIAL_INCUMBENT_PALNS_ETA" \
+        --initial-incumbent-palns-kmax-ratio "$INITIAL_INCUMBENT_PALNS_KMAX_RATIO" \
+        --initial-incumbent-palns-kmax-min "$INITIAL_INCUMBENT_PALNS_KMAX_MIN" \
+        --initial-incumbent-palns-ls-frequency "$INITIAL_INCUMBENT_PALNS_LS_FREQUENCY" \
+        --initial-incumbent-palns-ls-every-m "$INITIAL_INCUMBENT_PALNS_LS_EVERY_M" \
+        --initial-incumbent-palns-ls-first-improvement "$INITIAL_INCUMBENT_PALNS_LS_FIRST_IMPROVEMENT" \
+        --initial-incumbent-palns-ls-deep-ratio "$INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO" \
+        --initial-incumbent-palns-phase2-enable "$INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE" \
+        --initial-incumbent-palns-phase2-max-noimp "$INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP" \
+        --initial-incumbent-palns-stag-ratio "$INITIAL_INCUMBENT_PALNS_STAG_RATIO" \
+        --initial-incumbent-palns-stag-min-iters "$INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS" \
+        --initial-incumbent-palns-sync-iters "$INITIAL_INCUMBENT_PALNS_SYNC_ITERS" \
+        --initial-incumbent-palns-target-cost "$INITIAL_INCUMBENT_PALNS_TARGET_COST" \
+        --initial-incumbent-palns-sa-start-ratio "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO" \
+        --initial-incumbent-palns-sa-start-ratio-phase1 "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1" \
+        --initial-incumbent-palns-sa-end-ratio "$INITIAL_INCUMBENT_PALNS_SA_END_RATIO" \
+        --initial-incumbent-palns-sa-cycle-iters "$INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS" \
+        --initial-incumbent-palns-sa-cycle-iters-phase2 "$INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS_PHASE2" \
+        --initial-incumbent-palns-sa-restart-best "$INITIAL_INCUMBENT_PALNS_SA_RESTART_BEST" \
+        --initial-incumbent-palns-phase1-eta-max "$INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX" \
+        --initial-incumbent-palns-portfolio-mixed-cycles "$INITIAL_INCUMBENT_PALNS_PORTFOLIO_MIXED_CYCLES" \
+        --initial-incumbent-palns-portfolio-diverse "$INITIAL_INCUMBENT_PALNS_PORTFOLIO_DIVERSE" \
+        --initial-incumbent-palns-threads "$INITIAL_INCUMBENT_PALNS_THREADS" \
+        --stop-after-initial-incumbent "$STOP_AFTER_INITIAL_INCUMBENT" \
         --gurobi-threads "$GUROBI_THREADS" \
         --vi-formulation "$VI_FORMULATION" \
         --dump-psteps "$DUMP_PSTEPS" \

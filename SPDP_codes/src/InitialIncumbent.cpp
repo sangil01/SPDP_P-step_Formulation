@@ -7,6 +7,8 @@
 #include <utility>
 
 #include "CpIncumbentAdapter.h"
+#include "PalnsIncumbent.h"
+#include <memory>
 #include "DualFeasibleFunctions.h"
 #include "TwoIndexModelCore.h"
 #include "gurobi_c++.h"
@@ -663,11 +665,63 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
             (stem + base_log_path.extension().string())).string();
     };
 
+    std::unique_ptr<PalnsIncumbentSolver> palns_solver;
+    if (options.backend == InitialIncumbentBackend::Palns) {
+        palns_solver = std::make_unique<PalnsIncumbentSolver>(data, options.palns);
+    }
+
     InitialIncumbentSearchResult result = run_iterative_initial_incumbent_search(
         options,
         std::max(options.initial_vehicle_count,
                  static_cast<int>(data.requests.size())),
         [&](int vehicle_count) {
+            if (options.backend == InitialIncumbentBackend::Palns) {
+                const PalnsFixedKResult pr = palns_solver->solve_fixed_k(
+                    vehicle_count, options.per_attempt_time_limit);
+                InitialIncumbentSolveResult converted;
+                converted.backend = InitialIncumbentBackend::Palns;
+                converted.vehicle_count = vehicle_count;
+                converted.runtime_seconds = pr.runtime_seconds;
+                converted.configured_time_limit_seconds = options.per_attempt_time_limit;
+                converted.status_name = pr.stop_reason;
+                converted.palns_log = pr.log;
+                converted.palns_time_to_feasible = pr.time_to_feasible;
+                converted.palns_time_to_target = pr.time_to_target;
+                converted.palns_reached_target = pr.reached_target;
+                if (!pr.feasible) {
+                    if (pr.stop_reason.rfind("output-error", 0) == 0) {
+                        converted.outcome = FixedKSolveOutcome::AdapterError;
+                        converted.termination_name = "adapter-error";
+                        converted.error_message = pr.stop_reason;
+                    } else {
+                        converted.outcome = FixedKSolveOutcome::TimedOutUnknown;
+                        converted.termination_name = "timed-out-unknown";
+                        converted.hit_time_limit = true;
+                    }
+                    return converted;
+                }
+                const PalnsMappedIncumbent mapped = map_palns_routes_to_multigraph(
+                    data, graph, pr.routes, vehicle_count);
+                if (!mapped.success) {
+                    converted.outcome = FixedKSolveOutcome::AdapterError;
+                    converted.termination_name = "adapter-error";
+                    converted.adapter_status = "failed";
+                    converted.error_message = mapped.error_message;
+                    return converted;
+                }
+                converted.outcome = FixedKSolveOutcome::Feasible;
+                converted.has_feasible_solution = true;
+                converted.termination_name = "feasible";
+                converted.adapter_status = "passed";
+                converted.active_edge_ids = mapped.active_edge_ids;
+                converted.total_duration = mapped.total_duration;
+                converted.total_original_cost = mapped.total_original_cost;
+                converted.edge_values.assign(graph.number_of_edges(), 0.0);
+                for (int edge_id : converted.active_edge_ids) {
+                    converted.edge_values[static_cast<std::size_t>(edge_id)] = 1.0;
+                }
+                return converted;
+            }
             if (options.backend == InitialIncumbentBackend::CpSat) {
                 CpSatSolveOptions cp_options = options.cp_sat;
                 cp_options.vehicle_count = vehicle_count;
@@ -780,6 +834,10 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
             );
         }
     );
+    if (palns_solver) {
+        result.palns_pattern_summary = palns_solver->pattern_summary();
+        result.palns_pattern_seconds = palns_solver->pattern_generation_seconds();
+    }
     for (InitialIncumbentAttemptResult& attempt : result.attempts) {
         if (options.backend == InitialIncumbentBackend::TwoIndexMilp) {
             attempt.gurobi_log_path = log_path_for_k(
