@@ -6,7 +6,7 @@
       {
         "id": "242db59fe749fd4f",
         "type": "tabs",
-        "dimension": 56.622911694510734,
+        "dimension": 51.709136109384715,
         "children": [
           {
             "id": "0a35301e8a398267",
@@ -14,12 +14,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "9_2. 2-index formulation on multigraph.md",
+                "file": "13_3. Proof. Load-state disaggregation and time-flow strengthening in the state-expanded multigraph.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "9_2. 2-index formulation on multigraph"
+              "title": "13_3. Proof. Load-state disaggregation and time-flow strengthening in the state-expanded multigraph"
             }
           },
           {
@@ -55,7 +55,7 @@
       {
         "id": "ba67ce7372c902b6",
         "type": "tabs",
-        "dimension": 43.37708830548926,
+        "dimension": 48.290863890615285,
         "children": [
           {
             "id": "c46db58837f78f10",
@@ -172,7 +172,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 266.5
+    "width": 200
   },
   "right": {
     "id": "b90d585d0fa44aa9",
@@ -279,6 +279,9 @@
   },
   "active": "0a35301e8a398267",
   "lastOpenFiles": [
+    "9_2. 2-index formulation on multigraph.md",
+    "13_3. Temporal relaxation trade-offs of the action-based state-expanded multigraph.md",
+    "13_3. Proof. Load-state disaggregation and time-flow strengthening in the state-expanded multigraph.md",
     "15. Heuristic algorithm for Incumbent solution.md",
     "13_2. Cuts and time-flow formulations for the fixed-K conditional gap (ver2).md",
     "16_1. Time-flow formulation and connectivity cuts for the fixed-K conditional gap.md",
@@ -293,7 +296,6 @@
     "11. Revise treatment location state transition.md",
     "2. Skip Pick-up and Delivery Problem (SPDP).md",
     "9_4. Initial-incumbent warm start.md",
-    "9_2. 2-index formulation on multigraph.md",
     "9_6. Acceleration method duration IP and incumbent solution.md",
     "9_1. Valid inequalities for tightening LP bound.md",
     "14. Arc elimination at Multi Graph.md",
@@ -307,8 +309,6 @@
     "15. Route enumeration using LP bound.md",
     "109. SPDP difficulty analysis.md",
     "9_5. CP for exact K_min.md",
-    "9_7. Dual-feasible functions for strengthening the route lower bound.md",
-    "meeting/260427_forward dominance issue & problem complexity analysis per setting.md",
     "11. Extended SPDP",
     "9_5. Initial-incumbent warm start.md~",
     "Untitled 1",
