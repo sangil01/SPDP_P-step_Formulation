@@ -60,6 +60,7 @@ add_library(spdp_core STATIC
     src/CapacityBlossomCuts.cpp
     src/TypeTravelTimeCoverCuts.cpp
     src/CutManagement.cpp
+    src/TimeRowFreeAnalysis.cpp
     src/TwoIndexSolver.cpp
     src/InitialIncumbent.cpp
     src/PalnsIncumbent.cpp

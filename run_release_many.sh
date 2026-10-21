@@ -140,8 +140,9 @@ ADD_VI_44=1
 # --- overall budget ---
 INSTANCE_TIME_LIMIT=3600 # seconds; wall-clock budget of one instance shared by preprocessing, the VI44 duration IP, the travel-time cover duration IPs, the incumbent MILP, the pre-MIP root LP and the main MIP (0 disables the global budget)
 
-# --- main MILP duration modelling (independent; at least one must be active) ---
-ADD_TIME_FLOW_FORMULATION=2 # 0: off, 1: node conservation (TF1), 2: node-state conservation (TF2)
+# --- main MILP temporal modelling ---
+# 0/0 selects the time-row-free diagnostic model (P=0 direct enumeration only).
+ADD_TIME_FLOW_FORMULATION=0 # 0: off, 1: node conservation (TF1), 2: node-state conservation (TF2)
 ADD_BIG_M_TIME_CONSTRAINTS=0 # 0: drop the big-M route-duration rows, 1: keep them
 
 # --- root cut processing ---

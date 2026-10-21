@@ -37,8 +37,8 @@ enum class RootCutMode {
 struct DirectTwoIndexOptions {
     DirectTwoIndexModelType model_type = DirectTwoIndexModelType::IP;
     DirectTwoIndexObjective objective = DirectTwoIndexObjective::OriginalCost;
-    // Duration modelling of the main model. The big-M rows and the time-flow
-    // rows are independent; at least one of them must be active.
+    // Duration modelling of the main model. With both families disabled, the
+    // caller obtains the time-row-free diagnostic model.
     bool add_time_constraints = false;
     bool add_time_flow_formulation = false;
     bool time_flow_state_disaggregated = false;
