@@ -36,6 +36,8 @@ out/
 SPDP_solution_benchmark/
 SPDP_data
 SPDP_output*/
+SPDP_test*/
+SPDP_previous*/
 SPDP_solution/
 SPDP_optimal/
 SPDP_benchmark*/
