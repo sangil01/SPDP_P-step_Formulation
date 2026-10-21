@@ -22,6 +22,7 @@
 #include "PstepBnP.h"
 #include "PstepFormulation.h"
 #include "ReadData.h"
+#include "TimeRowFreeAnalysis.h"
 #include "TwoIndexSolver.h"
 
 namespace {
@@ -131,7 +132,8 @@ struct CliOptions {
     double instance_time_limit = 0.0;
 
     // --- main MILP duration modelling ---
-    // Time-flow rows and big-M rows are independent; at least one must be on.
+    // Time-flow rows and big-M rows are independent. The 0/0 combination is
+    // the P=0 direct-enumeration time-row-free diagnostic model.
     int add_time_flow_formulation = 0;   // 0 off, 1 node, 2 node-state
     int add_big_m_time_constraints = 1;  // 0 off, 1 on
 
@@ -2392,13 +2394,18 @@ CliOptions parse_cli(int argc, char** argv) {
     }
 
     // ---- cut-study consistency checks ----
-    // Dropping both duration families would leave the route-duration limit
-    // unenforced, so the main model must keep at least one of them.
-    if (options.add_time_flow_formulation == 0 &&
-        options.add_big_m_time_constraints == 0) {
+    const bool time_row_free = options.add_time_flow_formulation == 0 &&
+        options.add_big_m_time_constraints == 0;
+    if (time_row_free &&
+        (options.p != 0 || options.solver_mode != "enumeration")) {
         throw std::runtime_error(
-            "--add-time-flow-formulation 0 requires --add-big-m-time-constraints 1: "
-            "the main model would otherwise not enforce the route-duration limit."
+            "The time-row-free 0/0 mode is supported only by P=0 direct "
+            "two-index enumeration."
+        );
+    }
+    if (time_row_free && options.add_type_travel_time_cover_cuts == 1) {
+        throw std::runtime_error(
+            "The time-row-free 0/0 mode cannot use type travel-time cover cuts."
         );
     }
     // Crossover can only be switched off for a barrier solve.
@@ -3025,6 +3032,95 @@ void print_direct_two_index_summary(
         out << "[main] Direct two-index vehicle count: "
             << result.vehicle_count << '\n';
     }
+}
+
+std::string direct_temporal_formulation_name(const CliOptions& args) {
+    if (args.add_time_flow_formulation == 0 &&
+        args.add_big_m_time_constraints == 0) {
+        return "time-row-free";
+    }
+    if (args.add_time_flow_formulation == 0) {
+        return "node-time-big-M";
+    }
+    const std::string time_flow = args.add_time_flow_formulation == 2
+        ? "state-disaggregated-time-flow"
+        : "state-aggregated-time-flow";
+    if (args.add_big_m_time_constraints == 1) {
+        return time_flow + "+node-time-big-M";
+    }
+    return time_flow;
+}
+
+std::string comma_separated_edge_ids(const std::vector<int>& edge_ids) {
+    std::ostringstream out;
+    for (std::size_t index = 0; index < edge_ids.size(); ++index) {
+        if (index > 0U) {
+            out << ',';
+        }
+        out << edge_ids[index];
+    }
+    return out.str();
+}
+
+void write_time_row_free_analysis(
+    std::ostream& out,
+    const spdp::SPDPData& data,
+    const spdp::TimeRowFreeAnalysis& analysis
+) {
+    out << "[time-row-free] depot_route_count="
+        << analysis.depot_routes.size() << '\n';
+    out << "[time-row-free] disconnected_subtour_count="
+        << analysis.disconnected_subtours.size() << '\n';
+    out << "[time-row-free] duration_violating_route_count="
+        << analysis.duration_violating_route_count << '\n';
+    out << "[time-row-free] maximum_depot_route_duration="
+        << format_double(analysis.maximum_depot_route_duration) << '\n';
+    out << "[time-row-free] maximum_duration_excess="
+        << format_double(analysis.maximum_duration_excess) << '\n';
+    for (std::size_t route_id = 0; route_id < analysis.depot_routes.size(); ++route_id) {
+        const spdp::TimeRowFreeComponent& route = analysis.depot_routes[route_id];
+        out << "[time-row-free-route] id=" << route_id
+            << " duration=" << format_double(route.duration)
+            << " exceeds_T=" << (route.duration > data.time_limit + 1e-6 ? 1 : 0)
+            << " edges=" << comma_separated_edge_ids(route.edge_ids) << '\n';
+    }
+    for (std::size_t subtour_id = 0;
+         subtour_id < analysis.disconnected_subtours.size();
+         ++subtour_id) {
+        const spdp::TimeRowFreeComponent& subtour =
+            analysis.disconnected_subtours[subtour_id];
+        out << "[time-row-free-subtour] id=" << subtour_id
+            << " duration=" << format_double(subtour.duration)
+            << " edges=" << comma_separated_edge_ids(subtour.edge_ids) << '\n';
+    }
+}
+
+void write_time_row_free_solution(
+    std::ostream& out,
+    const spdp::DirectTwoIndexResult& result,
+    const spdp::TimeRowFreeAnalysis& analysis
+) {
+    out << std::setprecision(15);
+    out << "Solution:\n";
+    out << "  Direct two-index time-row-free IP diagnostic\n";
+    out << "  Objective value: " << result.objective_value << '\n';
+    out << "  Vehicle count: " << result.vehicle_count << '\n';
+    out << "  Depot-connected routes:\n";
+    for (std::size_t route_id = 0; route_id < analysis.depot_routes.size(); ++route_id) {
+        const spdp::TimeRowFreeComponent& route = analysis.depot_routes[route_id];
+        out << "    route " << route_id << ": duration=" << route.duration
+            << " edges=" << comma_separated_edge_ids(route.edge_ids) << '\n';
+    }
+    out << "  Disconnected subtours:\n";
+    for (std::size_t subtour_id = 0;
+         subtour_id < analysis.disconnected_subtours.size();
+         ++subtour_id) {
+        const spdp::TimeRowFreeComponent& subtour =
+            analysis.disconnected_subtours[subtour_id];
+        out << "    subtour " << subtour_id << ": duration=" << subtour.duration
+            << " edges=" << comma_separated_edge_ids(subtour.edge_ids) << '\n';
+    }
+    out << "Solution done \n";
 }
 
 // Writes every multigraph edge with its attributes and the solver value y_e.
@@ -4012,6 +4108,8 @@ int main(int argc, char** argv) {
                         << args.add_big_m_time_constraints << '\n';
             output_file << "[main] Direct two-index time-flow formulation: "
                         << args.add_time_flow_formulation << '\n';
+            output_file << "[main] Direct two-index temporal formulation: "
+                        << direct_temporal_formulation_name(args) << '\n';
 
             if (args.solve_model == 1) {
                 spdp::PstepValidInequalityOptions vi_options;
@@ -4194,6 +4292,57 @@ int main(int argc, char** argv) {
                         direct_options
                     );
                 print_direct_two_index_summary(output_file, direct_result);
+                const bool time_row_free = args.add_time_flow_formulation == 0 &&
+                    args.add_big_m_time_constraints == 0;
+                std::optional<spdp::TimeRowFreeAnalysis> time_row_free_analysis;
+                if (time_row_free) {
+                    if (solve_lp) {
+                        output_file
+                            << "[time-row-free] structure_analysis=not-applicable-to-LP\n";
+                    } else if (!direct_result.has_feasible_solution) {
+                        output_file
+                            << "[time-row-free] structure_analysis=not-applicable-no-solution\n";
+                    } else {
+                        std::vector<int> selected_edge_ids;
+                        for (std::size_t edge_id = 0;
+                             edge_id < direct_result.edge_values.size();
+                             ++edge_id) {
+                            if (direct_result.edge_values[edge_id] > 0.5) {
+                                selected_edge_ids.push_back(static_cast<int>(edge_id));
+                            }
+                        }
+                        time_row_free_analysis =
+                            spdp::analyze_time_row_free_solution(
+                                data,
+                                graph,
+                                selected_edge_ids
+                            );
+                        const long long integer_departure_flow =
+                            std::llround(direct_result.departure_flow);
+                        if (std::abs(
+                                direct_result.departure_flow -
+                                static_cast<double>(integer_departure_flow)
+                            ) > 1e-6) {
+                            throw std::runtime_error(
+                                "The time-row-free IP departure flow is not integral."
+                            );
+                        }
+                        if (time_row_free_analysis->depot_routes.size() !=
+                                static_cast<std::size_t>(direct_result.vehicle_count) ||
+                            time_row_free_analysis->depot_routes.size() !=
+                                static_cast<std::size_t>(integer_departure_flow)) {
+                            throw std::runtime_error(
+                                "The time-row-free depot-route count is inconsistent "
+                                "with the IP vehicle count or departure flow."
+                            );
+                        }
+                        write_time_row_free_analysis(
+                            output_file,
+                            data,
+                            *time_row_free_analysis
+                        );
+                    }
+                }
                 if (direct_options.mip_start_check_only) {
                     output_file << "[mip-start-check] start_supplied="
                         << (!direct_options.initial_edge_start.empty() ? 1 : 0)
@@ -4208,12 +4357,20 @@ int main(int argc, char** argv) {
                     );
                     write_direct_two_index_edge_dump(edge_dump_file, direct_result, graph);
                 }
-                write_direct_two_index_solution(
-                    solution_file,
-                    data,
-                    direct_result,
-                    graph
-                );
+                if (time_row_free_analysis.has_value()) {
+                    write_time_row_free_solution(
+                        solution_file,
+                        direct_result,
+                        *time_row_free_analysis
+                    );
+                } else {
+                    write_direct_two_index_solution(
+                        solution_file,
+                        data,
+                        direct_result,
+                        graph
+                    );
+                }
             } else {
                 output_file << "[main] Solve skipped by CLI option.\n";
                 solution_file << "Solution:\n";
