@@ -71,6 +71,8 @@ struct CliOptions {
     double initial_incumbent_palns_stag_ratio = 0.6;
     long long initial_incumbent_palns_stag_min_iters = 30000;
     int initial_incumbent_palns_sync_iters = 64;
+    long long initial_incumbent_palns_phase1_max_iters = 0;
+    long long initial_incumbent_palns_phase2_max_iters = 0;
     double initial_incumbent_palns_target_cost = -1.0;
     double initial_incumbent_palns_sa_start_ratio = 0.05;
     double initial_incumbent_palns_sa_start_ratio_phase1 = -1.0;
@@ -1222,6 +1224,10 @@ CliOptions parse_cli(int argc, char** argv) {
                 if (options.initial_incumbent_palns_sync_iters < 1) {
                     throw std::runtime_error(arg + " must be positive.");
                 }
+            } else if (arg == "--initial-incumbent-palns-phase1-max-iters") {
+                options.initial_incumbent_palns_phase1_max_iters = static_cast<long long>(std::llround(parse_double(value, arg)));
+            } else if (arg == "--initial-incumbent-palns-phase2-max-iters") {
+                options.initial_incumbent_palns_phase2_max_iters = static_cast<long long>(std::llround(parse_double(value, arg)));
             } else if (arg == "--initial-incumbent-palns-sa-restart-best") {
                 options.initial_incumbent_palns_sa_restart_best = parse_binary_flag(value, arg);
             } else {
@@ -3486,8 +3492,12 @@ int main(int argc, char** argv) {
                 to_initial_incumbent_timeout_action(
                     args.initial_incumbent_timeout_action
                 );
+            // PALNS stops by its iteration rules; INITIAL_INCUMBENT_TIME_LIMIT
+            // is ignored there and only the instance budget applies.
             search_options.per_attempt_time_limit =
-                phase_time_limit(args.initial_incumbent_time_limit);
+                args.initial_incumbent_backend == "palns"
+                    ? phase_time_limit(0.0)
+                    : phase_time_limit(args.initial_incumbent_time_limit);
             search_options.gurobi_threads = args.gurobi_threads;
             search_options.gurobi_log_base_path =
                 build_initial_incumbent_gurobi_log_path(args.instance, args.output_dir).string();
@@ -3546,6 +3556,8 @@ int main(int argc, char** argv) {
             search_options.palns.stag_ratio = args.initial_incumbent_palns_stag_ratio;
             search_options.palns.stag_min_iters = args.initial_incumbent_palns_stag_min_iters;
             search_options.palns.sync_iters = args.initial_incumbent_palns_sync_iters;
+            search_options.palns.phase1_max_iters = args.initial_incumbent_palns_phase1_max_iters;
+            search_options.palns.phase2_max_iters = args.initial_incumbent_palns_phase2_max_iters;
             search_options.palns.target_cost = args.initial_incumbent_palns_target_cost;
             search_options.palns.sa_start_ratio = args.initial_incumbent_palns_sa_start_ratio;
             search_options.palns.sa_start_ratio_phase1 = args.initial_incumbent_palns_sa_start_ratio_phase1;
@@ -3592,6 +3604,9 @@ int main(int argc, char** argv) {
                     << " ls_deep_ratio=" << args.initial_incumbent_palns_ls_deep_ratio
                     << " threads=" << args.initial_incumbent_palns_threads
                     << " phase1_eta_max=" << args.initial_incumbent_palns_phase1_eta_max
+                    << " phase1_max_iters=" << args.initial_incumbent_palns_phase1_max_iters
+                    << " phase2_max_iters=" << args.initial_incumbent_palns_phase2_max_iters
+                    << " time_limit=instance-budget-only"
                     << '\n';
             }
 

@@ -31,7 +31,7 @@ SOLVER_TIME_LIMIT=3600 # seconds
 INITIAL_INCUMBENT_ENABLE=1
 # --- Initial incumbent: main settings ---
 INITIAL_INCUMBENT_BACKEND=palns # Options: two-index-milp, cp-sat, palns
-INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit (C17 first reaches the MILP baseline cost after ~1055 s, C20 first feasible after ~840 s)
+INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit. Ignored by the palns backend (iteration limits below; only INSTANCE_TIME_LIMIT applies)
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 STOP_AFTER_INITIAL_INCUMBENT=none # Options: none (끝까지 진행), incumbent ( incumbent 구하면 중지), mip-start (incumbent를 mip-start로 사용하여 MIP를 풀고 중지)
@@ -52,12 +52,17 @@ INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Ph
 #   current:    gamma=0.8,  N_min=500,   N_max=150000 -> C6/C13/C17/D6/D7 get an incumbent with which Gurobi proved
 #               optimality in the runs above. The fastest such rule is
 #               gamma=0.77; gamma is rounded up to 0.8.
-#               All instances except C18/C20 stop by the iteration rule before ~870 s, so the 1200 s limit does not
-#               change their incumbents (C20 stops at 1200 s with 9514, C18 has no incumbent with K=9).
+#               All instances except C18/C20 stop by these rules before ~870 s. With the iteration caps below,
+#               C20 stops by PHASE2_MAX_ITERS (9492, ~1660 s alone; 9514 with the former 1200 s limit) and
+#               C18 stops by PHASE1_MAX_ITERS without an incumbent for K=9.
 INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=150000 # N_max
 INITIAL_INCUMBENT_PALNS_STAG_RATIO=0.8 # gamma
 INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS=500 # N_min
 INITIAL_INCUMBENT_PALNS_SYNC_ITERS=1024 # E: iterations per thread between two synchronizations of the portfolio
+# Iteration caps per thread (0 disables). Reference run: Phase I ends latest at 1,345,010 (C20, next C17 980,058);
+# the longest Phase II is 499,226 (C16). With these caps all instances except C18 run exactly as before.
+INITIAL_INCUMBENT_PALNS_PHASE1_MAX_ITERS=1500000 # stop Phase I when no feasible shared best exists at this iteration
+INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS=500000 # stop when I - (first feasible iteration) reaches this value
 INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
 # --- Initial incumbent: two-index-milp / cp-sat backend options ---
 INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
@@ -433,6 +438,8 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-palns-stag-ratio: $INITIAL_INCUMBENT_PALNS_STAG_RATIO"
         echo "initial-incumbent-palns-stag-min-iters: $INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS"
         echo "initial-incumbent-palns-sync-iters: $INITIAL_INCUMBENT_PALNS_SYNC_ITERS"
+        echo "initial-incumbent-palns-phase1-max-iters: $INITIAL_INCUMBENT_PALNS_PHASE1_MAX_ITERS"
+        echo "initial-incumbent-palns-phase2-max-iters: $INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS"
         echo "initial-incumbent-palns-target-cost: $INITIAL_INCUMBENT_PALNS_TARGET_COST"
         echo "initial-incumbent-palns-sa-start-ratio: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO"
         echo "initial-incumbent-palns-sa-start-ratio-phase1: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1"
@@ -609,6 +616,8 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-palns-stag-ratio "$INITIAL_INCUMBENT_PALNS_STAG_RATIO" \
         --initial-incumbent-palns-stag-min-iters "$INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS" \
         --initial-incumbent-palns-sync-iters "$INITIAL_INCUMBENT_PALNS_SYNC_ITERS" \
+        --initial-incumbent-palns-phase1-max-iters "$INITIAL_INCUMBENT_PALNS_PHASE1_MAX_ITERS" \
+        --initial-incumbent-palns-phase2-max-iters "$INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS" \
         --initial-incumbent-palns-target-cost "$INITIAL_INCUMBENT_PALNS_TARGET_COST" \
         --initial-incumbent-palns-sa-start-ratio "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO" \
         --initial-incumbent-palns-sa-start-ratio-phase1 "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1" \

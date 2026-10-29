@@ -52,6 +52,12 @@ struct PalnsOptions {
     long long phase2_max_noimp = 200000;
     double stag_ratio = 0.6;
     long long stag_min_iters = 30000;
+    // Iteration caps per thread (checked at the barriers; <= 0 disables).
+    // Phase I: stop when no feasible shared best exists after I >= phase1_max_iters.
+    // Phase II: stop when I - I_first >= phase2_max_iters, I_first being the
+    // iteration of the first feasible shared best.
+    long long phase1_max_iters = 0;
+    long long phase2_max_iters = 0;
     // Epoch length (iterations per thread between two synchronizations).
     int sync_iters = 64;
     // Search-mode stop (a): stop as soon as a feasible solution with
@@ -106,6 +112,14 @@ struct PalnsFixedKResult {
     int construction_starts_done = 0;
     std::string stop_reason;
     std::vector<CpActionRoute> routes;
+    // Least-violated solution of this thread, lexicographic (V, C); filled
+    // only when no feasible solution was found (diagnostics).
+    bool has_least_violation = false;
+    double least_violation = 0.0;
+    double least_violation_duration = 0.0;
+    double least_violation_travel_cost = 0.0;
+    std::vector<double> least_violation_route_durations;
+    std::string least_violation_routes_text;
     std::string log;
 };
 

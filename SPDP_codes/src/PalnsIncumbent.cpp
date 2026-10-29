@@ -1783,10 +1783,20 @@ struct PalnsIncumbentSolver::Impl {
         double time_to_target = -1.0;
         bool reached_target = false;
         std::vector<std::pair<double, double>> trace;  // (time, original cost)
+        // Least-violated solution, lexicographic (V, C), kept only while no
+        // feasible solution exists (diagnostics; does not affect the search).
+        bool have_least = false;
+        Solution least;
     };
 
     void record(SearchState& st, const Solution& s) {
         st.best_violation = std::min(st.best_violation, s.V);
+        if (!st.have_feasible &&
+            (!st.have_least || s.V < st.least.V - kEps ||
+             (std::fabs(s.V - st.least.V) <= kEps && s.C < st.least.C - kEps))) {
+            st.least = s;
+            st.have_least = true;
+        }
         if (s.V > kEps) return;
         publish(s);
         if (!st.have_feasible || s.C < st.best_feasible.C - kEps) {
@@ -2112,6 +2122,25 @@ struct PalnsIncumbentSolver::Impl {
                 res.stop_reason = "output-error:" + err;
             }
         }
+        if (!st.have_feasible && st.have_least) {
+            const Solution& b = st.least;
+            res.has_least_violation = true;
+            res.least_violation = b.V;
+            res.least_violation_duration = b.D;
+            res.least_violation_travel_cost = b.C;
+            std::ostringstream rt;
+            for (const Route& r : b.routes) {
+                res.least_violation_route_durations.push_back(r.d);
+                rt << r.d << ':';
+                for (std::size_t i = 0; i < r.ops.size(); ++i) {
+                    const Op& o = r.ops[i];
+                    rt << (i ? "," : "") << (o.kind == kPick ? 'P' : (o.kind == kEmpty ? 'E' : 'D'))
+                       << o.cls << '@' << I.loc(o);
+                }
+                rt << ';';
+            }
+            res.least_violation_routes_text = rt.str();
+        }
         std::ostringstream log;
         log << "[palns] k=" << K
             << " feasible=" << (res.feasible ? 1 : 0)
@@ -2200,6 +2229,7 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
     // iteration, then smallest thread index) and evaluate the stop rule.
     long long epoch = 0;
     long long I_last = 0;
+    long long I_first = -1;  // iteration of the first feasible shared best
     bool time_limit_hit = false;
     std::string stop_rule = "none";
     std::vector<std::tuple<long long, double, double>> trace;  // (I_last, seconds, original cost)
@@ -2222,6 +2252,7 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
         if (pick >= 0) {
             const Impl& p = *workers[static_cast<std::size_t>(pick)];
             if (!hub.has || p.cand_cost < hub.cost - kEps) {
+                if (!hub.has) I_first = p.cand_gi;
                 hub.has = true;
                 hub.cost = p.cand_cost;
                 hub.solution = p.cand;
@@ -2241,7 +2272,11 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
             } else if (O.stag_ratio > 0.0 && D >= O.stag_min_iters &&
                        static_cast<double>(D) >= O.stag_ratio * static_cast<double>(I)) {
                 hub.stop = true; stop_rule = "stag-ratio";
+            } else if (O.phase2_max_iters > 0 && I - I_first >= O.phase2_max_iters) {
+                hub.stop = true; stop_rule = "phase2-limit";
             }
+        } else if (O.phase1_max_iters > 0 && I >= O.phase1_max_iters) {
+            hub.stop = true; stop_rule = "phase1-limit";
         }
         if (!hub.stop && time_limit_seconds > 0.0 && now >= time_limit_seconds) {
             hub.stop = true; stop_rule = "time-limit"; time_limit_hit = true;
@@ -2313,7 +2348,37 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
         << " iterations_per_thread=" << epoch * E
         << " last_improvement_iteration=" << I_last
         << " barrier_wait_seconds=" << wait
-        << " time_limit_hit=" << (time_limit_hit ? 1 : 0) << '\n';
+        << " time_limit_hit=" << (time_limit_hit ? 1 : 0)
+        << " phase1_max_iters=" << O.phase1_max_iters
+        << " phase2_max_iters=" << O.phase2_max_iters
+        << " first_feasible_iteration=" << I_first << '\n';
+    if (best < 0) {
+        int least = -1;
+        for (int i = 0; i < nthreads; ++i) {
+            const PalnsFixedKResult& r = results[static_cast<std::size_t>(i)];
+            if (!r.has_least_violation) continue;
+            if (least < 0) { least = i; continue; }
+            const PalnsFixedKResult& l = results[static_cast<std::size_t>(least)];
+            if (r.least_violation < l.least_violation - 1e-9 ||
+                (std::fabs(r.least_violation - l.least_violation) <= 1e-9 &&
+                 r.least_violation_travel_cost < l.least_violation_travel_cost - 1e-9)) {
+                least = i;
+            }
+        }
+        for (int i = 0; i < nthreads; ++i) {
+            const PalnsFixedKResult& r = results[static_cast<std::size_t>(i)];
+            if (!r.has_least_violation) continue;
+            log << "[palns-least-violation] k=" << vehicle_count << " thread=" << i
+                << " violation=" << r.least_violation << " duration=" << r.least_violation_duration
+                << " travel_cost=" << r.least_violation_travel_cost << " route_durations=";
+            for (double d : r.least_violation_route_durations) log << d << ',';
+            log << '\n';
+        }
+        if (least >= 0) {
+            log << "[palns-least-violation-routes] k=" << vehicle_count << " thread=" << least << " routes="
+                << results[static_cast<std::size_t>(least)].least_violation_routes_text << '\n';
+        }
+    }
     for (int i = 0; i < nthreads; ++i) {
         const PalnsFixedKResult& r = results[static_cast<std::size_t>(i)];
         log << "[palns-thread] index=" << i << " feasible=" << (r.feasible ? 1 : 0)
