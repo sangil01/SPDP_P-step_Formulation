@@ -58,6 +58,14 @@ struct PalnsOptions {
     // iteration of the first feasible shared best.
     long long phase1_max_iters = 0;
     long long phase2_max_iters = 0;
+    // Rescue (only when Phase I reaches phase1_max_iters without a feasible
+    // shared best): each thread restarts from its least-violated solution and
+    // applies destroy/repair/local search to a neighbourhood of 1..rescue_routes
+    // routes (an overloaded route and routes close to it), the other routes
+    // fixed, for at most rescue_max_iters further iterations; PALNS stops at the
+    // first feasible solution found by the rescue (no Phase II). 0 disables it.
+    long long rescue_max_iters = 0;
+    int rescue_routes = 3;
     // Epoch length (iterations per thread between two synchronizations).
     int sync_iters = 64;
     // Search-mode stop (a): stop as soon as a feasible solution with

@@ -63,6 +63,13 @@ INITIAL_INCUMBENT_PALNS_SYNC_ITERS=1024 # E: iterations per thread between two s
 # the longest Phase II is 499,226 (C16). With these caps all instances except C18 run exactly as before.
 INITIAL_INCUMBENT_PALNS_PHASE1_MAX_ITERS=1500000 # stop Phase I when no feasible shared best exists at this iteration
 INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS=500000 # stop when I - (first feasible iteration) reaches this value
+# Rescue at the Phase I cap (no feasible shared best; only C18 in the reference run): each thread restarts from its
+# least-violated solution and runs destroy/repair/local search on a neighbourhood (an overloaded route and up to
+# RESCUE_ROUTES-1 nearby routes with slack, or one random route), the other routes fixed; Phase I eta is fixed to
+# ETA and the best infeasible solution (V, D) is shared with the even threads at every barrier. PALNS stops at the
+# first barrier with a feasible solution found by the rescue (no Phase II).
+INITIAL_INCUMBENT_PALNS_RESCUE_MAX_ITERS=500000 # further iterations per thread after the Phase I cap; 0 disables the rescue
+INITIAL_INCUMBENT_PALNS_RESCUE_ROUTES=3 # neighbourhood size (overloaded route + nearby routes)
 INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
 # --- Initial incumbent: two-index-milp / cp-sat backend options ---
 INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
@@ -440,6 +447,8 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-palns-sync-iters: $INITIAL_INCUMBENT_PALNS_SYNC_ITERS"
         echo "initial-incumbent-palns-phase1-max-iters: $INITIAL_INCUMBENT_PALNS_PHASE1_MAX_ITERS"
         echo "initial-incumbent-palns-phase2-max-iters: $INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS"
+        echo "initial-incumbent-palns-rescue-max-iters: $INITIAL_INCUMBENT_PALNS_RESCUE_MAX_ITERS"
+        echo "initial-incumbent-palns-rescue-routes: $INITIAL_INCUMBENT_PALNS_RESCUE_ROUTES"
         echo "initial-incumbent-palns-target-cost: $INITIAL_INCUMBENT_PALNS_TARGET_COST"
         echo "initial-incumbent-palns-sa-start-ratio: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO"
         echo "initial-incumbent-palns-sa-start-ratio-phase1: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1"
@@ -618,6 +627,8 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-palns-sync-iters "$INITIAL_INCUMBENT_PALNS_SYNC_ITERS" \
         --initial-incumbent-palns-phase1-max-iters "$INITIAL_INCUMBENT_PALNS_PHASE1_MAX_ITERS" \
         --initial-incumbent-palns-phase2-max-iters "$INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS" \
+        --initial-incumbent-palns-rescue-max-iters "$INITIAL_INCUMBENT_PALNS_RESCUE_MAX_ITERS" \
+        --initial-incumbent-palns-rescue-routes "$INITIAL_INCUMBENT_PALNS_RESCUE_ROUTES" \
         --initial-incumbent-palns-target-cost "$INITIAL_INCUMBENT_PALNS_TARGET_COST" \
         --initial-incumbent-palns-sa-start-ratio "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO" \
         --initial-incumbent-palns-sa-start-ratio-phase1 "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1" \

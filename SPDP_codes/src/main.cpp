@@ -73,6 +73,8 @@ struct CliOptions {
     int initial_incumbent_palns_sync_iters = 64;
     long long initial_incumbent_palns_phase1_max_iters = 0;
     long long initial_incumbent_palns_phase2_max_iters = 0;
+    long long initial_incumbent_palns_rescue_max_iters = 0;
+    int initial_incumbent_palns_rescue_routes = 3;
     double initial_incumbent_palns_target_cost = -1.0;
     double initial_incumbent_palns_sa_start_ratio = 0.05;
     double initial_incumbent_palns_sa_start_ratio_phase1 = -1.0;
@@ -1228,6 +1230,13 @@ CliOptions parse_cli(int argc, char** argv) {
                 options.initial_incumbent_palns_phase1_max_iters = static_cast<long long>(std::llround(parse_double(value, arg)));
             } else if (arg == "--initial-incumbent-palns-phase2-max-iters") {
                 options.initial_incumbent_palns_phase2_max_iters = static_cast<long long>(std::llround(parse_double(value, arg)));
+            } else if (arg == "--initial-incumbent-palns-rescue-max-iters") {
+                options.initial_incumbent_palns_rescue_max_iters = static_cast<long long>(std::llround(parse_double(value, arg)));
+            } else if (arg == "--initial-incumbent-palns-rescue-routes") {
+                options.initial_incumbent_palns_rescue_routes = parse_int(value, arg);
+                if (options.initial_incumbent_palns_rescue_routes < 1) {
+                    throw std::runtime_error(arg + " must be positive.");
+                }
             } else if (arg == "--initial-incumbent-palns-sa-restart-best") {
                 options.initial_incumbent_palns_sa_restart_best = parse_binary_flag(value, arg);
             } else {
@@ -3558,6 +3567,8 @@ int main(int argc, char** argv) {
             search_options.palns.sync_iters = args.initial_incumbent_palns_sync_iters;
             search_options.palns.phase1_max_iters = args.initial_incumbent_palns_phase1_max_iters;
             search_options.palns.phase2_max_iters = args.initial_incumbent_palns_phase2_max_iters;
+            search_options.palns.rescue_max_iters = args.initial_incumbent_palns_rescue_max_iters;
+            search_options.palns.rescue_routes = args.initial_incumbent_palns_rescue_routes;
             search_options.palns.target_cost = args.initial_incumbent_palns_target_cost;
             search_options.palns.sa_start_ratio = args.initial_incumbent_palns_sa_start_ratio;
             search_options.palns.sa_start_ratio_phase1 = args.initial_incumbent_palns_sa_start_ratio_phase1;
@@ -3606,6 +3617,8 @@ int main(int argc, char** argv) {
                     << " phase1_eta_max=" << args.initial_incumbent_palns_phase1_eta_max
                     << " phase1_max_iters=" << args.initial_incumbent_palns_phase1_max_iters
                     << " phase2_max_iters=" << args.initial_incumbent_palns_phase2_max_iters
+                    << " rescue_max_iters=" << args.initial_incumbent_palns_rescue_max_iters
+                    << " rescue_routes=" << args.initial_incumbent_palns_rescue_routes
                     << " time_limit=instance-budget-only"
                     << '\n';
             }

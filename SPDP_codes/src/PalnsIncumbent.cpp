@@ -965,6 +965,9 @@ struct SyncHub {
     int arrived = 0;
     long long generation = 0;
     bool stop = false;
+    bool rescue = false;    // Phase I limit reached: threads switch to rescue
+    bool rhas = false;      // rescue: best infeasible solution over the threads, (V, D)
+    Solution rsol;
     std::function<void()> on_barrier;
     bool has = false;       // shared best snapshot
     double cost = 0.0;
@@ -1015,6 +1018,12 @@ struct PalnsIncumbentSolver::Impl {
     SyncHub* hub = nullptr;
     bool adopt_shared = true;  // odd portfolio threads keep searching independently
     long long gi = 0;          // iterations of this thread since the start (both phases)
+    int rescue_switches = 0;   // 1 when this thread entered the rescue
+    double rescue_start_V = -1.0;  // violation of the rescue start solution
+    std::vector<std::size_t> rescue_nb;  // current rescue neighbourhood
+    int rescue_nb_left = 0;              // iterations left on it
+    bool rbest_has = false;              // rescue best of this thread, (V, D)
+    Solution rbest;
     double wait_seconds = 0.0; // time spent at epoch barriers
     // Best feasible solution of this thread (merged at the next barrier).
     bool cand_has = false;
@@ -1813,6 +1822,54 @@ struct PalnsIncumbentSolver::Impl {
     }
 
     long long run_phase(int which, Solution start, SearchState& st, std::mt19937_64& rng) {
+        // (definition below)
+        return run_phase_impl(which, std::move(start), st, rng);
+    }
+
+    // Rescue neighbourhood. With probability 0.2 a single random route (its
+    // full rebuild lowers the total duration). Otherwise an overloaded seed
+    // route and up to rescue_routes - 1 routes with slack (d < T), chosen
+    // with a bias towards the closest service locations.
+    std::vector<std::size_t> rescue_neighbourhood(const Solution& s, std::mt19937_64& rng) const {
+        std::uniform_real_distribution<double> U01(0.0, 1.0);
+        const std::size_t R = s.routes.size();
+        std::vector<std::size_t> over;
+        for (std::size_t r = 0; r < R; ++r) if (s.routes[r].d > I.T + kEps) over.push_back(r);
+        std::size_t seed;
+        if (over.empty() || U01(rng) < 0.2) {
+            std::uniform_int_distribution<std::size_t> d(0, R - 1U);
+            return {d(rng)};
+        }
+        {
+            std::uniform_int_distribution<std::size_t> d(0, over.size() - 1U);
+            seed = over[d(rng)];
+        }
+        const int m = std::max(1, std::min<int>(opt.rescue_routes, static_cast<int>(R)));
+        std::vector<int> ls;
+        for (const Op& o : s.routes[seed].ops) ls.push_back(I.loc(o));
+        std::vector<std::pair<double, std::size_t>> cand;
+        for (std::size_t r = 0; r < R; ++r) {
+            if (r == seed || s.routes[r].d >= I.T - kEps) continue;
+            double best = kInf;
+            for (const Op& o : s.routes[r].ops) {
+                const int l = I.loc(o);
+                for (int x : ls) best = std::min(best, std::min(I.tt(x, l), I.tt(l, x)));
+            }
+            cand.push_back({best, r});
+        }
+        std::sort(cand.begin(), cand.end());
+        std::vector<std::size_t> out{seed};
+        while (static_cast<int>(out.size()) < m && !cand.empty()) {
+            const double y = U01(rng);
+            std::size_t idx = static_cast<std::size_t>(y * y * static_cast<double>(cand.size()));
+            if (idx >= cand.size()) idx = cand.size() - 1U;
+            out.push_back(cand[idx].second);
+            cand.erase(cand.begin() + static_cast<std::ptrdiff_t>(idx));
+        }
+        return out;
+    }
+
+    long long run_phase_impl(int which, Solution start, SearchState& st, std::mt19937_64& rng) {
         phase = which;
         eta_cur = opt.eta;
         const bool oscillate = which == 1 && opt.phase1_eta_max > opt.eta;
@@ -1843,10 +1900,11 @@ struct PalnsIncumbentSolver::Impl {
         std::uniform_int_distribution<int> kdist(1, kmax);
         std::uniform_real_distribution<double> U01(0.0, 1.0);
         long long iter = 0;
+        bool rescue = false;
         while (!timed_out()) {
             if (which == 1 && st.have_feasible) break;
             ++iter;
-            if (oscillate) {
+            if (oscillate && !rescue) {
                 const double pos = static_cast<double>((iter - 1) % cycle) / static_cast<double>(cycle);
                 eta_cur = std::exp(std::log(opt.phase1_eta_max) + (std::log(opt.eta) - std::log(opt.phase1_eta_max)) * pos);
                 fS = objective(S);
@@ -1860,15 +1918,36 @@ struct PalnsIncumbentSolver::Impl {
             const int dop = roulette_index(wdd, rng);
             const int qop = roulette_index(wq, rng);
             const int rop = roulette_index(wr, rng);
-            const int k = kdist(rng);
+            int k = kdist(rng);
             Solution sp = S;
             int ref_class = -1;
-            const std::unordered_set<int> rem = destroy(sp, dop, k, rng, ref_class);
+            // Rescue: operate on a sub-solution of a few routes, the others fixed.
+            std::vector<std::size_t> nb;
+            Solution sub;
+            if (rescue) {
+                // keep a neighbourhood for 100 iterations (intensification)
+                if (rescue_nb_left <= 0 || rescue_nb.empty()) {
+                    rescue_nb = rescue_neighbourhood(S, rng);
+                    rescue_nb_left = 100;
+                }
+                --rescue_nb_left;
+                nb = rescue_nb;
+                for (std::size_t r : nb) sub.routes.push_back(S.routes[r]);
+                refresh_totals(I, sub);
+                if (U01(rng) < 1.0 / 3.0) k = std::numeric_limits<int>::max();  // rebuild all
+            }
+            Solution& tgt = rescue ? sub : sp;
+            const std::unordered_set<int> rem = destroy(tgt, dop, k, rng, ref_class);
             Counts cnt{std::vector<int>(static_cast<std::size_t>(npc()), 0),
                        std::vector<int>(static_cast<std::size_t>(ndc()), 0)};
-            remove_trajs(I, sp, rem, cnt);
+            remove_trajs(I, tgt, rem, cnt);
             std::vector<Trip> cand = select_candidates(cnt, qop, rng);
-            repair(sp, std::move(cand), cnt, rop, ref_class, rng);
+            repair(tgt, std::move(cand), cnt, rop, ref_class, rng);
+            if (rescue) {
+                local_search(sub, false);
+                for (std::size_t i = 0; i < nb.size(); ++i) sp.routes[nb[i]] = sub.routes[i];
+                refresh_totals(I, sp);
+            }
             bool run_ls = true;
             if (opt.ls_frequency == PalnsLsFrequency::OnImprove) run_ls = objective(sp) < fS - 1e-9;
             else if (opt.ls_frequency == PalnsLsFrequency::EveryM) run_ls = (iter % std::max(1, opt.ls_every_m)) == 0;
@@ -1903,6 +1982,7 @@ struct PalnsIncumbentSolver::Impl {
                     fBest = which == 1 ? fsp : sp.C;
                     reward = 10.0;
                     if (which == 2) publish(sp);
+                    if (rescue) { rbest = best; rbest_has = true; }
                 } else {
                     if (fsp < fS - 1e-9) reward = 3.0;
                     else if (accept && is_new) reward = 1.0;
@@ -1962,6 +2042,33 @@ struct PalnsIncumbentSolver::Impl {
                     if (adopt(g, kInf, false)) {
                         record(st, g);
                         break;
+                    }
+                    if (hub->rescue && !rescue) {
+                        // Rescue: restart from this thread's least-violated solution.
+                        rescue = true;
+                        if (st.have_least) S = st.least;
+                        eta_cur = opt.eta;  // rescue: the duration excess dominates
+                        refresh_totals(I, S);
+                        rescue_start_V = S.V;
+                        best = S;
+                        rbest = S;
+                        rbest_has = true;
+                        fS = objective(S);
+                        fBest = fS;
+                        theta0 = std::max(1e-9, start_ratio * std::max(fS, 1e-9) / std::log(2.0));
+                        ++rescue_switches;
+                    } else if (rescue && adopt_shared && hub->rhas &&
+                               (hub->rsol.V < best.V - kEps ||
+                                (std::fabs(hub->rsol.V - best.V) <= kEps && hub->rsol.D < best.D - kEps))) {
+                        // Rescue: even threads continue from the best infeasible solution.
+                        S = hub->rsol;
+                        renumber(S);
+                        refresh_totals(I, S);
+                        best = S;
+                        rbest = S;
+                        fS = objective(S);
+                        fBest = fS;
+                        rescue_nb_left = 0;
                     }
                 }
             }
@@ -2095,7 +2202,9 @@ struct PalnsIncumbentSolver::Impl {
         if (!st.have_feasible && !st.reached_target) {
             res.phase1_iterations = run_phase(1, best0, st, rng);
         }
-        if (st.have_feasible && !st.reached_target && opt.phase2_enable && !timed_out()) {
+        // A feasible solution found by the rescue is returned without Phase II.
+        const bool found_by_rescue = hub != nullptr && hub->rescue;
+        if (st.have_feasible && !st.reached_target && opt.phase2_enable && !found_by_rescue && !timed_out()) {
             res.phase2_iterations = run_phase(2, st.best_feasible, st, rng);
         }
         res.runtime_seconds = elapsed();
@@ -2230,6 +2339,7 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
     long long epoch = 0;
     long long I_last = 0;
     long long I_first = -1;  // iteration of the first feasible shared best
+    long long I_rescue = -1; // iteration at which the rescue started
     bool time_limit_hit = false;
     std::string stop_rule = "none";
     std::vector<std::tuple<long long, double, double>> trace;  // (I_last, seconds, original cost)
@@ -2261,9 +2371,22 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
             }
         }
         if (epoch % 8 == 0) clock.emplace_back(I, now);
+        if (hub.rescue) {
+            for (int i = 0; i < nthreads; ++i) {
+                const Impl& w = *workers[static_cast<std::size_t>(i)];
+                if (!w.rbest_has) continue;
+                if (!hub.rhas || w.rbest.V < hub.rsol.V - kEps ||
+                    (std::fabs(w.rbest.V - hub.rsol.V) <= kEps && w.rbest.D < hub.rsol.D - kEps)) {
+                    hub.rsol = w.rbest;
+                    hub.rhas = true;
+                }
+            }
+        }
         if (hub.has) {
             const long long D = I - I_last;
-            if (O.target_cost >= 0.0 && workers[0]->original_cost(hub.solution) <= O.target_cost + 1e-6) {
+            if (hub.rescue) {
+                hub.stop = true; stop_rule = "rescue-feasible";
+            } else if (O.target_cost >= 0.0 && workers[0]->original_cost(hub.solution) <= O.target_cost + 1e-6) {
                 hub.stop = true; stop_rule = "target";
             } else if (!O.phase2_enable) {
                 hub.stop = true; stop_rule = "feasible";
@@ -2276,7 +2399,13 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
                 hub.stop = true; stop_rule = "phase2-limit";
             }
         } else if (O.phase1_max_iters > 0 && I >= O.phase1_max_iters) {
-            hub.stop = true; stop_rule = "phase1-limit";
+            if (O.rescue_max_iters <= 0) {
+                hub.stop = true; stop_rule = "phase1-limit";
+            } else if (!hub.rescue) {
+                hub.rescue = true; I_rescue = I;
+            } else if (I - I_rescue >= O.rescue_max_iters) {
+                hub.stop = true; stop_rule = "rescue-limit";
+            }
         }
         if (!hub.stop && time_limit_seconds > 0.0 && now >= time_limit_seconds) {
             hub.stop = true; stop_rule = "time-limit"; time_limit_hit = true;
@@ -2351,7 +2480,10 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
         << " time_limit_hit=" << (time_limit_hit ? 1 : 0)
         << " phase1_max_iters=" << O.phase1_max_iters
         << " phase2_max_iters=" << O.phase2_max_iters
-        << " first_feasible_iteration=" << I_first << '\n';
+        << " first_feasible_iteration=" << I_first
+        << " rescue_max_iters=" << O.rescue_max_iters
+        << " rescue_routes=" << O.rescue_routes
+        << " rescue_start_iteration=" << I_rescue << '\n';
     if (best < 0) {
         int least = -1;
         for (int i = 0; i < nthreads; ++i) {
@@ -2385,6 +2517,7 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
             << " cost=" << r.best_original_cost
             << " time_to_feasible=" << r.time_to_feasible
             << " iterations=" << workers[static_cast<std::size_t>(i)]->gi
+            << " rescue_start_violation=" << workers[static_cast<std::size_t>(i)]->rescue_start_V
             << " barrier_wait_seconds=" << workers[static_cast<std::size_t>(i)]->wait_seconds << '\n';
     }
     log << "[palns-shared-trace] k=" << vehicle_count << " improvements=" << trace.size() << " points=";
