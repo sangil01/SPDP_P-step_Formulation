@@ -75,7 +75,6 @@ struct CliOptions {
     long long initial_incumbent_palns_phase2_max_iters = 0;
     long long initial_incumbent_palns_rescue_max_iters = 0;
     int initial_incumbent_palns_rescue_routes = 3;
-    double initial_incumbent_palns_target_cost = -1.0;
     double initial_incumbent_palns_sa_start_ratio = 0.05;
     double initial_incumbent_palns_sa_start_ratio_phase1 = -1.0;
     double initial_incumbent_palns_sa_end_ratio = 1e-3;
@@ -1192,8 +1191,6 @@ CliOptions parse_cli(int argc, char** argv) {
                 options.initial_incumbent_palns_phase2_enable = parse_binary_flag(value, arg);
             } else if (arg == "--initial-incumbent-palns-phase2-max-noimp") {
                 options.initial_incumbent_palns_phase2_max_noimp = static_cast<long long>(std::llround(parse_double(value, arg)));
-            } else if (arg == "--initial-incumbent-palns-target-cost") {
-                options.initial_incumbent_palns_target_cost = parse_double(value, arg);
             } else if (arg == "--initial-incumbent-palns-sa-start-ratio") {
                 options.initial_incumbent_palns_sa_start_ratio = parse_double(value, arg);
             } else if (arg == "--initial-incumbent-palns-sa-start-ratio-phase1") {
@@ -3569,7 +3566,6 @@ int main(int argc, char** argv) {
             search_options.palns.phase2_max_iters = args.initial_incumbent_palns_phase2_max_iters;
             search_options.palns.rescue_max_iters = args.initial_incumbent_palns_rescue_max_iters;
             search_options.palns.rescue_routes = args.initial_incumbent_palns_rescue_routes;
-            search_options.palns.target_cost = args.initial_incumbent_palns_target_cost;
             search_options.palns.sa_start_ratio = args.initial_incumbent_palns_sa_start_ratio;
             search_options.palns.sa_start_ratio_phase1 = args.initial_incumbent_palns_sa_start_ratio_phase1;
             search_options.palns.sa_end_ratio = args.initial_incumbent_palns_sa_end_ratio;
@@ -3603,7 +3599,6 @@ int main(int argc, char** argv) {
                     << " stag_ratio=" << args.initial_incumbent_palns_stag_ratio
                     << " stag_min_iters=" << args.initial_incumbent_palns_stag_min_iters
                     << " sync_iters=" << args.initial_incumbent_palns_sync_iters
-                    << " target_cost=" << args.initial_incumbent_palns_target_cost
                     << " sa_start_ratio=" << args.initial_incumbent_palns_sa_start_ratio
                     << " sa_start_ratio_phase1=" << args.initial_incumbent_palns_sa_start_ratio_phase1
                     << " sa_end_ratio=" << args.initial_incumbent_palns_sa_end_ratio

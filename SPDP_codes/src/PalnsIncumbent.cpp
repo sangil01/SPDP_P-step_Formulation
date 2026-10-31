@@ -1789,8 +1789,6 @@ struct PalnsIncumbentSolver::Impl {
         Solution best_feasible;
         double best_violation = kInf;
         double time_to_feasible = -1.0;
-        double time_to_target = -1.0;
-        bool reached_target = false;
         std::vector<std::pair<double, double>> trace;  // (time, original cost)
         // Least-violated solution, lexicographic (V, C), kept only while no
         // feasible solution exists (diagnostics; does not affect the search).
@@ -1814,11 +1812,6 @@ struct PalnsIncumbentSolver::Impl {
             st.trace.push_back({elapsed(), original_cost(s)});
         }
         if (st.time_to_feasible < 0.0) st.time_to_feasible = elapsed();
-        if (opt.target_cost >= 0.0 && !st.reached_target &&
-            original_cost(st.best_feasible) <= opt.target_cost + 1e-6) {
-            st.reached_target = true;
-            st.time_to_target = elapsed();
-        }
     }
 
     long long run_phase(int which, Solution start, SearchState& st, std::mt19937_64& rng) {
@@ -2199,21 +2192,18 @@ struct PalnsIncumbentSolver::Impl {
         res.construction_seconds = elapsed();
         res.construction_feasible = st.have_feasible;
 
-        if (!st.have_feasible && !st.reached_target) {
+        if (!st.have_feasible) {
             res.phase1_iterations = run_phase(1, best0, st, rng);
         }
         // A feasible solution found by the rescue is returned without Phase II.
         const bool found_by_rescue = hub != nullptr && hub->rescue;
-        if (st.have_feasible && !st.reached_target && opt.phase2_enable && !found_by_rescue && !timed_out()) {
+        if (st.have_feasible && opt.phase2_enable && !found_by_rescue && !timed_out()) {
             res.phase2_iterations = run_phase(2, st.best_feasible, st, rng);
         }
         res.runtime_seconds = elapsed();
         res.time_to_feasible = st.time_to_feasible;
-        res.time_to_target = st.time_to_target;
-        res.reached_target = st.reached_target;
         res.best_violation = st.best_violation;
-        if (st.reached_target) res.stop_reason = "target";
-        else if (timed_out()) res.stop_reason = "time-limit";
+        if (timed_out()) res.stop_reason = "time-limit";
         else if (st.have_feasible && opt.phase2_enable) res.stop_reason = "phase2-noimp";
         else if (st.have_feasible) res.stop_reason = "feasible";
         else res.stop_reason = "time-limit";
@@ -2259,8 +2249,6 @@ struct PalnsIncumbentSolver::Impl {
             << " construction_starts=" << res.construction_starts_done
             << " construction_feasible=" << (res.construction_feasible ? 1 : 0)
             << " time_to_feasible=" << res.time_to_feasible
-            << " time_to_target=" << res.time_to_target
-            << " target_cost=" << opt.target_cost
             << " best_violation=" << (std::isfinite(res.best_violation) ? res.best_violation : -1.0)
             << " best_original_cost=" << res.best_original_cost
             << " best_duration=" << res.best_duration
@@ -2386,8 +2374,6 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
             const long long D = I - I_last;
             if (hub.rescue) {
                 hub.stop = true; stop_rule = "rescue-feasible";
-            } else if (O.target_cost >= 0.0 && workers[0]->original_cost(hub.solution) <= O.target_cost + 1e-6) {
-                hub.stop = true; stop_rule = "target";
             } else if (!O.phase2_enable) {
                 hub.stop = true; stop_rule = "feasible";
             } else if (O.phase2_max_noimp > 0 && D >= O.phase2_max_noimp) {
@@ -2433,19 +2419,16 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
     }
     PalnsFixedKResult out = results[static_cast<std::size_t>(best >= 0 ? best : 0)];
     out.runtime_seconds = since_start();
-    double ttf = -1.0, ttt = -1.0, wait = 0.0;
+    double ttf = -1.0, wait = 0.0;
     long long it1 = 0, it2 = 0;
     for (int i = 0; i < nthreads; ++i) {
         const PalnsFixedKResult& r = results[static_cast<std::size_t>(i)];
         if (r.time_to_feasible >= 0.0 && (ttf < 0.0 || r.time_to_feasible < ttf)) ttf = r.time_to_feasible;
-        if (r.time_to_target >= 0.0 && (ttt < 0.0 || r.time_to_target < ttt)) ttt = r.time_to_target;
         it1 += r.phase1_iterations;
         it2 += r.phase2_iterations;
-        out.reached_target = out.reached_target || r.reached_target;
         wait += workers[static_cast<std::size_t>(i)]->wait_seconds;
     }
     out.time_to_feasible = ttf;
-    out.time_to_target = ttt;
     out.phase1_iterations = it1;
     out.phase2_iterations = it2;
     out.stop_reason = (best >= 0) ? stop_rule : (stop_rule == "none" ? "no-feasible" : stop_rule);
@@ -2463,8 +2446,6 @@ PalnsFixedKResult PalnsIncumbentSolver::solve_fixed_k(int vehicle_count, double 
         << " construction_starts=" << out.construction_starts_done
         << " construction_feasible=" << (out.construction_feasible ? 1 : 0)
         << " time_to_feasible=" << out.time_to_feasible
-        << " time_to_target=" << out.time_to_target
-        << " target_cost=" << O.target_cost
         << " best_violation=" << (std::isfinite(out.best_violation) ? out.best_violation : -1.0)
         << " best_original_cost=" << out.best_original_cost
         << " best_duration=" << out.best_duration

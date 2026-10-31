@@ -68,9 +68,6 @@ struct PalnsOptions {
     int rescue_routes = 3;
     // Epoch length (iterations per thread between two synchronizations).
     int sync_iters = 64;
-    // Search-mode stop (a): stop as soon as a feasible solution with
-    // original cost <= target_cost is found. Negative disables it (mode b).
-    double target_cost = -1.0;
     // Simulated-annealing parameters (tuning knobs, not part of note 4.2).
     // Theta0 = sa_start_ratio * f(phase start) / ln 2; geometric cooling to
     // sa_end_ratio * Theta0 within each cycle of sa_cycle_iters iterations;
@@ -105,12 +102,10 @@ struct PalnsOptions {
 struct PalnsFixedKResult {
     bool feasible = false;
     bool hit_time_limit = false;
-    bool reached_target = false;
     bool construction_feasible = false;
     double runtime_seconds = 0.0;
     double construction_seconds = 0.0;
     double time_to_feasible = -1.0;
-    double time_to_target = -1.0;
     double best_violation = 0.0;
     double best_duration = 0.0;
     double best_travel_cost = 0.0;

@@ -97,8 +97,6 @@ struct InitialIncumbentSolveResult {
     std::string solution_info;
     std::string palns_log;
     double palns_time_to_feasible = -1.0;
-    double palns_time_to_target = -1.0;
-    bool palns_reached_target = false;
 };
 
 enum class InitialIncumbentTimeoutAction {

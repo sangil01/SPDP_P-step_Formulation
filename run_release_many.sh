@@ -70,7 +70,6 @@ INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS=500000 # stop when I - (first feasible 
 # first barrier with a feasible solution found by the rescue (no Phase II).
 INITIAL_INCUMBENT_PALNS_RESCUE_MAX_ITERS=500000 # further iterations per thread after the Phase I cap; 0 disables the rescue
 INITIAL_INCUMBENT_PALNS_RESCUE_ROUTES=3 # neighbourhood size (overloaded route + nearby routes)
-INITIAL_INCUMBENT_PALNS_TARGET_COST=-1 # stop once original cost <= this value; negative disables it
 # --- Initial incumbent: two-index-milp / cp-sat backend options ---
 INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
 INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR=1.5 # Used only by makespan
@@ -254,7 +253,7 @@ FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
 FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
     #=========Request 20 이하=========#
-    "RecDep_day_A1.dat"
+    '''"RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
     "RecDep_day_A4.dat"
@@ -316,15 +315,15 @@ DATA_LIST=(
     "RecDep_day_C14.dat"
     "RecDep_day_C15.dat"
     "RecDep_day_C16.dat"
-    "RecDep_day_C17.dat"
+    "RecDep_day_C17.dat"'''
     "RecDep_day_C18.dat"
     "RecDep_day_C19.dat"
     "RecDep_day_C20.dat"
-    "RecDep_day_D3.dat"
-    "RecDep_day_D4.dat"
-    "RecDep_day_D5.dat"
-    "RecDep_day_D6.dat"
-    "RecDep_day_D7.dat"
+    #"RecDep_day_D3.dat"
+    #"RecDep_day_D4.dat"
+    #"RecDep_day_D5.dat"
+    #"RecDep_day_D6.dat"
+    #"RecDep_day_D7.dat"
     #=================================#
     #====Request 100 초과 200 이하====#
     #"RecDep_day_D8.dat"
@@ -449,7 +448,6 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-palns-phase2-max-iters: $INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS"
         echo "initial-incumbent-palns-rescue-max-iters: $INITIAL_INCUMBENT_PALNS_RESCUE_MAX_ITERS"
         echo "initial-incumbent-palns-rescue-routes: $INITIAL_INCUMBENT_PALNS_RESCUE_ROUTES"
-        echo "initial-incumbent-palns-target-cost: $INITIAL_INCUMBENT_PALNS_TARGET_COST"
         echo "initial-incumbent-palns-sa-start-ratio: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO"
         echo "initial-incumbent-palns-sa-start-ratio-phase1: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1"
         echo "initial-incumbent-palns-sa-end-ratio: $INITIAL_INCUMBENT_PALNS_SA_END_RATIO"
@@ -629,7 +627,6 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-palns-phase2-max-iters "$INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS" \
         --initial-incumbent-palns-rescue-max-iters "$INITIAL_INCUMBENT_PALNS_RESCUE_MAX_ITERS" \
         --initial-incumbent-palns-rescue-routes "$INITIAL_INCUMBENT_PALNS_RESCUE_ROUTES" \
-        --initial-incumbent-palns-target-cost "$INITIAL_INCUMBENT_PALNS_TARGET_COST" \
         --initial-incumbent-palns-sa-start-ratio "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO" \
         --initial-incumbent-palns-sa-start-ratio-phase1 "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1" \
         --initial-incumbent-palns-sa-end-ratio "$INITIAL_INCUMBENT_PALNS_SA_END_RATIO" \

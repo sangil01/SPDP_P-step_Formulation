@@ -686,8 +686,6 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
                 converted.status_name = pr.stop_reason;
                 converted.palns_log = pr.log;
                 converted.palns_time_to_feasible = pr.time_to_feasible;
-                converted.palns_time_to_target = pr.time_to_target;
-                converted.palns_reached_target = pr.reached_target;
                 if (!pr.feasible) {
                     if (pr.stop_reason.rfind("output-error", 0) == 0) {
                         converted.outcome = FixedKSolveOutcome::AdapterError;
