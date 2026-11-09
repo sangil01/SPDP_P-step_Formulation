@@ -153,7 +153,7 @@ INSTANCE_TIME_LIMIT=3600 # seconds; wall-clock budget of one instance shared by 
 
 # --- main MILP temporal modelling ---
 # 0/0 selects the time-row-free diagnostic model (P=0 direct enumeration only).
-ADD_TIME_FLOW_FORMULATION=0 # 0: off, 1: node conservation (TF1), 2: node-state conservation (TF2)
+ADD_TIME_FLOW_FORMULATION=2 # 0: off, 1: node conservation (TF1), 2: node-state conservation (TF2)
 ADD_BIG_M_TIME_CONSTRAINTS=0 # 0: drop the big-M route-duration rows, 1: keep them
 
 # --- root cut processing ---
@@ -167,11 +167,11 @@ MIP_NODE_METHOD=-1 # Gurobi NodeMethod of the main MIP: -1, 0, 1, 2
 MIP_CROSSOVER=-1 # -1 Gurobi default, 0 no crossover (allowed only with MIP_METHOD=2 and MIP_NODE_METHOD=2)
 
 # --- capacity blossom cuts: candidate generation ---
-ADD_CAPACITY_BLOSSOM_CUTS=0 # 1 separates odd-set capacity cuts for pickup/delivery sets (exact Padberg-Rao) as user cuts
+ADD_CAPACITY_BLOSSOM_CUTS=1 # 1 separates odd-set capacity cuts for pickup/delivery sets (exact Padberg-Rao) as user cuts
 CAPACITY_BLOSSOM_ROW_FORM=internal # Options: internal, inbound
 CAPACITY_BLOSSOM_SUPPORT_TOLERANCE=1e-6 # edges below this weight are dropped from the separation support graph
 # --- capacity blossom cuts: cut management ---
-CAPACITY_BLOSSOM_SCOPE=adaptive-tree # Options: root-only, adaptive-tree, full-tree
+CAPACITY_BLOSSOM_SCOPE=root-only # Options: root-only, adaptive-tree, full-tree
 CAPACITY_BLOSSOM_ROOT_MAX_ROUNDS=20
 CAPACITY_BLOSSOM_ROOT_MAX_CUTS=256
 CAPACITY_BLOSSOM_ROOT_MAX_PER_ROUND=32
@@ -253,7 +253,7 @@ FULL_ENUMERATION_RC_UPDATE_THREADS=0 # 0이면 hardware_concurrency 사용
 FULL_ENUMERATION_RC_DETAIL_LOG=0 # 0이면 entry/variant RC 상세 로그 비활성화
 DATA_LIST=(
     #=========Request 20 이하=========#
-    '''"RecDep_day_A1.dat"
+    "RecDep_day_A1.dat"
     "RecDep_day_A2.dat"
     "RecDep_day_A3.dat"
     "RecDep_day_A4.dat"
@@ -315,15 +315,15 @@ DATA_LIST=(
     "RecDep_day_C14.dat"
     "RecDep_day_C15.dat"
     "RecDep_day_C16.dat"
-    "RecDep_day_C17.dat"'''
+    "RecDep_day_C17.dat"
     "RecDep_day_C18.dat"
     "RecDep_day_C19.dat"
     "RecDep_day_C20.dat"
-    #"RecDep_day_D3.dat"
-    #"RecDep_day_D4.dat"
-    #"RecDep_day_D5.dat"
-    #"RecDep_day_D6.dat"
-    #"RecDep_day_D7.dat"
+    "RecDep_day_D3.dat"
+    "RecDep_day_D4.dat"
+    "RecDep_day_D5.dat"
+    "RecDep_day_D6.dat"
+    "RecDep_day_D7.dat"
     #=================================#
     #====Request 100 초과 200 이하====#
     #"RecDep_day_D8.dat"
