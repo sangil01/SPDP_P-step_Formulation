@@ -64,6 +64,8 @@ add_library(spdp_core STATIC
     src/TwoIndexSolver.cpp
     src/InitialIncumbent.cpp
     src/PalnsIncumbent.cpp
+    src/PalnsV2Incumbent.cpp
+    src/PoolRecombination.cpp
     src/PstepFormulation.cpp
     src/PstepPricing.cpp
     src/PstepMasterCG.cpp

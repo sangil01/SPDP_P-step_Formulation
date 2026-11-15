@@ -8,6 +8,8 @@
 
 #include "CpIncumbentAdapter.h"
 #include "PalnsIncumbent.h"
+#include "PalnsV2Incumbent.h"
+#include "PoolRecombination.h"
 #include <memory>
 #include "DualFeasibleFunctions.h"
 #include "TwoIndexModelCore.h"
@@ -666,8 +668,19 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
     };
 
     std::unique_ptr<PalnsIncumbentSolver> palns_solver;
+    std::unique_ptr<PalnsV2IncumbentSolver> palns_v2_solver;
+    PalnsV2Options v2_options;
     if (options.backend == InitialIncumbentBackend::Palns) {
-        palns_solver = std::make_unique<PalnsIncumbentSolver>(data, options.palns);
+        if (options.palns_version == 2) {
+            v2_options.base = options.palns;
+            std::string v2_error;
+            if (!parse_palns_v2_config(options.palns_v2_config, v2_options, v2_error)) {
+                throw std::runtime_error("Invalid PALNS v2 configuration: " + v2_error);
+            }
+            palns_v2_solver = std::make_unique<PalnsV2IncumbentSolver>(data, v2_options);
+        } else {
+            palns_solver = std::make_unique<PalnsIncumbentSolver>(data, options.palns);
+        }
     }
 
     InitialIncumbentSearchResult result = run_iterative_initial_incumbent_search(
@@ -676,8 +689,9 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
                  static_cast<int>(data.requests.size())),
         [&](int vehicle_count) {
             if (options.backend == InitialIncumbentBackend::Palns) {
-                const PalnsFixedKResult pr = palns_solver->solve_fixed_k(
-                    vehicle_count, options.per_attempt_time_limit);
+                const PalnsFixedKResult pr = palns_v2_solver
+                    ? palns_v2_solver->solve_fixed_k(vehicle_count, options.per_attempt_time_limit)
+                    : palns_solver->solve_fixed_k(vehicle_count, options.per_attempt_time_limit);
                 InitialIncumbentSolveResult converted;
                 converted.backend = InitialIncumbentBackend::Palns;
                 converted.vehicle_count = vehicle_count;
@@ -714,6 +728,26 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
                 converted.active_edge_ids = mapped.active_edge_ids;
                 converted.total_duration = mapped.total_duration;
                 converted.total_original_cost = mapped.total_original_cost;
+                if (palns_v2_solver && v2_options.recomb_tl > 0.0) {
+                    // Version 2 only: the real model on the edges of the good
+                    // blocks seen during the search, started from the PALNS solution.
+                    PoolRecombinationOptions recomb_options;
+                    recomb_options.delta = v2_options.recomb_delta;
+                    recomb_options.time_limit = v2_options.recomb_tl;
+                    recomb_options.threads = v2_options.recomb_threads > 0
+                        ? v2_options.recomb_threads
+                        : std::max(1, options.palns.threads);
+                    const PoolRecombinationResult recombined = recombine_pool_edges(
+                        data, graph, palns_v2_solver->pool_blocks(),
+                        mapped.active_edge_ids, vehicle_count, recomb_options);
+                    converted.palns_log += "\n" + recombined.log;
+                    converted.runtime_seconds += recombined.seconds;
+                    if (recombined.improved) {
+                        converted.active_edge_ids = recombined.active_edge_ids;
+                        converted.total_duration = recombined.total_duration;
+                        converted.total_original_cost = recombined.total_original_cost;
+                    }
+                }
                 converted.edge_values.assign(graph.number_of_edges(), 0.0);
                 for (int edge_id : converted.active_edge_ids) {
                     converted.edge_values[static_cast<std::size_t>(edge_id)] = 1.0;
@@ -835,6 +869,9 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
     if (palns_solver) {
         result.palns_pattern_summary = palns_solver->pattern_summary();
         result.palns_pattern_seconds = palns_solver->pattern_generation_seconds();
+    } else if (palns_v2_solver) {
+        result.palns_pattern_summary = palns_v2_solver->pattern_summary();
+        result.palns_pattern_seconds = palns_v2_solver->pattern_generation_seconds();
     }
     for (InitialIncumbentAttemptResult& attempt : result.attempts) {
         if (options.backend == InitialIncumbentBackend::TwoIndexMilp) {

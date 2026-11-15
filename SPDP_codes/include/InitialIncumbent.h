@@ -121,6 +121,10 @@ struct InitialIncumbentSearchOptions {
     std::string cp_sat_log_base_path;
     CpSatSolveOptions cp_sat;
     PalnsOptions palns;
+    // PALNS implementation: 1 = PalnsIncumbentSolver, 2 = PalnsV2IncumbentSolver
+    // (configured by palns_v2_config, see PalnsV2Incumbent.h).
+    int palns_version = 1;
+    std::string palns_v2_config;
 };
 
 using FixedKSolveCallback =

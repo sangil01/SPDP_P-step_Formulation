@@ -54,6 +54,9 @@ struct CliOptions {
     int initial_incumbent_cp_symmetry_43 = 0;
     std::string stop_after_initial_incumbent = "none";
     int initial_incumbent_palns_seed = 1;
+    // 1: PalnsIncumbentSolver (default), 2: PalnsV2IncumbentSolver.
+    int initial_incumbent_palns_version = 1;
+    std::string initial_incumbent_palns_v2_config;
     int initial_incumbent_palns_composite_kappa = 1;
     std::string initial_incumbent_palns_composite_skeletons = "all";
     std::vector<double> initial_incumbent_palns_sim_weights{1.0, 1.0, 1.0};
@@ -1135,6 +1138,14 @@ CliOptions parse_cli(int argc, char** argv) {
                         "--stop-after-initial-incumbent must be none, incumbent or mip-start.");
                 }
                 options.stop_after_initial_incumbent = value;
+            } else if (arg == "--initial-incumbent-palns-version") {
+                options.initial_incumbent_palns_version = parse_int(value, arg);
+                if (options.initial_incumbent_palns_version != 1 &&
+                    options.initial_incumbent_palns_version != 2) {
+                    throw std::runtime_error("--initial-incumbent-palns-version must be 1 or 2.");
+                }
+            } else if (arg == "--initial-incumbent-palns-v2-config") {
+                options.initial_incumbent_palns_v2_config = value;
             } else if (arg == "--initial-incumbent-palns-seed") {
                 options.initial_incumbent_palns_seed = parse_int(value, arg);
             } else if (arg == "--initial-incumbent-palns-composite-kappa") {
@@ -3528,6 +3539,8 @@ int main(int argc, char** argv) {
                 args.initial_incumbent_cp_symmetry_first_pickup == 1;
             search_options.cp_sat.symmetry.cor_43_identical_pickup_time_ordering =
                 args.initial_incumbent_cp_symmetry_43 == 1;
+            search_options.palns_version = args.initial_incumbent_palns_version;
+            search_options.palns_v2_config = args.initial_incumbent_palns_v2_config;
             search_options.palns.seed =
                 static_cast<unsigned int>(args.initial_incumbent_palns_seed);
             search_options.palns.composite_kappa =

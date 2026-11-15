@@ -16,6 +16,84 @@ if [[ ! -x "$EXE" ]]; then
 fi
 
 # ============================================
+# PALNS option table: helpers (the table itself is in INPUT PARAMETERS below)
+# ============================================
+PALNS_OPTION_NAMES=()        # table rows passed to the solver as --initial-incumbent-palns-<name>, in table order
+PALNS_V2_KEYS=()             # table rows joined into --initial-incumbent-palns-v2-config, in table order
+declare -A PALNS_KNOWN=([V2_CONFIG]=option) # every name that may follow INITIAL_INCUMBENT_PALNS_
+# Order of the options in the runner log and on the command line (kept as before); new rows follow in table order.
+PALNS_LEGACY_ORDER=(SEED VERSION V2_CONFIG COMPOSITE_KAPPA COMPOSITE_SKELETONS SIM_WEIGHTS CONSTRUCT_STARTS
+    CONSTRUCT_COMPOSITE_FILTER CONSTRUCT_ORDER ETA KMAX_RATIO KMAX_MIN LS_FREQUENCY LS_EVERY_M LS_FIRST_IMPROVEMENT
+    LS_DEEP_RATIO PHASE2_ENABLE PHASE2_MAX_NOIMP STAG_RATIO STAG_MIN_ITERS SYNC_ITERS PHASE1_MAX_ITERS PHASE2_MAX_ITERS
+    RESCUE_MAX_ITERS RESCUE_ROUTES SA_START_RATIO SA_START_RATIO_PHASE1 SA_END_RATIO SA_CYCLE_ITERS SA_CYCLE_ITERS_PHASE2
+    SA_RESTART_BEST PHASE1_ETA_MAX PORTFOLIO_MIXED_CYCLES PORTFOLIO_DIVERSE THREADS)
+
+palns_row() { # palns_row KIND NAME V1 V2: INITIAL_INCUMBENT_PALNS_<NAME> gets the preset value unless it is already set
+    if (( $# != 4 )); then
+        echo "Bad row in the PALNS table (expected: name v1 v2): ${*:2}"
+        exit 1
+    fi
+    local var="INITIAL_INCUMBENT_PALNS_$2" value
+    case "$PALNS_PRESET" in
+        v1) value=$3 ;;
+        v2) value=$4 ;;
+        *) echo "Unknown PALNS_PRESET: $PALNS_PRESET (use v1 or v2)"; exit 1 ;;
+    esac
+    if [[ -z "${!var+x}" ]]; then
+        printf -v "$var" '%s' "$value"
+    fi
+    PALNS_KNOWN[$2]=$1
+}
+
+palns_opt() { # a solver option
+    palns_row option "$@"
+    PALNS_OPTION_NAMES+=("$1")
+}
+
+palns_v2() { # a key of the version 2 config string; its variable is INITIAL_INCUMBENT_PALNS_V2_<KEY>
+    palns_row v2key "V2_${1^^}" "${@:2}"
+    PALNS_V2_KEYS+=("$1")
+}
+
+palns_finalize() { # builds PALNS_ARGS and PALNS_LOG_LINES from the table and the individual settings
+    local name key var value cli parts=()
+    local -A placed=()
+    for var in $(compgen -v INITIAL_INCUMBENT_PALNS_); do
+        if [[ -z "${PALNS_KNOWN[${var#INITIAL_INCUMBENT_PALNS_}]+x}" ]]; then
+            echo "Unknown PALNS option: $var (not a row of the PALNS table)"
+            exit 1
+        fi
+    done
+    if [[ -z "${INITIAL_INCUMBENT_PALNS_V2_CONFIG+x}" ]]; then
+        for key in "${PALNS_V2_KEYS[@]}"; do
+            var="INITIAL_INCUMBENT_PALNS_V2_${key^^}"
+            value=${!var}
+            if [[ -z "$value" || "$value" == "-" ]]; then
+                continue
+            elif [[ "$key" == "extra" ]]; then
+                parts+=("$value")
+            else
+                parts+=("$key=$value")
+            fi
+        done
+        INITIAL_INCUMBENT_PALNS_V2_CONFIG=$(IFS=,; echo "${parts[*]-}")
+    fi
+    PALNS_ARGS=()
+    PALNS_LOG_LINES=()
+    for name in "${PALNS_LEGACY_ORDER[@]}" "${PALNS_OPTION_NAMES[@]}"; do
+        if [[ -n "${placed[$name]+x}" || "${PALNS_KNOWN[$name]-}" != "option" ]]; then
+            continue
+        fi
+        placed[$name]=1
+        var="INITIAL_INCUMBENT_PALNS_$name"
+        cli="initial-incumbent-palns-${name,,}"
+        cli=${cli//_/-}
+        PALNS_ARGS+=("--$cli" "${!var}")
+        PALNS_LOG_LINES+=("$cli: ${!var}")
+    done
+}
+
+# ============================================
 # INPUT PARAMETERS
 # ============================================
 P=0 # 0 uses the direct two-index model when SOLVER_MODE=enumeration
@@ -35,9 +113,41 @@ INITIAL_INCUMBENT_TIME_LIMIT=1200 # seconds; 0 means no time limit. Ignored by t
 INITIAL_INCUMBENT_TIMEOUT_ACTION=advance # Options: stop, advance
 INITIAL_INCUMBENT_MAX_K_INCREMENTS=0 # additional K values after the initial lower bound
 STOP_AFTER_INITIAL_INCUMBENT=none # Options: none (끝까지 진행), incumbent ( incumbent 구하면 중지), mip-start (incumbent를 mip-start로 사용하여 MIP를 풀고 중지)
-INITIAL_INCUMBENT_PALNS_THREADS=8 # portfolio threads
-INITIAL_INCUMBENT_PALNS_SEED=1
-INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Phase II after a feasible start
+# --- Initial incumbent: two-index-milp / cp-sat backend options ---
+INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
+INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR=1.5 # Used only by makespan
+INITIAL_INCUMBENT_MILP_DIRECT_DFF_IDENTITY_ENABLE=0
+INITIAL_INCUMBENT_MILP_DIRECT_DFF_FS_ENABLE=0
+DFF_FS_LAMBDA_LIST="0.1,0.2,0.3,0.4" # Each value must satisfy 0 < lambda < 0.5; lambda=0 is identity.
+INITIAL_INCUMBENT_CP_GRAPH_MODE=original-graph # Options: original-graph, multigraph
+INITIAL_INCUMBENT_CP_WORKERS=0
+INITIAL_INCUMBENT_CP_MODE=duration # Options: satisfaction, duration, threshold-optimization
+INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR=1.5 # Used only by threshold-optimization
+INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE=1
+INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR=1
+INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=1
+INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=1
+INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP=1
+INITIAL_INCUMBENT_CP_SYMMETRY_43=1
+# --- Initial incumbent: PALNS (used only with INITIAL_INCUMBENT_BACKEND=palns) ---
+# PALNS_PRESET selects a whole setting (one column of the table below); single options can still be set one by one.
+#   v1: existing PALNS (PalnsIncumbent.cpp), the setting used so far
+#   v2: PALNS v2 (PalnsV2Incumbent.cpp) followed by the pool recombination (PoolRecombination.cpp)
+PALNS_PRESET=v1 # Options: v1, v2
+# Individual settings: a line written between here and the end marker wins over the preset.
+# The variable is INITIAL_INCUMBENT_PALNS_<name in the table>; for a version 2 key it is INITIAL_INCUMBENT_PALNS_V2_<KEY>.
+#   e.g. INITIAL_INCUMBENT_PALNS_SEED=7
+#        INITIAL_INCUMBENT_PALNS_V2_RECOMB_TL=300
+# INITIAL_INCUMBENT_PALNS_V2_CONFIG="key=value,key=value" replaces the whole version 2 string built from the table.
+# --- end of individual settings ---
+#
+# Preset table. Columns: name, value in v1, value in v2. The v1 values follow the r3 run.
+#         name                        v1              v2
+# basic
+palns_opt THREADS                     8               8               # portfolio threads
+palns_opt SEED                        1               5
+palns_opt VERSION                     1               2               # 1: PALNS (default), 2: PALNS v2 (PalnsV2Incumbent.cpp)
+palns_opt PHASE2_ENABLE               1               1               # 1 also lets construction move on to Phase II after a feasible start
 # PALNS stop rule (deterministic, iteration based; I = iterations per thread since the start of PALNS,
 # I_last = iteration of the last improvement of the shared best), checked at every sync barrier once a
 # feasible solution exists:
@@ -55,66 +165,60 @@ INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE=1 # 1 also lets construction move on to Ph
 #               All instances except C18/C20 stop by these rules before ~870 s. With the iteration caps below,
 #               C20 stops by PHASE2_MAX_ITERS (9492, ~1660 s alone; 9514 with the former 1200 s limit) and
 #               C18 stops by PHASE1_MAX_ITERS without an incumbent for K=9.
-INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP=150000 # N_max
-INITIAL_INCUMBENT_PALNS_STAG_RATIO=0.8 # gamma
-INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS=500 # N_min
-INITIAL_INCUMBENT_PALNS_SYNC_ITERS=1024 # E: iterations per thread between two synchronizations of the portfolio
+#   v2 column: gamma=0.95, N_min=10000, N_max=200000, chosen on seed 5 together with the recombination
+#               (SPDP_test_research/05_arc_elimination_palns/notes/07_single_run_pool.md, 08_cpp_recombination_compare.md).
+palns_opt PHASE2_MAX_NOIMP            150000          200000          # N_max
+palns_opt STAG_RATIO                  0.8             0.95            # gamma
+palns_opt STAG_MIN_ITERS              500             10000           # N_min
+palns_opt SYNC_ITERS                  1024            1024            # E: iterations per thread between two synchronizations of the portfolio
 # Iteration caps per thread (0 disables). Reference run: Phase I ends latest at 1,345,010 (C20, next C17 980,058);
 # the longest Phase II is 499,226 (C16). With these caps all instances except C18 run exactly as before.
-INITIAL_INCUMBENT_PALNS_PHASE1_MAX_ITERS=1500000 # stop Phase I when no feasible shared best exists at this iteration
-INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS=500000 # stop when I - (first feasible iteration) reaches this value
+palns_opt PHASE1_MAX_ITERS            1500000         1500000         # stop Phase I when no feasible shared best exists at this iteration
+palns_opt PHASE2_MAX_ITERS            500000          500000          # stop when I - (first feasible iteration) reaches this value
 # Rescue at the Phase I cap (no feasible shared best; only C18 in the reference run): each thread restarts from its
 # least-violated solution and runs destroy/repair/local search on a neighbourhood (an overloaded route and up to
 # RESCUE_ROUTES-1 nearby routes with slack, or one random route), the other routes fixed; Phase I eta is fixed to
 # ETA and the best infeasible solution (V, D) is shared with the even threads at every barrier. PALNS stops at the
 # first barrier with a feasible solution found by the rescue (no Phase II).
-INITIAL_INCUMBENT_PALNS_RESCUE_MAX_ITERS=500000 # further iterations per thread after the Phase I cap; 0 disables the rescue
-INITIAL_INCUMBENT_PALNS_RESCUE_ROUTES=3 # neighbourhood size (overloaded route + nearby routes)
-# --- Initial incumbent: two-index-milp / cp-sat backend options ---
-INITIAL_INCUMBENT_MILP_MODE=duration # Options: duration, feasibility, makespan
-INITIAL_INCUMBENT_MILP_MAKESPAN_HORIZON_FACTOR=1.5 # Used only by makespan
-INITIAL_INCUMBENT_MILP_DIRECT_DFF_IDENTITY_ENABLE=0
-INITIAL_INCUMBENT_MILP_DIRECT_DFF_FS_ENABLE=0
-DFF_FS_LAMBDA_LIST="0.1,0.2,0.3,0.4" # Each value must satisfy 0 < lambda < 0.5; lambda=0 is identity.
-INITIAL_INCUMBENT_CP_GRAPH_MODE=original-graph # Options: original-graph, multigraph
-INITIAL_INCUMBENT_CP_WORKERS=0
-INITIAL_INCUMBENT_CP_MODE=duration # Options: satisfaction, duration, threshold-optimization
-INITIAL_INCUMBENT_CP_THRESHOLD_HORIZON_FACTOR=1.5 # Used only by threshold-optimization
-INITIAL_INCUMBENT_CP_REDUNDANT_TERMINAL_BALANCE=1
-INITIAL_INCUMBENT_CP_REDUNDANT_FULL_RESERVOIR=1
-INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=1
-INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=1
-INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP=1
-INITIAL_INCUMBENT_CP_SYMMETRY_43=1
-# --- Initial incumbent: PALNS hyperparameters (used only with INITIAL_INCUMBENT_BACKEND=palns; values follow the r3 run) ---
+palns_opt RESCUE_MAX_ITERS            500000          500000          # further iterations per thread after the Phase I cap; 0 disables the rescue
+palns_opt RESCUE_ROUTES               3               3               # neighbourhood size (overloaded route + nearby routes)
+# version 2 only: these keys are joined into --initial-incumbent-palns-v2-config ("-" leaves a key at the solver default)
+palns_v2  lam_back                    -               2000            # > 0: after this many infeasible iterations in a row the search goes back to a feasible solution
+palns_v2  lam_to                      -               1               # where lam_back goes: 0 thread best, 1 the last feasible current solution
+palns_v2  p1_join                     -               0               # >= 0: a thread still in Phase I starts Phase II once a shared feasible solution has existed this many iterations
+palns_v2  rescue_p2                   -               1               # 1: after the rescue found a feasible solution every thread runs Phase II from it
+palns_v2  recomb_tl                   -               120             # seconds for the recombination model after PALNS; 0 switches the recombination off
+palns_v2  recomb_delta                -               3               # blocks whose cheapest solution costs at most (best + this value) give the edges of the recombination model
+palns_v2  extra                       -               -               # further version 2 keys, written as key=value,key=value (e.g. diag=1)
 # pattern generation
-INITIAL_INCUMBENT_PALNS_COMPOSITE_KAPPA=1
-INITIAL_INCUMBENT_PALNS_COMPOSITE_SKELETONS=all # Options: all, S3,S5
-INITIAL_INCUMBENT_PALNS_SIM_WEIGHTS="1,1,1" # Shaw relatedness weights (distance, time, type)
+palns_opt COMPOSITE_KAPPA             1               1
+palns_opt COMPOSITE_SKELETONS         all             all             # Options: all, S3,S5
+palns_opt SIM_WEIGHTS                 1,1,1           1,1,1           # Shaw relatedness weights (distance, time, type)
 # construction
-INITIAL_INCUMBENT_PALNS_CONSTRUCT_STARTS=10
-INITIAL_INCUMBENT_PALNS_CONSTRUCT_COMPOSITE_FILTER=delta-positive # Options: delta-positive, all
-INITIAL_INCUMBENT_PALNS_CONSTRUCT_ORDER=mixed # Options: lpt, random, regret, mixed
+palns_opt CONSTRUCT_STARTS            10              10
+palns_opt CONSTRUCT_COMPOSITE_FILTER  delta-positive  delta-positive  # Options: delta-positive, all
+palns_opt CONSTRUCT_ORDER             mixed           mixed           # Options: lpt, random, regret, mixed
 # search
-INITIAL_INCUMBENT_PALNS_ETA=0.01
-INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX=0.5 # Phase I eta oscillates down from this value to ETA; <= ETA disables it
-INITIAL_INCUMBENT_PALNS_KMAX_RATIO=0.1 # k_max = max(KMAX_MIN, ceil(KMAX_RATIO * n))
-INITIAL_INCUMBENT_PALNS_KMAX_MIN=2
+palns_opt ETA                         0.01            0.01
+palns_opt PHASE1_ETA_MAX              0.5             0.5             # Phase I eta oscillates down from this value to ETA; <= ETA disables it
+palns_opt KMAX_RATIO                  0.1             0.1             # k_max = max(KMAX_MIN, ceil(KMAX_RATIO * n))
+palns_opt KMAX_MIN                    2               2
 # local search
-INITIAL_INCUMBENT_PALNS_LS_FREQUENCY=every # Options: every, on-improve, every-m
-INITIAL_INCUMBENT_PALNS_LS_EVERY_M=10 # used only with every-m
-INITIAL_INCUMBENT_PALNS_LS_FIRST_IMPROVEMENT=1
-INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO=0.01 # trajectory relocate runs only within this ratio of the best
+palns_opt LS_FREQUENCY                every           every           # Options: every, on-improve, every-m
+palns_opt LS_EVERY_M                  10              10              # used only with every-m
+palns_opt LS_FIRST_IMPROVEMENT        1               1
+palns_opt LS_DEEP_RATIO               0.01            1.0             # trajectory relocate runs only within this ratio of the best
 # simulated annealing
-INITIAL_INCUMBENT_PALNS_SA_START_RATIO=0.01
-INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1=-1 # negative uses SA_START_RATIO
-INITIAL_INCUMBENT_PALNS_SA_END_RATIO=1e-3
-INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS=5000
-INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS_PHASE2=50000 # <= 0 uses SA_CYCLE_ITERS
-INITIAL_INCUMBENT_PALNS_SA_RESTART_BEST=1 # restart from the best solution at the end of each SA cycle
+palns_opt SA_START_RATIO              0.01            0.01
+palns_opt SA_START_RATIO_PHASE1       -1              -1              # negative uses SA_START_RATIO
+palns_opt SA_END_RATIO                1e-3            1e-3
+palns_opt SA_CYCLE_ITERS              5000            5000
+palns_opt SA_CYCLE_ITERS_PHASE2       50000           50000           # <= 0 uses SA_CYCLE_ITERS
+palns_opt SA_RESTART_BEST             1               1               # restart from the best solution at the end of each SA cycle
 # portfolio variants
-INITIAL_INCUMBENT_PALNS_PORTFOLIO_MIXED_CYCLES=0
-INITIAL_INCUMBENT_PALNS_PORTFOLIO_DIVERSE=0
+palns_opt PORTFOLIO_MIXED_CYCLES      0               0
+palns_opt PORTFOLIO_DIVERSE           0               0
+palns_finalize # builds the solver arguments; stops on an INITIAL_INCUMBENT_PALNS_* name that is not in the table
 # --- end --- #
 GUROBI_THREADS=8
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
@@ -425,39 +529,7 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "initial-incumbent-cp-redundant-aggregate-duration: $INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION"
         echo "initial-incumbent-cp-symmetry-first-pickup: $INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP"
         echo "initial-incumbent-cp-symmetry-43: $INITIAL_INCUMBENT_CP_SYMMETRY_43"
-        echo "initial-incumbent-palns-seed: $INITIAL_INCUMBENT_PALNS_SEED"
-        echo "initial-incumbent-palns-composite-kappa: $INITIAL_INCUMBENT_PALNS_COMPOSITE_KAPPA"
-        echo "initial-incumbent-palns-composite-skeletons: $INITIAL_INCUMBENT_PALNS_COMPOSITE_SKELETONS"
-        echo "initial-incumbent-palns-sim-weights: $INITIAL_INCUMBENT_PALNS_SIM_WEIGHTS"
-        echo "initial-incumbent-palns-construct-starts: $INITIAL_INCUMBENT_PALNS_CONSTRUCT_STARTS"
-        echo "initial-incumbent-palns-construct-composite-filter: $INITIAL_INCUMBENT_PALNS_CONSTRUCT_COMPOSITE_FILTER"
-        echo "initial-incumbent-palns-construct-order: $INITIAL_INCUMBENT_PALNS_CONSTRUCT_ORDER"
-        echo "initial-incumbent-palns-eta: $INITIAL_INCUMBENT_PALNS_ETA"
-        echo "initial-incumbent-palns-kmax-ratio: $INITIAL_INCUMBENT_PALNS_KMAX_RATIO"
-        echo "initial-incumbent-palns-kmax-min: $INITIAL_INCUMBENT_PALNS_KMAX_MIN"
-        echo "initial-incumbent-palns-ls-frequency: $INITIAL_INCUMBENT_PALNS_LS_FREQUENCY"
-        echo "initial-incumbent-palns-ls-every-m: $INITIAL_INCUMBENT_PALNS_LS_EVERY_M"
-        echo "initial-incumbent-palns-ls-first-improvement: $INITIAL_INCUMBENT_PALNS_LS_FIRST_IMPROVEMENT"
-        echo "initial-incumbent-palns-ls-deep-ratio: $INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO"
-        echo "initial-incumbent-palns-phase2-enable: $INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE"
-        echo "initial-incumbent-palns-phase2-max-noimp: $INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP"
-        echo "initial-incumbent-palns-stag-ratio: $INITIAL_INCUMBENT_PALNS_STAG_RATIO"
-        echo "initial-incumbent-palns-stag-min-iters: $INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS"
-        echo "initial-incumbent-palns-sync-iters: $INITIAL_INCUMBENT_PALNS_SYNC_ITERS"
-        echo "initial-incumbent-palns-phase1-max-iters: $INITIAL_INCUMBENT_PALNS_PHASE1_MAX_ITERS"
-        echo "initial-incumbent-palns-phase2-max-iters: $INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS"
-        echo "initial-incumbent-palns-rescue-max-iters: $INITIAL_INCUMBENT_PALNS_RESCUE_MAX_ITERS"
-        echo "initial-incumbent-palns-rescue-routes: $INITIAL_INCUMBENT_PALNS_RESCUE_ROUTES"
-        echo "initial-incumbent-palns-sa-start-ratio: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO"
-        echo "initial-incumbent-palns-sa-start-ratio-phase1: $INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1"
-        echo "initial-incumbent-palns-sa-end-ratio: $INITIAL_INCUMBENT_PALNS_SA_END_RATIO"
-        echo "initial-incumbent-palns-sa-cycle-iters: $INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS"
-        echo "initial-incumbent-palns-sa-cycle-iters-phase2: $INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS_PHASE2"
-        echo "initial-incumbent-palns-sa-restart-best: $INITIAL_INCUMBENT_PALNS_SA_RESTART_BEST"
-        echo "initial-incumbent-palns-phase1-eta-max: $INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX"
-        echo "initial-incumbent-palns-portfolio-mixed-cycles: $INITIAL_INCUMBENT_PALNS_PORTFOLIO_MIXED_CYCLES"
-        echo "initial-incumbent-palns-portfolio-diverse: $INITIAL_INCUMBENT_PALNS_PORTFOLIO_DIVERSE"
-        echo "initial-incumbent-palns-threads: $INITIAL_INCUMBENT_PALNS_THREADS"
+        printf '%s\n' "${PALNS_LOG_LINES[@]}"
         echo "stop-after-initial-incumbent: $STOP_AFTER_INITIAL_INCUMBENT"
         echo "vi-formulation: $VI_FORMULATION"
         echo "cg-max-iterations-per-phase: $CG_MAX_ITERATIONS_PER_PHASE"
@@ -604,39 +676,7 @@ for data_name in "${DATA_LIST[@]}"; do
         --initial-incumbent-cp-redundant-aggregate-duration "$INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION" \
         --initial-incumbent-cp-symmetry-first-pickup "$INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP" \
         --initial-incumbent-cp-symmetry-43 "$INITIAL_INCUMBENT_CP_SYMMETRY_43" \
-        --initial-incumbent-palns-seed "$INITIAL_INCUMBENT_PALNS_SEED" \
-        --initial-incumbent-palns-composite-kappa "$INITIAL_INCUMBENT_PALNS_COMPOSITE_KAPPA" \
-        --initial-incumbent-palns-composite-skeletons "$INITIAL_INCUMBENT_PALNS_COMPOSITE_SKELETONS" \
-        --initial-incumbent-palns-sim-weights "$INITIAL_INCUMBENT_PALNS_SIM_WEIGHTS" \
-        --initial-incumbent-palns-construct-starts "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_STARTS" \
-        --initial-incumbent-palns-construct-composite-filter "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_COMPOSITE_FILTER" \
-        --initial-incumbent-palns-construct-order "$INITIAL_INCUMBENT_PALNS_CONSTRUCT_ORDER" \
-        --initial-incumbent-palns-eta "$INITIAL_INCUMBENT_PALNS_ETA" \
-        --initial-incumbent-palns-kmax-ratio "$INITIAL_INCUMBENT_PALNS_KMAX_RATIO" \
-        --initial-incumbent-palns-kmax-min "$INITIAL_INCUMBENT_PALNS_KMAX_MIN" \
-        --initial-incumbent-palns-ls-frequency "$INITIAL_INCUMBENT_PALNS_LS_FREQUENCY" \
-        --initial-incumbent-palns-ls-every-m "$INITIAL_INCUMBENT_PALNS_LS_EVERY_M" \
-        --initial-incumbent-palns-ls-first-improvement "$INITIAL_INCUMBENT_PALNS_LS_FIRST_IMPROVEMENT" \
-        --initial-incumbent-palns-ls-deep-ratio "$INITIAL_INCUMBENT_PALNS_LS_DEEP_RATIO" \
-        --initial-incumbent-palns-phase2-enable "$INITIAL_INCUMBENT_PALNS_PHASE2_ENABLE" \
-        --initial-incumbent-palns-phase2-max-noimp "$INITIAL_INCUMBENT_PALNS_PHASE2_MAX_NOIMP" \
-        --initial-incumbent-palns-stag-ratio "$INITIAL_INCUMBENT_PALNS_STAG_RATIO" \
-        --initial-incumbent-palns-stag-min-iters "$INITIAL_INCUMBENT_PALNS_STAG_MIN_ITERS" \
-        --initial-incumbent-palns-sync-iters "$INITIAL_INCUMBENT_PALNS_SYNC_ITERS" \
-        --initial-incumbent-palns-phase1-max-iters "$INITIAL_INCUMBENT_PALNS_PHASE1_MAX_ITERS" \
-        --initial-incumbent-palns-phase2-max-iters "$INITIAL_INCUMBENT_PALNS_PHASE2_MAX_ITERS" \
-        --initial-incumbent-palns-rescue-max-iters "$INITIAL_INCUMBENT_PALNS_RESCUE_MAX_ITERS" \
-        --initial-incumbent-palns-rescue-routes "$INITIAL_INCUMBENT_PALNS_RESCUE_ROUTES" \
-        --initial-incumbent-palns-sa-start-ratio "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO" \
-        --initial-incumbent-palns-sa-start-ratio-phase1 "$INITIAL_INCUMBENT_PALNS_SA_START_RATIO_PHASE1" \
-        --initial-incumbent-palns-sa-end-ratio "$INITIAL_INCUMBENT_PALNS_SA_END_RATIO" \
-        --initial-incumbent-palns-sa-cycle-iters "$INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS" \
-        --initial-incumbent-palns-sa-cycle-iters-phase2 "$INITIAL_INCUMBENT_PALNS_SA_CYCLE_ITERS_PHASE2" \
-        --initial-incumbent-palns-sa-restart-best "$INITIAL_INCUMBENT_PALNS_SA_RESTART_BEST" \
-        --initial-incumbent-palns-phase1-eta-max "$INITIAL_INCUMBENT_PALNS_PHASE1_ETA_MAX" \
-        --initial-incumbent-palns-portfolio-mixed-cycles "$INITIAL_INCUMBENT_PALNS_PORTFOLIO_MIXED_CYCLES" \
-        --initial-incumbent-palns-portfolio-diverse "$INITIAL_INCUMBENT_PALNS_PORTFOLIO_DIVERSE" \
-        --initial-incumbent-palns-threads "$INITIAL_INCUMBENT_PALNS_THREADS" \
+        "${PALNS_ARGS[@]}" \
         --stop-after-initial-incumbent "$STOP_AFTER_INITIAL_INCUMBENT" \
         --gurobi-threads "$GUROBI_THREADS" \
         --vi-formulation "$VI_FORMULATION" \
