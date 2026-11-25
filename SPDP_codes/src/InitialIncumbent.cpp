@@ -734,9 +734,7 @@ InitialIncumbentSearchResult solve_iterative_initial_incumbent(
                     PoolRecombinationOptions recomb_options;
                     recomb_options.delta = v2_options.recomb_delta;
                     recomb_options.time_limit = v2_options.recomb_tl;
-                    recomb_options.threads = v2_options.recomb_threads > 0
-                        ? v2_options.recomb_threads
-                        : std::max(1, options.palns.threads);
+                    recomb_options.threads = std::max(1, options.palns.threads);
                     const PoolRecombinationResult recombined = recombine_pool_edges(
                         data, graph, palns_v2_solver->pool_blocks(),
                         mapped.active_edge_ids, vehicle_count, recomb_options);

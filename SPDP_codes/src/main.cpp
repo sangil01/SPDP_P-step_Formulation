@@ -23,6 +23,7 @@
 #include "PstepFormulation.h"
 #include "ReadData.h"
 #include "TimeRowFreeAnalysis.h"
+#include "ArcElimination.h"
 #include "TwoIndexSolver.h"
 
 namespace {
@@ -57,6 +58,10 @@ struct CliOptions {
     // 1: PalnsIncumbentSolver (default), 2: PalnsV2IncumbentSolver.
     int initial_incumbent_palns_version = 1;
     std::string initial_incumbent_palns_v2_config;
+    // Arc elimination with the time-free model before the main solve
+    // (P=0 direct two-index IP with an initial incumbent). 0: off.
+    int arc_elimination = 0;
+    std::string arc_elimination_config;
     int initial_incumbent_palns_composite_kappa = 1;
     std::string initial_incumbent_palns_composite_skeletons = "all";
     std::vector<double> initial_incumbent_palns_sim_weights{1.0, 1.0, 1.0};
@@ -1123,6 +1128,22 @@ CliOptions parse_cli(int argc, char** argv) {
             }
             options.initial_incumbent_timeout_action =
                 parse_initial_incumbent_timeout_action(argv[++idx]);
+            continue;
+        }
+
+        if (arg == "--arc-elimination" || arg == "--arc-elimination-config") {
+            if (idx + 1 >= argc) {
+                throw std::runtime_error(arg + " requires a value.");
+            }
+            const std::string value = argv[++idx];
+            if (arg == "--arc-elimination") {
+                options.arc_elimination = parse_int(value, arg);
+                if (options.arc_elimination != 0 && options.arc_elimination != 1) {
+                    throw std::runtime_error("--arc-elimination must be 0 or 1.");
+                }
+            } else {
+                options.arc_elimination_config = value;
+            }
             continue;
         }
 
@@ -2539,19 +2560,18 @@ std::filesystem::path build_gurobi_log_path(
     return output_directory_path(output_dir) / output_name;
 }
 
-// Separate Gurobi log of the pre-MIP root LP cut phase. The initial LP solve
-// and every reoptimisation after a cut round end up here, so the LP algorithm
-// comparison can be read independently of the main MIP log.
-std::filesystem::path build_pre_mip_lp_gurobi_log_path(
+// P=0 direct solve: one Gurobi log per solve, "<prefix><name>_gurobi.log" with
+// this prefix and the names of ArcElimination.h (E0_1_rootlp is the pre-MIP
+// root LP cut phase, E0_2_milp the main MIP, the others are arc elimination).
+std::string build_p0_gurobi_log_prefix(
     const std::string& instance,
     int p,
     const std::string& output_dir
 ) {
     const std::filesystem::path instance_path(instance);
     const std::string output_name =
-        instance_path.stem().string() + "_p" + std::to_string(p) +
-        "_pre_mip_lp_gurobi.log";
-    return output_directory_path(output_dir) / output_name;
+        instance_path.stem().string() + "_p" + std::to_string(p) + "_";
+    return (output_directory_path(output_dir) / output_name).string();
 }
 
 // Copies one family's management block. Both dynamic cut families use the same
@@ -2708,6 +2728,8 @@ void print_instance_summary(
 
     // ---- cut-study options (same order as run_release_many.sh) ----
     out << "[main] instance_time_limit: " << args.instance_time_limit << '\n';
+    out << "[main] arc_elimination: " << args.arc_elimination << '\n';
+    out << "[main] arc_elimination_config: " << args.arc_elimination_config << '\n';
     out << "[main] add_time_flow_formulation: " << args.add_time_flow_formulation << '\n';
     out << "[main] add_big_m_time_constraints: " << args.add_big_m_time_constraints << '\n';
     out << "[main] root_cut_mode: " << args.root_cut_mode << '\n';
@@ -3355,11 +3377,22 @@ int main(int argc, char** argv) {
         );
         print_selected_edge_info(output_file, graph);
 
-        std::ofstream gurobi_log_file(gurobi_log_path, std::ios::trunc);
-        if (!gurobi_log_file) {
-            throw std::runtime_error("Failed to initialize Gurobi log file: " + gurobi_log_path.string());
+        if (args.p == 0) {
+            // One log per solve, written only by the solves that run. Gurobi
+            // appends to an existing file, so logs of an earlier run are removed.
+            const std::string prefix =
+                build_p0_gurobi_log_prefix(args.instance, args.p, args.output_dir);
+            for (const char* name : spdp::kP0GurobiLogNames) {
+                std::error_code ignored;
+                std::filesystem::remove(spdp::p0_gurobi_log_path(prefix, name), ignored);
+            }
+        } else {
+            std::ofstream gurobi_log_file(gurobi_log_path, std::ios::trunc);
+            if (!gurobi_log_file) {
+                throw std::runtime_error("Failed to initialize Gurobi log file: " + gurobi_log_path.string());
+            }
+            gurobi_log_file.close();
         }
-        gurobi_log_file.close();
 
         std::optional<spdp::VI44KMinResult> precomputed_k_min_result;
         std::optional<spdp::RecoveredSolution> initial_incumbent_solution;
@@ -4190,10 +4223,13 @@ int main(int argc, char** argv) {
                 direct_options.solver_time_limit =
                     phase_time_limit(args.solver_time_limit);
                 direct_options.gurobi_threads = args.gurobi_threads;
-                direct_options.gurobi_log_path = gurobi_log_path.string();
+                const std::string p0_log_prefix =
+                    build_p0_gurobi_log_prefix(args.instance, args.p, args.output_dir);
+                // An LP model writes everything to gurobi_log_path.
+                direct_options.gurobi_log_path = spdp::p0_gurobi_log_path(
+                    p0_log_prefix, solve_lp ? spdp::kLogE0RootLp : spdp::kLogE0Milp);
                 direct_options.pre_mip_lp_gurobi_log_path =
-                    build_pre_mip_lp_gurobi_log_path(
-                        args.instance, args.p, args.output_dir).string();
+                    spdp::p0_gurobi_log_path(p0_log_prefix, spdp::kLogE0RootLp);
                 if (!solve_lp) {
                     direct_options.initial_edge_start = initial_edge_start;
                 }
@@ -4321,12 +4357,46 @@ int main(int argc, char** argv) {
                 output_file << "[main] main_solve_time_limit: "
                     << format_double(direct_options.solver_time_limit) << '\n';
 
-                const spdp::DirectTwoIndexResult direct_result =
-                    spdp::solve_direct_two_index_model(
+                // Arc elimination runs first; it either gives the final answer
+                // or leaves the main solve to the remaining budget.
+                spdp::ArcEliminationResult arc_elimination_result;
+                if (args.arc_elimination == 1 && !solve_lp &&
+                    !direct_options.mip_start_check_only) {
+                    spdp::ArcEliminationOptions arc_options;
+                    arc_options.enabled = true;
+                    std::string arc_error;
+                    if (!spdp::parse_arc_elimination_config(
+                            args.arc_elimination_config, arc_options, arc_error)) {
+                        throw std::runtime_error(
+                            "--arc-elimination-config: " + arc_error);
+                    }
+                    arc_options.elapsed_before = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - g_instance_start).count();
+                    arc_options.log_prefix = p0_log_prefix;
+                    arc_elimination_result = spdp::run_arc_elimination(
                         data,
                         graph,
-                        direct_options
+                        direct_options,
+                        direct_options.initial_edge_start,
+                        initial_incumbent_original_cost,
+                        arc_options,
+                        &output_file
                     );
+                    direct_options.solver_time_limit =
+                        phase_time_limit(args.solver_time_limit);
+                    direct_options.pre_mip_root_lp_time_limit =
+                        phase_time_limit(args.pre_mip_root_lp_time_limit);
+                    output_file << "[main] main_solve_time_limit_after_arc_elimination: "
+                        << format_double(direct_options.solver_time_limit) << '\n';
+                }
+                const spdp::DirectTwoIndexResult direct_result =
+                    arc_elimination_result.finished
+                        ? arc_elimination_result.result
+                        : spdp::solve_direct_two_index_model(
+                              data,
+                              graph,
+                              direct_options
+                          );
                 print_direct_two_index_summary(output_file, direct_result);
                 const bool time_row_free = args.add_time_flow_formulation == 0 &&
                     args.add_big_m_time_constraints == 0;

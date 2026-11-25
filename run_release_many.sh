@@ -64,20 +64,14 @@ palns_finalize() { # builds PALNS_ARGS and PALNS_LOG_LINES from the table and th
             exit 1
         fi
     done
-    if [[ -z "${INITIAL_INCUMBENT_PALNS_V2_CONFIG+x}" ]]; then
-        for key in "${PALNS_V2_KEYS[@]}"; do
-            var="INITIAL_INCUMBENT_PALNS_V2_${key^^}"
-            value=${!var}
-            if [[ -z "$value" || "$value" == "-" ]]; then
-                continue
-            elif [[ "$key" == "extra" ]]; then
-                parts+=("$value")
-            else
-                parts+=("$key=$value")
-            fi
-        done
-        INITIAL_INCUMBENT_PALNS_V2_CONFIG=$(IFS=,; echo "${parts[*]-}")
-    fi
+    for key in "${PALNS_V2_KEYS[@]}"; do
+        var="INITIAL_INCUMBENT_PALNS_V2_${key^^}"
+        value=${!var}
+        if [[ -n "$value" && "$value" != "-" ]]; then
+            parts+=("$key=$value")
+        fi
+    done
+    INITIAL_INCUMBENT_PALNS_V2_CONFIG=$(IFS=,; echo "${parts[*]-}") # always built from the palns_v2 rows
     PALNS_ARGS=()
     PALNS_LOG_LINES=()
     for name in "${PALNS_LEGACY_ORDER[@]}" "${PALNS_OPTION_NAMES[@]}"; do
@@ -129,16 +123,17 @@ INITIAL_INCUMBENT_CP_REDUNDANT_CONTAINER_WORKLOAD=1
 INITIAL_INCUMBENT_CP_REDUNDANT_AGGREGATE_DURATION=1
 INITIAL_INCUMBENT_CP_SYMMETRY_FIRST_PICKUP=1
 INITIAL_INCUMBENT_CP_SYMMETRY_43=1
+
 # --- Initial incumbent: PALNS (used only with INITIAL_INCUMBENT_BACKEND=palns) ---
 # PALNS_PRESET selects a whole setting (one column of the table below); single options can still be set one by one.
 #   v1: existing PALNS (PalnsIncumbent.cpp), the setting used so far
 #   v2: PALNS v2 (PalnsV2Incumbent.cpp) followed by the pool recombination (PoolRecombination.cpp)
-PALNS_PRESET=v1 # Options: v1, v2
+PALNS_PRESET=v2 # Options: v1, v2
+
 # Individual settings: a line written between here and the end marker wins over the preset.
 # The variable is INITIAL_INCUMBENT_PALNS_<name in the table>; for a version 2 key it is INITIAL_INCUMBENT_PALNS_V2_<KEY>.
 #   e.g. INITIAL_INCUMBENT_PALNS_SEED=7
 #        INITIAL_INCUMBENT_PALNS_V2_RECOMB_TL=300
-# INITIAL_INCUMBENT_PALNS_V2_CONFIG="key=value,key=value" replaces the whole version 2 string built from the table.
 # --- end of individual settings ---
 #
 # Preset table. Columns: name, value in v1, value in v2. The v1 values follow the r3 run.
@@ -189,7 +184,6 @@ palns_v2  p1_join                     -               0               # >= 0: a 
 palns_v2  rescue_p2                   -               1               # 1: after the rescue found a feasible solution every thread runs Phase II from it
 palns_v2  recomb_tl                   -               120             # seconds for the recombination model after PALNS; 0 switches the recombination off
 palns_v2  recomb_delta                -               3               # blocks whose cheapest solution costs at most (best + this value) give the edges of the recombination model
-palns_v2  extra                       -               -               # further version 2 keys, written as key=value,key=value (e.g. diag=1)
 # pattern generation
 palns_opt COMPOSITE_KAPPA             1               1
 palns_opt COMPOSITE_SKELETONS         all             all             # Options: all, S3,S5
@@ -220,6 +214,7 @@ palns_opt PORTFOLIO_MIXED_CYCLES      0               0
 palns_opt PORTFOLIO_DIVERSE           0               0
 palns_finalize # builds the solver arguments; stops on an INITIAL_INCUMBENT_PALNS_* name that is not in the table
 # --- end --- #
+
 GUROBI_THREADS=8
 NODE_CG_PHASE1_LP_METHOD=automatic # Options: automatic, primal, dual, barrier, concurrent
 NODE_CG_PHASE2_LP_METHOD=primal # Options: automatic, primal, dual, barrier, concurrent
@@ -259,6 +254,19 @@ INSTANCE_TIME_LIMIT=3600 # seconds; wall-clock budget of one instance shared by 
 # 0/0 selects the time-row-free diagnostic model (P=0 direct enumeration only).
 ADD_TIME_FLOW_FORMULATION=2 # 0: off, 1: node conservation (TF1), 2: node-state conservation (TF2)
 ADD_BIG_M_TIME_CONSTRAINTS=0 # 0: drop the big-M route-duration rows, 1: keep them
+
+# --- arc elimination with the time-free model (P=0 direct two-index IP with an initial incumbent U) ---
+# Replaces the main solve when on (see SPDP_codes/include/ArcElimination.h): root LP deletion, collection of the edges of
+# the time-free solutions of cost <= U - 1, main model on the collected edges; fallback to the main model on the edges
+# left by the root LP when the collection does not finish. The budget is the one of the main solve.
+ARC_ELIMINATION=1 # 0: off, 1: on
+# key=value,key=value; empty keeps every default. Keys (default):
+#   rc (2): root LP deletion, 0 none (the root LP still checks the bound), 1 barrier with crossover, 2 barrier without crossover
+#   rc_tl (300): seconds for the root LP deletion; 0 no limit of its own
+#   total_tl (600): deadline in seconds from the instance start for the root LP deletion and the collection; PALNS itself
+#                is never cut, the two steps are skipped when less than 2 minutes are left after PALNS and the collection
+#                stops at the deadline (then the main model is solved on the edges left by the root LP); 0 off
+ARC_ELIMINATION_CONFIG=""
 
 # --- root cut processing ---
 ROOT_CUT_MODE=pre-mip # Options: pre-mip (cut loop on a standalone LP, rows copied into the MIP), callback (separate at the MIP root node)
@@ -575,6 +583,8 @@ for data_name in "${DATA_LIST[@]}"; do
         echo "add-vi-44: $ADD_VI_44"
         echo "--- cut-study options ---"
         echo "instance-time-limit: $INSTANCE_TIME_LIMIT"
+        echo "arc-elimination: $ARC_ELIMINATION"
+        echo "arc-elimination-config: $ARC_ELIMINATION_CONFIG"
         echo "add-time-flow-formulation: $ADD_TIME_FLOW_FORMULATION"
         echo "add-big-m-time-constraints: $ADD_BIG_M_TIME_CONSTRAINTS"
         echo "root-cut-mode: $ROOT_CUT_MODE"
@@ -699,6 +709,8 @@ for data_name in "${DATA_LIST[@]}"; do
         --vi-request-block-sec-max-size "$VI_Request_BLOCK_SEC_MAX_SIZE" \
         --add-vi-44 "$ADD_VI_44" \
         --instance-time-limit "$INSTANCE_TIME_LIMIT" \
+        --arc-elimination "$ARC_ELIMINATION" \
+        --arc-elimination-config "$ARC_ELIMINATION_CONFIG" \
         --add-time-flow-formulation "$ADD_TIME_FLOW_FORMULATION" \
         --add-big-m-time-constraints "$ADD_BIG_M_TIME_CONSTRAINTS" \
         --root-cut-mode "$ROOT_CUT_MODE" \

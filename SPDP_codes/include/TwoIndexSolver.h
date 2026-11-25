@@ -73,6 +73,13 @@ struct DirectTwoIndexOptions {
     // Verification mode: stop the main MIP at its first solution so that the
     // acceptance of the supplied MIP start can be checked quickly.
     bool mip_start_check_only = false;
+    // >= 0: Gurobi Cutoff of the main MIP (solutions above this objective value
+    // are discarded; status GRB_CUTOFF when none exists). Negative: no cutoff.
+    double cutoff = -1.0;
+    // LP only. After the cut loop, compute a lower bound from the dual values
+    // that is valid for any dual vector (see DirectTwoIndexResult::lp_dual_bound),
+    // and stop the cut loop when solver_time_limit has passed.
+    bool collect_lp_dual_bound = false;
 };
 
 struct DirectTwoIndexResult {
@@ -107,6 +114,17 @@ struct DirectTwoIndexResult {
     double pre_mip_lp_value_after = -1.0;
     double mip_time_limit_used = 0.0;
     std::vector<double> edge_values;
+    // Filled when collect_lp_dual_bound is set and the LP was solved.
+    // lp_dual_bound = pi'b + sum_j min over [lb_j, ub_j] of (c_j - pi'A_j) x_j
+    // with the dual values pi clipped to the sign of their row, which is a lower
+    // bound on the LP value for any pi. edge_fix_gain[e] is the increase of that
+    // bound when y_e is fixed to 1, so lp_dual_bound + edge_fix_gain[e] is a lower
+    // bound on the cost of every solution that uses edge e.
+    bool lp_dual_bound_valid = false;
+    double lp_dual_bound = 0.0;
+    std::vector<double> edge_fix_gain;
+    std::vector<double> edge_reduced_costs;  // as reported by Gurobi
+    int lp_clipped_dual_count = 0;
 };
 
 const char* root_cut_mode_name(RootCutMode mode);

@@ -66,6 +66,7 @@ add_library(spdp_core STATIC
     src/PalnsIncumbent.cpp
     src/PalnsV2Incumbent.cpp
     src/PoolRecombination.cpp
+    src/ArcElimination.cpp
     src/PstepFormulation.cpp
     src/PstepPricing.cpp
     src/PstepMasterCG.cpp

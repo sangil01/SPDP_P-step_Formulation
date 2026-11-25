@@ -49,6 +49,72 @@ bool blossom_enabled(const CutContext& context) {
         context.blossom_options->enabled;
 }
 
+// Lower bound from the dual values of a solved LP; see DirectTwoIndexResult.
+void fill_lp_dual_bound(
+    GRBModel& model,
+    const std::vector<GRBVar>& y_vars,
+    DirectTwoIndexResult& result
+) {
+    const int row_count = model.get(GRB_IntAttr_NumConstrs);
+    const int var_count = model.get(GRB_IntAttr_NumVars);
+    std::unique_ptr<GRBConstr[]> rows(model.getConstrs());
+    std::unique_ptr<GRBVar[]> vars(model.getVars());
+    std::vector<double> pi(static_cast<std::size_t>(row_count), 0.0);
+    double bound = model.get(GRB_DoubleAttr_ObjCon);
+    int clipped = 0;
+    for (int i = 0; i < row_count; ++i) {
+        double value = rows[i].get(GRB_DoubleAttr_Pi);
+        const char sense = rows[i].get(GRB_CharAttr_Sense);
+        if ((sense == GRB_LESS_EQUAL && value > 0.0) ||
+            (sense == GRB_GREATER_EQUAL && value < 0.0)) {
+            value = 0.0;
+            ++clipped;
+        }
+        pi[static_cast<std::size_t>(i)] = value;
+        bound += value * rows[i].get(GRB_DoubleAttr_RHS);
+    }
+    std::vector<double> reduced(static_cast<std::size_t>(var_count), 0.0);
+    std::vector<double> term(static_cast<std::size_t>(var_count), 0.0);
+    bool valid = true;
+    for (int j = 0; j < var_count; ++j) {
+        double d = vars[j].get(GRB_DoubleAttr_Obj);
+        const GRBColumn column = model.getCol(vars[j]);
+        for (unsigned int k = 0; k < column.size(); ++k) {
+            d -= pi[static_cast<std::size_t>(column.getConstr(static_cast<int>(k)).index())] *
+                 column.getCoeff(static_cast<int>(k));
+        }
+        const double lb = vars[j].get(GRB_DoubleAttr_LB);
+        const double ub = vars[j].get(GRB_DoubleAttr_UB);
+        double t = 0.0;
+        if (d > 0.0) {
+            if (lb <= -GRB_INFINITY) {
+                valid = false;
+            } else {
+                t = d * lb;
+            }
+        } else if (d < 0.0) {
+            if (ub >= GRB_INFINITY) {
+                valid = false;
+            } else {
+                t = d * ub;
+            }
+        }
+        reduced[static_cast<std::size_t>(j)] = d;
+        term[static_cast<std::size_t>(j)] = t;
+        bound += t;
+    }
+    result.lp_clipped_dual_count = clipped;
+    result.lp_dual_bound_valid = valid;
+    result.lp_dual_bound = bound;
+    result.edge_fix_gain.assign(y_vars.size(), 0.0);
+    result.edge_reduced_costs.assign(y_vars.size(), 0.0);
+    for (std::size_t edge_id = 0; edge_id < y_vars.size(); ++edge_id) {
+        const std::size_t j = static_cast<std::size_t>(y_vars[edge_id].index());
+        result.edge_fix_gain[edge_id] = reduced[j] - term[j];
+        result.edge_reduced_costs[edge_id] = y_vars[edge_id].get(GRB_DoubleAttr_RC);
+    }
+}
+
 // Applies one round of every enabled family to the fractional point y and
 // returns the rows to add. Also updates statistics and pools.
 struct RoundOutput {
@@ -425,6 +491,10 @@ DirectTwoIndexResult solve_direct_two_index_model(
     if (options.mip_start_check_only) {
         core.model->set(GRB_IntParam_SolutionLimit, 1);
     }
+    if (options.cutoff >= 0.0 && options.model_type == DirectTwoIndexModelType::IP) {
+        core.model->set(GRB_DoubleParam_Cutoff, options.cutoff);
+    }
+    const auto main_start = std::chrono::steady_clock::now();
     core.model->optimize();
     if (any_dynamic_family && options.model_type == DirectTwoIndexModelType::LP) {
         // LP cutting-plane loop: every family is separated until no family
@@ -432,6 +502,12 @@ DirectTwoIndexResult solve_direct_two_index_model(
         std::vector<double> values(core.y_vars.size(), 0.0);
         for (std::size_t round = 0; round < 500; ++round) {
             if (core.model->get(GRB_IntAttr_Status) != GRB_OPTIMAL) {
+                break;
+            }
+            if (options.collect_lp_dual_bound && options.solver_time_limit > 0.0 &&
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - main_start).count() >=
+                    options.solver_time_limit) {
                 break;
             }
             for (std::size_t i = 0; i < values.size(); ++i) {
@@ -449,6 +525,11 @@ DirectTwoIndexResult solve_direct_two_index_model(
         }
     }
 
+    if (options.collect_lp_dual_bound &&
+        options.model_type == DirectTwoIndexModelType::LP &&
+        core.model->get(GRB_IntAttr_Status) == GRB_OPTIMAL) {
+        fill_lp_dual_bound(*core.model, core.y_vars, result);
+    }
     result.status = core.model->get(GRB_IntAttr_Status);
     result.hit_time_limit = result.status == GRB_TIME_LIMIT;
     result.solved_to_optimality = result.status == GRB_OPTIMAL;

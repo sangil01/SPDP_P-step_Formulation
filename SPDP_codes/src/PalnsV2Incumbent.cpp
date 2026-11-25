@@ -10,7 +10,6 @@
 #include <functional>
 #include <cmath>
 #include <cstdint>
-#include <fstream>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -523,8 +522,7 @@ std::vector<int> hungarian(const std::vector<std::vector<double>>& a) {
 }
 
 // mode: 0 greedy (min-cost assignment), 1 random matching, 2 sequential roulette.
-std::vector<Trip> assign_singles(const Instance& I, const Counts& k, int mode, std::mt19937_64& rng,
-                                 bool by_cost = false) {
+std::vector<Trip> assign_singles(const Instance& I, const Counts& k, int mode, std::mt19937_64& rng) {
     std::vector<Trip> out;
     std::vector<std::vector<int>> ulist(static_cast<std::size_t>(I.ntype)), zlist(static_cast<std::size_t>(I.ntype));
     for (std::size_t p = 0; p < k.u.size(); ++p) {
@@ -544,8 +542,7 @@ std::vector<Trip> assign_singles(const Instance& I, const Counts& k, int mode, s
             std::vector<std::vector<double>> cost(U.size(), std::vector<double>(Z.size(), 0.0));
             for (std::size_t i = 0; i < U.size(); ++i) {
                 for (std::size_t j = 0; j < Z.size(); ++j) {
-                    cost[i][j] = by_cost ? I.single_c(U[i], Z[j]) + 1e-6 * I.single_d(U[i], Z[j])
-                                         : I.single_d(U[i], Z[j]) + 1e-6 * I.single_c(U[i], Z[j]);
+                    cost[i][j] = I.single_d(U[i], Z[j]) + 1e-6 * I.single_c(U[i], Z[j]);
                 }
             }
             const std::vector<int> col = hungarian(cost);
@@ -564,8 +561,7 @@ std::vector<Trip> assign_singles(const Instance& I, const Counts& k, int mode, s
                     std::vector<double> w(rem.size(), 0.0);
                     double total = 0.0;
                     for (std::size_t j = 0; j < rem.size(); ++j) {
-                        w[j] = by_cost ? 1.0 / (1.0 + I.single_c(p, rem[j]))
-                                       : 1.0 / std::max(1e-9, I.single_d(p, rem[j]));
+                        w[j] = 1.0 / std::max(1e-9, I.single_d(p, rem[j]));
                         total += w[j];
                     }
                     std::uniform_real_distribution<double> dist(0.0, total);
@@ -993,41 +989,12 @@ int roulette_index(const std::vector<T>& weights, std::mt19937_64& rng) {
 // Version 2 switches by name (see PalnsV2Options). Returns false for an unknown key;
 // std::sto* throw on a malformed value.
 bool set_v2_option(PalnsV2Options& o, const std::string& key, const std::string& value) {
-    if (key == "sel_cost") o.sel_cost = std::stoi(value) != 0;
-    else if (key == "fast_relocate") o.fast_relocate = std::stoi(value) != 0;
-    else if (key == "profile") o.profile = std::stoi(value) != 0;
-    else if (key == "diag") o.diag = std::stoi(value) != 0;
-    else if (key == "temp_spread") o.temp_spread = std::stod(value);
-    else if (key == "sel_cost_threads") o.sel_cost_threads = std::stoi(value);
-    else if (key == "focus_period") o.focus_period = std::stoi(value);
-    else if (key == "focus_routes") o.focus_routes = std::stoi(value);
-    else if (key == "focus_len") o.focus_len = std::stoi(value);
-    else if (key == "focus_kmax_ratio") o.focus_kmax_ratio = std::stod(value);
-    else if (key == "focus_rebuild") o.focus_rebuild = std::stod(value);
-    else if (key == "focus_deep") o.focus_deep = std::stoi(value);
-    else if (key == "focus_start_ratio") o.focus_start_ratio = std::stod(value);
-    else if (key == "lam_lo") o.lam_lo = std::stod(value);
-    else if (key == "lam_hi") o.lam_hi = std::stod(value);
-    else if (key == "lam_step") o.lam_step = std::stod(value);
-    else if (key == "lam_dstep") o.lam_dstep = std::stod(value);
-    else if (key == "lam_win") o.lam_win = std::stoi(value);
-    else if (key == "lam_sig") o.lam_sig = std::stoi(value);
-    else if (key == "lam_back") o.lam_back = std::stoi(value);
+    if (key == "lam_back") o.lam_back = std::stoi(value);
     else if (key == "lam_to") o.lam_to = std::stoi(value);
-    else if (key == "lam_tlo") o.lam_tlo = std::stod(value);
-    else if (key == "lam_thi") o.lam_thi = std::stod(value);
     else if (key == "p1_join") o.p1_join = std::stoi(value);
-    else if (key == "indep_adopt") o.indep_adopt = std::stoi(value);
-    else if (key == "reheat_max") o.reheat_max = std::stod(value);
-    else if (key == "reheat_step") o.reheat_step = std::stod(value);
-    else if (key == "reheat_after") o.reheat_after = std::stoi(value);
     else if (key == "rescue_p2") o.rescue_p2 = std::stoi(value) != 0;
-    else if (key == "pool_ratio") o.pool_ratio = std::stod(value);
-    else if (key == "pool_file") o.pool_file = value;
-    else if (key == "pool_delta") o.pool_delta = std::stod(value);
     else if (key == "recomb_tl") o.recomb_tl = std::stod(value);
     else if (key == "recomb_delta") o.recomb_delta = std::stod(value);
-    else if (key == "recomb_threads") o.recomb_threads = std::stoi(value);
     else return false;
     return true;
 }
@@ -1116,18 +1083,8 @@ struct PalnsV2IncumbentSolver::Impl {
     double cand_cost = 0.0;
     long long cand_gi = 0;
     Solution cand;
-    // Version 2: state of the focus blocks and counters (per thread).
-    struct Episode {
-        bool active = false;
-        std::vector<std::size_t> nb;   // routes of the thread solution that the episode works on
-        Solution cur, best;            // current and best feasible sub-solution (routes in the order of nb)
-        double fcur = 0.0, theta0 = 0.0;
-        long long len = 0, done = 0;
-    };
-    Episode ep;
-    std::vector<long long> focus_last;  // episode number at which each route was last the seed
-    long long focus_count = 0;
-    long long stat_focus_iters = 0, stat_focus_episodes = 0, stat_focus_best = 0, stat_global_best = 0;
+    // Version 2: counters (per thread).
+    long long stat_global_best = 0;
 
     void renumber(Solution& s) {
         std::unordered_map<int, int> remap;
@@ -1247,14 +1204,13 @@ struct PalnsV2IncumbentSolver::Impl {
             ok.push_back(idx);
         }
         if (ok.empty()) return -1;
-        const bool by_cost = phase == 2 && v2.sel_cost;
         if (mode == 0) {
             int best = ok.front();
             for (int idx : ok) {
                 const Composite& a = pool.comps[static_cast<std::size_t>(idx)];
                 const Composite& b = pool.comps[static_cast<std::size_t>(best)];
-                const double ka = by_cost ? a.c : a.d, kb = by_cost ? b.c : b.d;
-                const double ta = by_cost ? a.d : a.c, tb = by_cost ? b.d : b.c;
+                const double ka = a.d, kb = b.d;
+                const double ta = a.c, tb = b.c;
                 if (ka < kb - kEps || (std::fabs(ka - kb) <= kEps && ta < tb - kEps)) best = idx;
             }
             return best;
@@ -1266,7 +1222,7 @@ struct PalnsV2IncumbentSolver::Impl {
         std::vector<double> w(ok.size());
         for (std::size_t i = 0; i < ok.size(); ++i) {
             const Composite& cpi = pool.comps[static_cast<std::size_t>(ok[i])];
-            w[i] = by_cost ? 1.0 / (1.0 + cpi.c) : 1.0 / std::max(1e-9, cpi.d);
+            w[i] = 1.0 / std::max(1e-9, cpi.d);
         }
         return ok[static_cast<std::size_t>(roulette_index(w, rng))];
     }
@@ -1277,10 +1233,6 @@ struct PalnsV2IncumbentSolver::Impl {
         const InsEval e = eval_insertion(I, s, B, allow_split, phase2, lambda, nullptr);
         if (e.route < 0) {
             throw std::runtime_error("PALNS found no insertion position.");
-        }
-        if (v2.diag && phase == 2) {
-            if (t.composite) ++diag.comp_ins; else ++diag.single_ins;
-            if (e.split) ++diag.single_split;
         }
         apply_insertion(I, s, B, e);
     }
@@ -1353,10 +1305,6 @@ struct PalnsV2IncumbentSolver::Impl {
                 if (better) { pick = static_cast<int>(x); pick_eval = e; pk1 = k1; pk2 = k2; pk3 = k3; }
             }
             if (pick < 0) break;
-            if (v2.diag && phase == 2) {
-                if (cand[static_cast<std::size_t>(pick)].composite) ++diag.comp_ins; else ++diag.single_ins;
-                if (pick_eval.split) ++diag.single_split;
-            }
             apply_insertion(I, s, blocks[static_cast<std::size_t>(pick)], pick_eval);
             if (cnt != nullptr) consume_trip(cand[static_cast<std::size_t>(pick)], *cnt);
             done[static_cast<std::size_t>(pick)] = 1;
@@ -1550,7 +1498,7 @@ struct PalnsV2IncumbentSolver::Impl {
             }
         }
         std::mt19937_64& mrng = const_cast<std::mt19937_64&>(rng);
-        std::vector<Trip> singles = assign_singles(I, cnt, qop, mrng, phase == 2 && v2.sel_cost);
+        std::vector<Trip> singles = assign_singles(I, cnt, qop, mrng);
         out.insert(out.end(), singles.begin(), singles.end());
         return out;
     }
@@ -1593,7 +1541,7 @@ struct PalnsV2IncumbentSolver::Impl {
         bool left = false;
         for (int u : cnt.u) if (u > 0) { left = true; break; }
         if (left) {
-            std::vector<Trip> rest = assign_singles(I, cnt, 0, rng, phase == 2 && v2.sel_cost);
+            std::vector<Trip> rest = assign_singles(I, cnt, 0, rng);
             std::stable_sort(rest.begin(), rest.end(), [](const Trip& a, const Trip& b) { return a.d > b.d; });
             for (const Trip& t : rest) insert_trip(s, t, true, phase2);
         }
@@ -1843,69 +1791,11 @@ struct PalnsV2IncumbentSolver::Impl {
         return true;
     }
 
-    // Removes one skip trajectory and reinserts it at its best position
-    // (contiguous or split) over all routes. The route is modified in place
-    // and restored after each evaluation.
-    bool ls_relocate(Solution& s) {
-        const std::unordered_map<int, TrajLoc> trajs = collect_trajs(s);
-        std::vector<int> ids;
-        ids.reserve(trajs.size());
-        for (const auto& e : trajs) ids.push_back(e.first);
-        std::sort(ids.begin(), ids.end());
-        const double f0 = objective(s);
-        double best_f = f0 - 1e-9;
-        int best_id = -1;
-        for (int id : ids) {
-            const TrajLoc& t = trajs.at(id);
-            const std::size_t ri = static_cast<std::size_t>(t.route);
-            std::vector<Op> saved = s.routes[ri].ops;
-            std::vector<Op> kept;
-            kept.reserve(saved.size());
-            Op op_p, op_e, op_d;
-            for (const Op& o : saved) {
-                if (o.traj != id) { kept.push_back(o); continue; }
-                if (o.kind == kPick) op_p = o; else if (o.kind == kEmpty) op_e = o; else op_d = o;
-            }
-            set_route(s, ri, std::move(kept));
-            BlockInfo B = make_block(I, std::vector<Op>{op_p, op_e, op_d});
-            const InsEval e = eval_insertion(I, s, B, true, phase == 2, lambda, nullptr);
-            double f = kInf;
-            if (e.route >= 0) {
-                const double V = s.V + e.dV, D = s.D + e.dd, C = s.C + e.dc;
-                f = phase == 1 ? V + eta_cur * D : C + lambda * V;
-            }
-            if (f < best_f && opt.ls_first_improvement) {
-                apply_insertion(I, s, B, e);
-                refresh_totals(I, s);
-                return true;
-            }
-            set_route(s, ri, std::move(saved));
-            if (f < best_f) {
-                best_f = f;
-                best_id = id;
-            }
-        }
-        if (best_id < 0) return false;
-        const TrajLoc& t = trajs.at(best_id);
-        const std::size_t ri = static_cast<std::size_t>(t.route);
-        std::vector<Op> kept;
-        Op op_p, op_e, op_d;
-        for (const Op& o : s.routes[ri].ops) {
-            if (o.traj != best_id) { kept.push_back(o); continue; }
-            if (o.kind == kPick) op_p = o; else if (o.kind == kEmpty) op_e = o; else op_d = o;
-        }
-        set_route(s, ri, std::move(kept));
-        BlockInfo B = make_block(I, std::vector<Op>{op_p, op_e, op_d});
-        const InsEval e = eval_insertion(I, s, B, true, phase == 2, lambda, nullptr);
-        apply_insertion(I, s, B, e);
-        refresh_totals(I, s);
-        return true;
-    }
-
     // ---- version 2: trajectory relocate with a cache -----------------------
-    // The same move as ls_relocate (same order, same tie-breaking, so the same
-    // search), but the best insertion of a trajectory into a route is looked
-    // up when that route has not changed since it was last computed:
+    // The same move as the trajectory relocate of version 1 (same order, same
+    // tie-breaking, so the same search), but the best insertion of a trajectory
+    // into a route is looked up when that route has not changed since it was
+    // last computed:
     //   foreign route: depends on the route's operations (kind, class) and on
     //                  the classes of the trajectory;
     //   own route:     depends on the route's operations with their trajectory
@@ -2062,58 +1952,13 @@ struct PalnsV2IncumbentSolver::Impl {
         return true;
     }
 
-    // Version 2 profile (config profile=1): seconds and calls per part of an iteration.
-    struct Profile {
-        double ruin = 0.0, dswap = 0.0, blocks = 0.0, reloc = 0.0;
-        long long n_ruin = 0, n_dswap = 0, n_blocks = 0, n_reloc = 0, ls_calls = 0, ls_moves = 0;
-    };
-    Profile prof;
-
-    // Version 2 diagnostics (config diag=1): Phase II counters. Nothing here is
-    // read by the search.
-    struct Diag {
-        // per operator: uses, accepted candidates, candidates better than the
-        // current solution, new thread bests
-        long long d_use[5] = {}, d_acc[5] = {}, d_imp[5] = {}, d_best[5] = {};
-        long long q_use[3] = {}, q_acc[3] = {}, q_imp[3] = {}, q_best[3] = {};
-        long long r_use[5] = {}, r_acc[5] = {}, r_imp[5] = {}, r_best[5] = {};
-        // removal size (index min(k, 15)): uses and new thread bests
-        long long k_use[16] = {}, k_best[16] = {};
-        long long iters = 0, feasible = 0, seen_before = 0, accepted = 0, uphill = 0;
-        // repair: iterations with a composite candidate, composite candidates,
-        // trips inserted (composite, single, single in split form)
-        long long comp_iters = 0, comp_cand = 0, comp_ins = 0, single_ins = 0, single_split = 0;
-        // local search moves by type, and the stage after which a new thread
-        // best was first reached
-        long long ls_dswap = 0, ls_blocks[3] = {}, ls_reloc = 0;
-        long long best_after_repair = 0, best_after_light = 0, best_after_deep = 0;
-        long long lam_back = 0;  // returns to a feasible solution (option lam_back)
-        long long indep_adopt = 0;  // shared best taken by an independent thread (option indep_adopt)
-        struct Cycle {
-            double start = 0.0, low = kInf, gap_sum = 0.0, lam = 0.0;
-            long long n = 0, acc = 0, feas = 0, best = 0;
-            // current solution: iterations in which it is infeasible, their
-            // total excess, and the range of the penalty weight
-            long long cur_inf = 0;
-            double cur_inf_V = 0.0, lam_lo = kInf, lam_hi = 0.0;
-            double mul = 1.0;  // temperature multiplier of the cycle (option reheat_max)
-        };
-        std::vector<Cycle> cycles;
-    };
-    Diag diag;
-
-    // Version 2 diagnostics (config pool_ratio, pool_file): blocks of the good
-    // feasible Phase II candidates of this thread. Nothing here is read by the
-    // search. A block is keyed by its operations (kind, class), 3 bytes each.
-    struct PoolEvent {
-        int block = 0;
-        long long gi = 0;
-        double cost = 0.0;
-    };
+    // Version 2: blocks of the good feasible Phase II candidates of this thread,
+    // for the recombination step (see PalnsV2Options::pool_delta). Nothing here
+    // is read by the search. A block is keyed by its operations (kind, class),
+    // 3 bytes each.
     std::unordered_map<std::string, int> pool_index;
     std::vector<std::string> pool_keys;
     std::vector<double> pool_min;        // cheapest solution (original cost) containing the block
-    std::vector<PoolEvent> pool_events;  // block first seen, or its cheapest solution got cheaper (only with pool_file)
     long long pool_solutions = 0;
     // Pool of the last solve_fixed_k call, merged over the threads (master object only).
     std::vector<PoolBlock> last_pool;
@@ -2140,7 +1985,6 @@ struct PalnsV2IncumbentSolver::Impl {
                 const std::size_t id = static_cast<std::size_t>(it->second);
                 if (c < pool_min[id] - 1e-9) {
                     pool_min[id] = c;
-                    if (!v2.pool_file.empty()) pool_events.push_back({it->second, gi + 1, c});
                 }
                 key.clear();
             }
@@ -2150,61 +1994,10 @@ struct PalnsV2IncumbentSolver::Impl {
     void local_search(Solution& s, bool deep) {
         int moves = 0;
         bool improved = true;
-        if (v2.profile) {
-            ++prof.ls_calls;
-            auto timed = [&](double& acc, long long& n, bool r, Clock::time_point t) {
-                acc += std::chrono::duration<double>(Clock::now() - t).count();
-                ++n;
-                return r;
-            };
-            while (improved && moves < 200 && !timed_out()) {
-                improved = false;
-                auto t = Clock::now();
-                bool hit = timed(prof.dswap, prof.n_dswap, ls_dswap(s), t);
-                for (int kind = 0; kind < 3 && !hit; ++kind) {
-                    t = Clock::now();
-                    hit = timed(prof.blocks, prof.n_blocks, ls_blocks(s, kind), t);
-                }
-                if (!hit && deep) {
-                    t = Clock::now();
-                    hit = timed(prof.reloc, prof.n_reloc,
-                                v2.fast_relocate ? ls_relocate_cached(s) : ls_relocate(s), t);
-                }
-                if (hit) {
-                    improved = true;
-                    ++moves;
-                    ++prof.ls_moves;
-                }
-            }
-            refresh_totals(I, s);
-            return;
-        }
-        if (v2.diag && phase == 2) {
-            // same moves in the same order as below, counted by type
-            while (improved && moves < 200 && !timed_out()) {
-                improved = false;
-                bool hit = ls_dswap(s);
-                if (hit) ++diag.ls_dswap;
-                for (int kind = 0; kind < 3 && !hit; ++kind) {
-                    hit = ls_blocks(s, kind);
-                    if (hit) ++diag.ls_blocks[kind];
-                }
-                if (!hit && deep) {
-                    hit = v2.fast_relocate ? ls_relocate_cached(s) : ls_relocate(s);
-                    if (hit) ++diag.ls_reloc;
-                }
-                if (hit) {
-                    improved = true;
-                    ++moves;
-                }
-            }
-            refresh_totals(I, s);
-            return;
-        }
         while (improved && moves < 200 && !timed_out()) {
             improved = false;
             if (ls_dswap(s) || ls_blocks(s, 0) || ls_blocks(s, 1) || ls_blocks(s, 2) ||
-                (deep && (v2.fast_relocate ? ls_relocate_cached(s) : ls_relocate(s)))) {
+                (deep && ls_relocate_cached(s))) {
                 improved = true;
                 ++moves;
             }
@@ -2291,80 +2084,6 @@ struct PalnsV2IncumbentSolver::Impl {
         return out;
     }
 
-    // Focus neighbourhood (version 2): a seed route (the routes take turns; ties
-    // are broken at random) and focus_routes - 1 other routes, chosen with a
-    // bias towards routes whose service locations are close to those of the
-    // seed route (mean nearest travel time).
-    std::vector<std::size_t> focus_neighbourhood(const Solution& s, std::mt19937_64& rng) {
-        std::uniform_real_distribution<double> U01(0.0, 1.0);
-        const std::size_t R = s.routes.size();
-        if (focus_last.size() != R) focus_last.assign(R, -1);
-        long long oldest = std::numeric_limits<long long>::max();
-        for (long long v : focus_last) oldest = std::min(oldest, v);
-        std::vector<std::size_t> ties;
-        for (std::size_t r = 0; r < R; ++r) if (focus_last[r] == oldest) ties.push_back(r);
-        std::uniform_int_distribution<std::size_t> d(0, ties.size() - 1U);
-        const std::size_t seed = ties[d(rng)];
-        focus_last[seed] = focus_count++;
-        const int m = std::max(1, std::min<int>(v2.focus_routes, static_cast<int>(R)));
-        std::vector<int> ls;
-        for (const Op& o : s.routes[seed].ops) ls.push_back(I.loc(o));
-        std::vector<std::pair<double, std::size_t>> cand;
-        for (std::size_t r = 0; r < R; ++r) {
-            if (r == seed) continue;
-            double sum = 0.0;
-            for (int x : ls) {
-                double best = kInf;
-                for (const Op& o : s.routes[r].ops) {
-                    const int l = I.loc(o);
-                    best = std::min(best, std::min(I.tt(x, l), I.tt(l, x)));
-                }
-                if (best < kInf) sum += best;
-            }
-            cand.push_back({ls.empty() ? 0.0 : sum / static_cast<double>(ls.size()), r});
-        }
-        std::sort(cand.begin(), cand.end());
-        std::vector<std::size_t> out{seed};
-        while (static_cast<int>(out.size()) < m && !cand.empty()) {
-            const double y = U01(rng);
-            std::size_t idx = static_cast<std::size_t>(y * y * static_cast<double>(cand.size()));
-            if (idx >= cand.size()) idx = cand.size() - 1U;
-            out.push_back(cand[idx].second);
-            cand.erase(cand.begin() + static_cast<std::ptrdiff_t>(idx));
-        }
-        return out;
-    }
-
-    // Starts a focus episode on the thread solution S (feasible): at most
-    // max_len iterations on focus_routes routes, all other routes fixed.
-    void start_episode(const Solution& S, long long max_len, double start_ratio, std::mt19937_64& rng) {
-        ep.nb = focus_neighbourhood(S, rng);
-        ep.cur.routes.clear();
-        for (std::size_t r : ep.nb) ep.cur.routes.push_back(S.routes[r]);
-        refresh_totals(I, ep.cur);
-        ep.best = ep.cur;
-        ep.fcur = objective(ep.cur);
-        ep.theta0 = std::max(1e-9, start_ratio * std::max(ep.fcur, 1e-9) / std::log(2.0));
-        ep.len = std::max<long long>(1, std::min<long long>(std::max(1, v2.focus_len), max_len));
-        ep.done = 0;
-        ep.active = true;
-        ++stat_focus_episodes;
-    }
-
-    // Ends the episode: its best sub-solution replaces the routes of S.
-    void finish_episode(Solution& S, Solution& best, double& fS, double& fBest, SearchState& st) {
-        for (std::size_t i = 0; i < ep.nb.size(); ++i) S.routes[ep.nb[i]] = ep.best.routes[i];
-        refresh_totals(I, S);
-        fS = objective(S);
-        if (S.V <= kEps && S.C < fBest - 1e-9) {
-            best = S;
-            fBest = S.C;
-            record(st, S);
-            ++stat_focus_best;
-        }
-        ep.active = false;
-    }
-
     long long run_phase_impl(int which, Solution start, SearchState& st, std::mt19937_64& rng) {
         phase = which;
         eta_cur = opt.eta;
@@ -2377,20 +2096,17 @@ struct PalnsV2IncumbentSolver::Impl {
         Solution best = start;
         double fS = objective(S);
         double fBest = which == 1 ? fS : start.C;
-        const bool pool_on = which == 2 && (v2.pool_ratio > 0.0 || v2.pool_delta > 0.0);
+        const bool pool_on = which == 2 && v2.pool_delta > 0.0;
         if (pool_on && start.V <= kEps) pool_note(start);
         int lam_window = 0, lam_feasible = 0;
-        const double lam_min = v2.lam_lo > 0.0 ? v2.lam_lo * lambda : 1e-3;
-        const double lam_max = std::max(lam_min, v2.lam_hi > 0.0 ? v2.lam_hi * lambda : 1e6);
-        const double lam_step = v2.lam_step > 1.0 ? v2.lam_step : 1.5;
-        const double lam_dstep = v2.lam_dstep > 1.0 ? v2.lam_dstep : lam_step;
-        const int lam_win = std::max(1, v2.lam_win);
+        // Penalty weight control of version 1: every 100 iterations, times 1.5 if
+        // fewer than 40% of the candidates were feasible, divided by 1.5 if more
+        // than 60%, within [1e-3, 1e6].
+        const double lam_min = 1e-3;
+        const double lam_max = 1e6;
+        const double lam_step = 1.5;
+        const int lam_win = 100;
         long long inf_run = 0;  // consecutive iterations with an infeasible current solution
-        const bool reheat = which == 2 && v2.reheat_max > 1.0;
-        double theta_mul = 1.0;       // temperature multiplier of the current cycle
-        double cycle_best = fBest;    // thread best at the start of the current cycle
-        int stale_cycles = 0;
-        int own_stale = 0;            // cycles in a row without a new best of this thread
         const bool keep_feas = which == 2 && v2.lam_back > 0 && v2.lam_to == 1;
         Solution Sfeas;         // last feasible current solution (lam_to=1)
         bool has_feas = false;
@@ -2414,8 +2130,6 @@ struct PalnsV2IncumbentSolver::Impl {
         std::uniform_real_distribution<double> U01(0.0, 1.0);
         long long iter = 0;
         bool rescue = false;
-        const bool focus_enabled = which == 2 && v2.focus_period > 0 && S.routes.size() >= 2U;
-        ep.active = false;
         while (!timed_out()) {
             if (which == 1 && st.have_feasible) break;
             ++iter;
@@ -2436,248 +2150,121 @@ struct PalnsV2IncumbentSolver::Impl {
             int k = kdist(rng);
             double reward = 0.0;
             double cand_V = 0.0;  // duration excess of the candidate of this iteration
-            // Version 2: every focus_period-th SA cycle of Phase II is a focus cycle.
-            const bool focus_cycle = focus_enabled && !rescue &&
-                (((iter - 1) / cycle) % v2.focus_period) == v2.focus_period - 1;
-            if (focus_cycle) {
-                if (!ep.active) {
-                    if (S.V > kEps) { S = best; fS = objective(S); }
-                    start_episode(S, cycle - ((iter - 1) % cycle),
-                                  v2.focus_start_ratio >= 0.0 ? v2.focus_start_ratio : start_ratio, rng);
+            Solution sp = S;
+            int ref_class = -1;
+            // Rescue: operate on a sub-solution of a few routes, the others fixed.
+            std::vector<std::size_t> nb;
+            Solution sub;
+            if (rescue) {
+                // keep a neighbourhood for 100 iterations (intensification)
+                if (rescue_nb_left <= 0 || rescue_nb.empty()) {
+                    rescue_nb = rescue_neighbourhood(S, rng);
+                    rescue_nb_left = 100;
                 }
-                Solution sps = ep.cur;
-                {
-                    std::size_t nops = 0;
-                    for (const Route& r : sps.routes) nops += r.ops.size();
-                    const int nsub = static_cast<int>(nops / 3U);
-                    const int ksub = std::max(1, std::max(opt.kmax_min,
-                        static_cast<int>(std::ceil(v2.focus_kmax_ratio * static_cast<double>(nsub)))));
-                    std::uniform_int_distribution<int> kd(1, ksub);
-                    k = kd(rng);
-                    if (U01(rng) < v2.focus_rebuild) k = std::numeric_limits<int>::max();
-                }
-                int ref_class = -1;
-                const std::unordered_set<int> rem = destroy(sps, dop, k, rng, ref_class);
-                Counts cnt{std::vector<int>(static_cast<std::size_t>(npc()), 0),
-                           std::vector<int>(static_cast<std::size_t>(ndc()), 0)};
-                remove_trajs(I, sps, rem, cnt);
-                std::vector<Trip> cand = select_candidates(cnt, qop, rng);
-                repair(sps, std::move(cand), cnt, rop, ref_class, rng);
-                local_search(sps, false);
-                double fs = objective(sps);
-                const double fb = objective(ep.best);
-                if (v2.focus_deep == 1 ||
-                    (v2.focus_deep == 2 && fs <= fb + opt.ls_deep_ratio * std::fabs(fb) + 1e-9)) {
-                    local_search(sps, true);
-                    fs = objective(sps);
-                }
-                cand_V = sps.V;
-                const double delta = fs - ep.fcur;
-                bool accept = delta < -1e-12;
-                if (!accept) {
-                    const double pos = static_cast<double>(ep.done) / static_cast<double>(ep.len);
-                    const double theta = ep.theta0 * std::pow(opt.sa_end_ratio, pos);
+                --rescue_nb_left;
+                nb = rescue_nb;
+                for (std::size_t r : nb) sub.routes.push_back(S.routes[r]);
+                refresh_totals(I, sub);
+                if (U01(rng) < 1.0 / 3.0) k = std::numeric_limits<int>::max();  // rebuild all
+            }
+            Solution& tgt = rescue ? sub : sp;
+            const std::unordered_set<int> rem = destroy(tgt, dop, k, rng, ref_class);
+            Counts cnt{std::vector<int>(static_cast<std::size_t>(npc()), 0),
+                       std::vector<int>(static_cast<std::size_t>(ndc()), 0)};
+            remove_trajs(I, tgt, rem, cnt);
+            std::vector<Trip> cand = select_candidates(cnt, qop, rng);
+            repair(tgt, std::move(cand), cnt, rop, ref_class, rng);
+            if (rescue) {
+                local_search(sub, false);
+                for (std::size_t i = 0; i < nb.size(); ++i) sp.routes[nb[i]] = sub.routes[i];
+                refresh_totals(I, sp);
+            }
+            bool run_ls = true;
+            if (opt.ls_frequency == PalnsLsFrequency::OnImprove) run_ls = objective(sp) < fS - 1e-9;
+            else if (opt.ls_frequency == PalnsLsFrequency::EveryM) run_ls = (iter % std::max(1, opt.ls_every_m)) == 0;
+            if (run_ls) {
+                local_search(sp, false);
+                const double fl = objective(sp);
+                const double ref = which == 1 ? fBest : fBest;
+                if (fl <= ref + opt.ls_deep_ratio * std::fabs(ref) + 1e-9) local_search(sp, true);
+            }
+            refresh_totals(I, sp);
+            record(st, sp);
+            cand_V = sp.V;
+            if (pool_on && sp.V <= kEps &&
+                sp.C <= fBest + v2.pool_delta + 1e-9) pool_note(sp);
+            const double fsp = objective(sp);
+            {
+                const double delta = fsp - fS;
+                bool accept = false;
+                if (delta < -1e-12) {
+                    accept = true;
+                } else {
+                    const double pos = static_cast<double>((iter - 1) % cycle) / static_cast<double>(cycle);
+                    const double theta = theta0 * std::pow(opt.sa_end_ratio, pos);
                     accept = U01(rng) < std::exp(-delta / std::max(theta, 1e-300));
                 }
-                if (sps.V <= kEps && sps.C < ep.best.C - 1e-9) {
-                    ep.best = sps;
+                const std::uint64_t h = solution_hash(sp);
+                const bool is_new = seen.find(h) == seen.end();
+                const bool new_best = which == 1
+                    ? (oscillate ? (sp.V < best.V - kEps || (std::fabs(sp.V - best.V) <= kEps && sp.D < best.D - kEps))
+                                 : (fsp < fBest - 1e-9))
+                    : (sp.V <= kEps && sp.C < fBest - 1e-9);
+                if (new_best) {
+                    best = sp;
+                    fBest = which == 1 ? fsp : sp.C;
                     reward = 10.0;
-                } else if (delta < -1e-9) {
-                    reward = 3.0;
+                    if (which == 2) {
+                        publish(sp);
+                        ++stat_global_best;
+                    }
+                    if (rescue) { rbest = best; rbest_has = true; }
+                } else {
+                    if (fsp < fS - 1e-9) reward = 3.0;
+                    else if (accept && is_new) reward = 1.0;
                 }
                 if (accept) {
-                    ep.cur = std::move(sps);
-                    ep.fcur = fs;
-                }
-                ++ep.done;
-                ++stat_focus_iters;
-                if (ep.done >= ep.len) finish_episode(S, best, fS, fBest, st);
-            } else {
-                Solution sp = S;
-                int ref_class = -1;
-                // Rescue: operate on a sub-solution of a few routes, the others fixed.
-                std::vector<std::size_t> nb;
-                Solution sub;
-                if (rescue) {
-                    // keep a neighbourhood for 100 iterations (intensification)
-                    if (rescue_nb_left <= 0 || rescue_nb.empty()) {
-                        rescue_nb = rescue_neighbourhood(S, rng);
-                        rescue_nb_left = 100;
+                    if (keep_feas && S.V <= kEps && sp.V > kEps) {
+                        Sfeas = S;
+                        has_feas = true;
                     }
-                    --rescue_nb_left;
-                    nb = rescue_nb;
-                    for (std::size_t r : nb) sub.routes.push_back(S.routes[r]);
-                    refresh_totals(I, sub);
-                    if (U01(rng) < 1.0 / 3.0) k = std::numeric_limits<int>::max();  // rebuild all
-                }
-                Solution& tgt = rescue ? sub : sp;
-                const auto ruin_t0 = v2.profile ? Clock::now() : Clock::time_point();
-                const std::unordered_set<int> rem = destroy(tgt, dop, k, rng, ref_class);
-                Counts cnt{std::vector<int>(static_cast<std::size_t>(npc()), 0),
-                           std::vector<int>(static_cast<std::size_t>(ndc()), 0)};
-                remove_trajs(I, tgt, rem, cnt);
-                std::vector<Trip> cand = select_candidates(cnt, qop, rng);
-                const bool dg = v2.diag && which == 2 && !rescue;
-                if (dg) {
-                    long long nc = 0;
-                    for (const Trip& t : cand) if (t.composite) ++nc;
-                    diag.comp_cand += nc;
-                    if (nc > 0) ++diag.comp_iters;
-                }
-                repair(tgt, std::move(cand), cnt, rop, ref_class, rng);
-                const bool dg_rep = dg && sp.V <= kEps && sp.C < fBest - 1e-9;
-                bool dg_light = false;
-                if (v2.profile) {
-                    prof.ruin += std::chrono::duration<double>(Clock::now() - ruin_t0).count();
-                    ++prof.n_ruin;
-                }
-                if (rescue) {
-                    local_search(sub, false);
-                    for (std::size_t i = 0; i < nb.size(); ++i) sp.routes[nb[i]] = sub.routes[i];
-                    refresh_totals(I, sp);
-                }
-                bool run_ls = true;
-                if (opt.ls_frequency == PalnsLsFrequency::OnImprove) run_ls = objective(sp) < fS - 1e-9;
-                else if (opt.ls_frequency == PalnsLsFrequency::EveryM) run_ls = (iter % std::max(1, opt.ls_every_m)) == 0;
-                if (run_ls) {
-                    local_search(sp, false);
-                    const double fl = objective(sp);
-                    if (dg) dg_light = sp.V <= kEps && sp.C < fBest - 1e-9;
-                    const double ref = which == 1 ? fBest : fBest;
-                    if (fl <= ref + opt.ls_deep_ratio * std::fabs(ref) + 1e-9) local_search(sp, true);
-                }
-                refresh_totals(I, sp);
-                record(st, sp);
-                cand_V = sp.V;
-                if (pool_on && sp.V <= kEps &&
-                    sp.C <= std::max(fBest * (1.0 + v2.pool_ratio), fBest + v2.pool_delta) + 1e-9) pool_note(sp);
-                const double fsp = objective(sp);
-                {
-                    const double delta = fsp - fS;
-                    bool accept = false;
-                    if (delta < -1e-12) {
-                        accept = true;
-                    } else {
-                        const double pos = static_cast<double>((iter - 1) % cycle) / static_cast<double>(cycle);
-                        const double theta = theta0 * theta_mul * std::pow(opt.sa_end_ratio, pos);
-                        accept = U01(rng) < std::exp(-delta / std::max(theta, 1e-300));
-                    }
-                    const std::uint64_t h = solution_hash(sp);
-                    const bool is_new = seen.find(h) == seen.end();
-                    const bool new_best = which == 1
-                        ? (oscillate ? (sp.V < best.V - kEps || (std::fabs(sp.V - best.V) <= kEps && sp.D < best.D - kEps))
-                                     : (fsp < fBest - 1e-9))
-                        : (sp.V <= kEps && sp.C < fBest - 1e-9);
-                    if (new_best) {
-                        best = sp;
-                        fBest = which == 1 ? fsp : sp.C;
-                        reward = 10.0;
-                        if (which == 2) {
-                            publish(sp);
-                            ++stat_global_best;
-                        }
-                        if (rescue) { rbest = best; rbest_has = true; }
-                    } else {
-                        if (fsp < fS - 1e-9) reward = 3.0;
-                        else if (accept && is_new) reward = 1.0;
-                    }
-                    if (dg) {
-                        const std::size_t di = static_cast<std::size_t>(dop), qi = static_cast<std::size_t>(qop),
-                                          ri = static_cast<std::size_t>(rop);
-                        const std::size_t ki = static_cast<std::size_t>(std::min(k, 15));
-                        const bool imp = fsp < fS - 1e-9;
-                        ++diag.iters; ++diag.d_use[di]; ++diag.q_use[qi]; ++diag.r_use[ri]; ++diag.k_use[ki];
-                        if (sp.V <= kEps) ++diag.feasible;
-                        if (!is_new) ++diag.seen_before;
-                        if (accept) { ++diag.accepted; ++diag.d_acc[di]; ++diag.q_acc[qi]; ++diag.r_acc[ri]; }
-                        if (accept && delta > 1e-12) ++diag.uphill;
-                        if (imp) { ++diag.d_imp[di]; ++diag.q_imp[qi]; ++diag.r_imp[ri]; }
-                        if (new_best) {
-                            ++diag.d_best[di]; ++diag.q_best[qi]; ++diag.r_best[ri]; ++diag.k_best[ki];
-                            if (dg_rep) ++diag.best_after_repair;
-                            else if (dg_light) ++diag.best_after_light;
-                            else ++diag.best_after_deep;
-                        }
-                        const std::size_t ci = static_cast<std::size_t>((iter - 1) / cycle);
-                        if (diag.cycles.size() <= ci) {
-                            diag.cycles.resize(ci + 1U);
-                            diag.cycles[ci].start = fBest;
-                        }
-                        Diag::Cycle& cy = diag.cycles[ci];
-                        ++cy.n;
-                        if (sp.V <= kEps) { ++cy.feas; cy.low = std::min(cy.low, sp.C); }
-                        if (accept) ++cy.acc;
-                        if (new_best) ++cy.best;
-                        cy.gap_sum += ((accept ? fsp : fS) - fBest) / std::max(1.0, fBest);
-                        cy.lam = lambda;
-                        cy.mul = theta_mul;
-                        cy.lam_lo = std::min(cy.lam_lo, lambda);
-                        cy.lam_hi = std::max(cy.lam_hi, lambda);
-                        const double cur_V = accept ? sp.V : S.V;
-                        if (cur_V > kEps) { ++cy.cur_inf; cy.cur_inf_V += cur_V; }
-                    }
-                    if (accept) {
-                        if (keep_feas && S.V <= kEps && sp.V > kEps) {
-                            Sfeas = S;
-                            has_feas = true;
-                        }
-                        S = sp;
-                        fS = fsp;
-                        seen.insert(h);
-                    }
+                    S = sp;
+                    fS = fsp;
+                    seen.insert(h);
                 }
             }
             if (which == 2) {
                 ++lam_window;
-                const double cur_V = ep.active ? ep.cur.V : S.V;
-                if ((v2.lam_sig == 1 ? cur_V : cand_V) <= kEps) ++lam_feasible;
+                if (cand_V <= kEps) ++lam_feasible;
                 if (lam_window >= lam_win) {
                     const double frac = static_cast<double>(lam_feasible) / lam_window;
-                    if (frac < v2.lam_tlo) lambda = std::min(lam_max, lambda * lam_step);
-                    else if (frac > v2.lam_thi) lambda = std::max(lam_min, lambda / lam_dstep);
+                    if (frac < 0.4) lambda = std::min(lam_max, lambda * lam_step);
+                    else if (frac > 0.6) lambda = std::max(lam_min, lambda / lam_step);
                     lam_window = 0;
                     lam_feasible = 0;
                     fS = objective(S);
-                    if (ep.active) ep.fcur = objective(ep.cur);
                 }
-                if (v2.lam_back > 0 && !ep.active) {
+                if (v2.lam_back > 0) {
                     inf_run = S.V > kEps ? inf_run + 1 : 0;
                     if (inf_run >= v2.lam_back) {
                         S = (keep_feas && has_feas) ? Sfeas : best;
                         fS = objective(S);
                         inf_run = 0;
-                        if (v2.diag) ++diag.lam_back;
                     }
                 }
             }
             const bool cycle_end = iter % cycle == 0;
-            if (which == 2 && cycle_end) own_stale = fBest < cycle_best - 1e-9 ? 0 : own_stale + 1;
             if (opt.sa_restart_best && cycle_end) {
                 if (which == 2) {
                     Solution g;
-                    const bool force = v2.indep_adopt > 0 && own_stale >= v2.indep_adopt;
-                    if (adopt(g, fBest, force)) {
+                    if (adopt(g, fBest, false)) {
                         best = g;
                         fBest = g.C;
                         record(st, g);
-                        own_stale = 0;
-                        if (v2.diag && !adopt_shared) ++diag.indep_adopt;
                     }
                 }
                 S = best;
                 fS = objective(S);
-            }
-            if (which == 2 && cycle_end) {
-                if (reheat) {
-                    if (fBest < cycle_best - 1e-9) {
-                        theta_mul = 1.0;
-                        stale_cycles = 0;
-                    } else if (++stale_cycles >= std::max(1, v2.reheat_after)) {
-                        theta_mul = std::min(v2.reheat_max, theta_mul + v2.reheat_step);
-                        stale_cycles = 0;
-                    }
-                }
-                cycle_best = fBest;
             }
             sd[static_cast<std::size_t>(dop)] += reward; ++nd[static_cast<std::size_t>(dop)];
             sq[static_cast<std::size_t>(qop)] += reward; ++nq[static_cast<std::size_t>(qop)];
@@ -2738,7 +2325,6 @@ struct PalnsV2IncumbentSolver::Impl {
                 }
             }
         }
-        if (ep.active) finish_episode(S, best, fS, fBest, st);  // stopped in the middle of an episode
         return iter;
     }
 
@@ -3031,15 +2617,6 @@ PalnsFixedKResult PalnsV2IncumbentSolver::solve_fixed_k(int vehicle_count, doubl
         if (O.portfolio_mixed_cycles && ((i / 2) % 2) == 0) {
             w->opt.sa_cycle_iters_phase2 = 0;
         }
-        // Version 2: portfolio over annealing temperatures and selection rules.
-        if (impl_->v2.temp_spread > 1.0) {
-            const double f = impl_->v2.temp_spread;
-            const double mul[3] = {1.0, f, 1.0 / f};
-            w->opt.sa_start_ratio = O.sa_start_ratio * mul[i % 3];
-        }
-        if (impl_->v2.sel_cost_threads > 0) {
-            w->v2.sel_cost = (i % impl_->v2.sel_cost_threads) == impl_->v2.sel_cost_threads - 1;
-        }
         workers.push_back(std::move(w));
     }
 
@@ -3222,56 +2799,12 @@ PalnsFixedKResult PalnsV2IncumbentSolver::solve_fixed_k(int vehicle_count, doubl
             << " rescue_start_violation=" << workers[static_cast<std::size_t>(i)]->rescue_start_V
             << " barrier_wait_seconds=" << workers[static_cast<std::size_t>(i)]->wait_seconds << '\n';
         log << "[palns-v2-thread] index=" << i
-            << " focus_iters=" << workers[static_cast<std::size_t>(i)]->stat_focus_iters
-            << " focus_episodes=" << workers[static_cast<std::size_t>(i)]->stat_focus_episodes
-            << " focus_best=" << workers[static_cast<std::size_t>(i)]->stat_focus_best
             << " global_best=" << workers[static_cast<std::size_t>(i)]->stat_global_best
             << " reloc_hit=" << workers[static_cast<std::size_t>(i)]->stat_reloc_hit
             << " reloc_miss=" << workers[static_cast<std::size_t>(i)]->stat_reloc_miss << '\n';
-        if (impl_->v2.profile) {
-            const auto& pf = workers[static_cast<std::size_t>(i)]->prof;
-            log << "[palns-v2-profile] index=" << i
-                << " ruin_s=" << pf.ruin << " ruin_n=" << pf.n_ruin
-                << " dswap_s=" << pf.dswap << " dswap_n=" << pf.n_dswap
-                << " blocks_s=" << pf.blocks << " blocks_n=" << pf.n_blocks
-                << " reloc_s=" << pf.reloc << " reloc_n=" << pf.n_reloc
-                << " ls_calls=" << pf.ls_calls << " ls_moves=" << pf.ls_moves
-                << " wait_s=" << workers[static_cast<std::size_t>(i)]->wait_seconds << '\n';
-        }
-        if (impl_->v2.diag) {
-            const auto& dg = workers[static_cast<std::size_t>(i)]->diag;
-            auto arr = [&](const char* name, const long long* v, int n) {
-                log << ' ' << name << '=';
-                for (int x = 0; x < n; ++x) log << (x ? "," : "") << v[x];
-            };
-            log << "[palns-v2-diag] index=" << i
-                << " iters=" << dg.iters << " feasible=" << dg.feasible << " seen_before=" << dg.seen_before
-                << " accepted=" << dg.accepted << " uphill=" << dg.uphill
-                << " comp_iters=" << dg.comp_iters << " comp_cand=" << dg.comp_cand << " comp_ins=" << dg.comp_ins
-                << " single_ins=" << dg.single_ins << " single_split=" << dg.single_split
-                << " ls_dswap=" << dg.ls_dswap << " ls_block_swap=" << dg.ls_blocks[0]
-                << " ls_block_relocate=" << dg.ls_blocks[1] << " ls_block_move=" << dg.ls_blocks[2]
-                << " ls_traj_relocate=" << dg.ls_reloc
-                << " best_after_repair=" << dg.best_after_repair << " best_after_light=" << dg.best_after_light
-                << " best_after_deep=" << dg.best_after_deep << " lam_back=" << dg.lam_back
-                << " indep_adopt=" << dg.indep_adopt;
-            arr("d_use", dg.d_use, 5); arr("d_acc", dg.d_acc, 5); arr("d_imp", dg.d_imp, 5); arr("d_best", dg.d_best, 5);
-            arr("q_use", dg.q_use, 3); arr("q_acc", dg.q_acc, 3); arr("q_imp", dg.q_imp, 3); arr("q_best", dg.q_best, 3);
-            arr("r_use", dg.r_use, 5); arr("r_acc", dg.r_acc, 5); arr("r_imp", dg.r_imp, 5); arr("r_best", dg.r_best, 5);
-            arr("k_use", dg.k_use, 16); arr("k_best", dg.k_best, 16);
-            log << '\n' << "[palns-v2-diag-cycles] index=" << i << " cycles=";
-            for (const auto& cy : dg.cycles) {
-                log << cy.start << ':' << (std::isfinite(cy.low) ? cy.low : -1.0) << ':' << cy.n << ':' << cy.acc << ':'
-                    << cy.feas << ':' << cy.best << ':' << (cy.n > 0 ? cy.gap_sum / static_cast<double>(cy.n) : 0.0)
-                    << ':' << cy.lam << ':' << cy.cur_inf << ':'
-                    << (cy.cur_inf > 0 ? cy.cur_inf_V / static_cast<double>(cy.cur_inf) : 0.0) << ':'
-                    << (std::isfinite(cy.lam_lo) ? cy.lam_lo : 0.0) << ':' << cy.lam_hi << ':' << cy.mul << ';';
-            }
-            log << '\n';
-        }
     }
     log << "[palns-v2] config=" << (impl_->v2.config_text.empty() ? "(none)" : impl_->v2.config_text) << '\n';
-    if (impl_->v2.pool_ratio > 0.0 || impl_->v2.pool_delta > 0.0) {
+    if (impl_->v2.pool_delta > 0.0) {
         // Pool for the recombination step: the blocks of all threads with the
         // cheapest solution that contained each, as (kind, location, type).
         {
@@ -3310,57 +2843,14 @@ PalnsFixedKResult PalnsV2IncumbentSolver::solve_fixed_k(int vehicle_count, doubl
                 }
                 impl_->last_pool.push_back(std::move(block));
             }
-            log << "[palns-v2-pool] ratio=" << impl_->v2.pool_ratio << " delta=" << impl_->v2.pool_delta
+            log << "[palns-v2-pool] delta=" << impl_->v2.pool_delta
                 << " merged_blocks=" << impl_->last_pool.size() << '\n';
-        }
-        // Block pool (diagnostics). Lines of the file, tab separated:
-        //   K  vehicles requests threads ratio
-        //   PC class location facility type requests...   (pickup class; requests 0-based)
-        //   DC class location type requests...            (delivery class)
-        //   TR iteration seconds cost                     (shared best)
-        //   CL iteration seconds                          (iteration clock)
-        //   B  thread block ops...                        (P<class>, E<class>, D<class>)
-        //   V  thread block iteration cost                (cheapest solution containing the block so far)
-        const Instance& I = impl_->I;
-        std::ofstream pf;
-        if (!impl_->v2.pool_file.empty()) pf.open(impl_->v2.pool_file, std::ios::app);
-        if (pf) {
-            pf.precision(10);
-            pf << "K\t" << vehicle_count << '\t' << I.n << '\t' << nthreads << '\t' << impl_->v2.pool_ratio << '\n';
-            for (std::size_t p = 0; p < I.pa.size(); ++p) {
-                pf << "PC\t" << p << '\t' << I.pa[p] << '\t' << I.pb[p] << '\t' << I.pf[p];
-                for (int r : I.pmem[p]) pf << '\t' << r;
-                pf << '\n';
-            }
-            for (std::size_t q = 0; q < I.dw.size(); ++q) {
-                pf << "DC\t" << q << '\t' << I.dw[q] << '\t' << I.df[q];
-                for (int r : I.dmem[q]) pf << '\t' << r;
-                pf << '\n';
-            }
-            for (const auto& p : trace) pf << "TR\t" << std::get<0>(p) << '\t' << std::get<1>(p) << '\t' << std::get<2>(p) << '\n';
-            for (const auto& p : clock) pf << "CL\t" << p.first << '\t' << p.second << '\n';
         }
         for (int i = 0; i < nthreads; ++i) {
             const Impl& w = *workers[static_cast<std::size_t>(i)];
             log << "[palns-v2-pool] index=" << i << " solutions=" << w.pool_solutions
-                << " blocks=" << w.pool_keys.size() << " events=" << w.pool_events.size() << '\n';
-            if (!pf) continue;
-            for (std::size_t b = 0; b < w.pool_keys.size(); ++b) {
-                const std::string& key = w.pool_keys[b];
-                pf << "B\t" << i << '\t' << b;
-                for (std::size_t x = 0; x + 2U < key.size(); x += 3U) {
-                    const int kind = static_cast<unsigned char>(key[x]);
-                    const int cls = static_cast<unsigned char>(key[x + 1U]) |
-                        (static_cast<unsigned char>(key[x + 2U]) << 8);
-                    pf << '\t' << (kind == kPick ? 'P' : (kind == kEmpty ? 'E' : 'D')) << cls;
-                }
-                pf << '\n';
-            }
-            for (const auto& e : w.pool_events) {
-                pf << "V\t" << i << '\t' << e.block << '\t' << e.gi << '\t' << e.cost << '\n';
-            }
+                << " blocks=" << w.pool_keys.size() << '\n';
         }
-        if (!impl_->v2.pool_file.empty() && !pf) log << "[palns-v2-pool] cannot write " << impl_->v2.pool_file << '\n';
     }
     log << "[palns-shared-trace] k=" << vehicle_count << " improvements=" << trace.size() << " points=";
     for (const auto& p : trace) log << std::get<0>(p) << ':' << std::get<1>(p) << ':' << std::get<2>(p) << ';';
