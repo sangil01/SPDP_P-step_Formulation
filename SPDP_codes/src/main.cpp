@@ -3404,9 +3404,14 @@ int main(int argc, char** argv) {
             (args.initial_incumbent_enable == 1 || args.add_vi_44 == 1 ||
              args.add_fixed_vehicle_number == 1)) {
             spdp::VI44KMinOptions k_min_options = make_vi_44_k_min_options(args);
+            const auto k_min_start = std::chrono::steady_clock::now();
             precomputed_k_min_result =
                 spdp::compute_vi44_k_min(
                     data, duration_graph.graph, k_min_options);
+            // Wall time of the whole k_min computation (COR bound, duration IP
+            // model build and solve).
+            const double k_min_seconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - k_min_start).count();
             output_file << "[duration-bound] graph_edge_count="
                 << duration_graph.graph.number_of_edges()
                 << " graph_fingerprint=" << duration_graph.stats.fingerprint
@@ -3438,6 +3443,20 @@ int main(int argc, char** argv) {
                 << format_double(
                     precomputed_k_min_result
                         ->subproblem_callback_safe_objective_lb)
+                // -1 marks a bound that was not computed.
+                << " cor_k_min="
+                << (precomputed_k_min_result->cor_enabled
+                        ? precomputed_k_min_result->cor_k_min : -1)
+                << " subproblem_k_min="
+                << (precomputed_k_min_result->subproblem_enabled
+                        ? precomputed_k_min_result->subproblem_k_min : -1)
+                << " subproblem_hit_time_limit="
+                << (precomputed_k_min_result->subproblem_hit_time_limit
+                        ? 1 : 0)
+                << " subproblem_runtime_seconds="
+                << format_double(
+                    precomputed_k_min_result->subproblem_runtime_seconds)
+                << " k_min_seconds=" << format_double(k_min_seconds)
                 << '\n';
             for (const spdp::VI44DffSubproblemResult& dff_result :
                  precomputed_k_min_result->dff_subproblem_results) {

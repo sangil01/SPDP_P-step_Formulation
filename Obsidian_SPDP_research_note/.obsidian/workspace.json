@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "17. Why only flexible version.md",
+                "file": "20. Experiment design.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "17. Why only flexible version"
+              "title": "20. Experiment design"
             }
           }
         ]
@@ -187,6 +187,7 @@
   },
   "active": "b3e08a36c47d260e",
   "lastOpenFiles": [
+    "17. Why only flexible version.md",
     "16_2. Cf. Capacity blossom cuts and type-closed travel-time cover cuts.md",
     "15_2. Arc elimination at Multi Graph.md",
     "15_1. Heuristic algorithm for Incumbent solution.md",
@@ -206,7 +207,6 @@
     "4_2. For efficient pricing.md",
     "meeting/260825_meeting.md",
     "13_2. Cuts and time-flow formulations for the fixed-K conditional gap (ver2).md",
-    "17. Why only flexible version.md",
     "16_1. Cf. Time-flow formulation and connectivity cuts for the fixed-K conditional gap.md",
     "13_3. Proof. Load-state disaggregation and time-flow strengthening in the state-expanded multigraph.md",
     "9_2. 2-index formulation on multigraph.md",
